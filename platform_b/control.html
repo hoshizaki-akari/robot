@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>跟骨复位机器人主控系统</title>
+  <style>
+    :root { --ink:#073750; --teal:#117d80; --teal-2:#168f8c; --blue:#176fae; --line:#c8dedf; --soft:#eef8f7; --paper:#fff; --bg:#f3f9f8; --muted:#59727c; --ok:#168154; --wait:#e89a31; --danger:#ce463d; --shadow:0 8px 24px rgba(11,73,80,.10); --left:248px; --right:326px; font-family:"Microsoft YaHei UI","Segoe UI",sans-serif; }
+    * { box-sizing:border-box; }
+    [hidden] { display:none !important; }
+    html, body { height:100%; }
+    body { margin:0; background:linear-gradient(180deg,#f8fcfb 0,#edf7f5 100%); color:var(--ink); overflow:hidden; }
+    button { font:inherit; cursor:pointer; }
+    button:disabled { cursor:not-allowed; opacity:.46; }
+
+    /* ===================== 登录门禁 ===================== */
+    .gate { position:fixed; inset:0; z-index:200; display:grid; place-items:center; padding:20px; background:radial-gradient(120% 120% at 70% 20%,#0f6f6a 0%,#0c3b4f 70%); }
+    .gate-card { width:min(384px,100%); padding:26px 26px 24px; border-radius:18px; background:#fff; box-shadow:0 28px 70px rgba(0,0,0,.35); }
+    .gate-brand { display:flex; align-items:center; gap:14px; margin-bottom:12px; }
+    .gate-logo { flex:none; width:46px; height:46px; border-radius:12px; display:grid; place-items:center; background:linear-gradient(135deg,#10536f,#118e88); color:#fff; font-size:24px; font-weight:800; }
+    .gate-brand h1 { margin:0; font-size:19px; }
+    .gate-brand p { margin:2px 0 0; font-size:11px; color:var(--muted); letter-spacing:.04em; }
+    .gate-sub { margin:0 0 14px; font-size:12px; color:var(--muted); }
+    .gate-submit { width:100%; min-height:44px; font-size:15px; letter-spacing:.35em; margin-top:6px; }
+
+    /* ===================== 仪表盘骨架 ===================== */
+    .dashboard { height:100vh; display:flex; flex-direction:column; max-width:1680px; margin:0 auto; }
+    .topbar { flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:9px 18px; color:#fff; border-radius:0 0 14px 14px; background:linear-gradient(100deg,#10536f,#118e88); box-shadow:var(--shadow); }
+    .brand h1 { margin:0; font-size:20px; font-weight:700; letter-spacing:.02em; }
+    .top-status { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+    .pill { display:inline-flex; align-items:center; gap:5px; min-height:26px; padding:0 11px; border:1px solid rgba(255,255,255,.24); border-radius:999px; background:rgba(255,255,255,.13); color:#efffff; font-size:12px; white-space:nowrap; }
+    .pill .dot { width:7px; height:7px; margin:0; background:#ffc15e; border-radius:50%; }
+    .pill.bad { background:rgba(206,70,61,.28); border-color:rgba(255,255,255,.34); }
+    .pill.ok { background:rgba(22,129,84,.30); border-color:rgba(255,255,255,.34); }
+    .btn-login { font:inherit; border:1px solid rgba(255,255,255,.34); background:rgba(255,255,255,.18); color:#fff; }
+    .btn-login:hover { background:rgba(255,255,255,.30); }
+
+    .layout { flex:1 1 auto; display:grid; grid-template-columns:var(--left) minmax(0,1fr) var(--right); grid-template-rows:1fr; gap:12px; min-height:0; padding:12px; }
+    .col { min-height:0; height:100%; display:flex; flex-direction:column; gap:10px; overflow:hidden; }
+    .col-left, .col-right { overflow-y:auto; padding-right:2px; }
+    .col-middle { min-width:0; }
+
+    .card { background:var(--paper); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); }
+    .side-title { margin:0 0 10px; font-size:14px; color:#0d5569; }
+
+    .device-row { display:grid; grid-template-columns:11px 1fr auto; gap:7px; align-items:center; min-height:40px; padding:7px 1px; border-bottom:1px solid #d8e5e5; font-size:12px; }
+    .device-row:last-child { border-bottom:0; }
+    .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#a2b1b3; }
+    .dot.ok { background:var(--ok); } .dot.bad { background:var(--danger); } .dot.wait { background:var(--wait); }
+    .device-value { color:var(--muted); font-size:11px; text-align:right; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:80px; }
+
+    .nav-card { padding:12px 13px; }
+    .mode-tab { display:flex; align-items:center; gap:10px; width:100%; min-height:50px; padding:8px 12px; text-align:left; color:var(--ink); border:1px solid #bfd8d9; border-radius:10px; background:#fff; margin-bottom:8px; }
+    .mode-tab:last-child { margin-bottom:0; }
+    .mode-tab:hover { border-color:#78bab7; }
+    .mode-tab.active { color:#fff; border-color:var(--teal); background:var(--teal); }
+    .mode-number { display:grid; flex:none; width:25px; height:25px; place-items:center; border-radius:50%; color:var(--teal); background:#e1f3f1; font-size:12px; font-weight:800; }
+    .mode-tab.active .mode-number { color:var(--teal); background:#fff; }
+    .mode-tab strong { display:block; font-size:14px; }
+    .case-mini { padding:12px 13px; }
+
+    /* ===================== 中栏核心操作 ===================== */
+    .col-middle { display:flex; flex-direction:column; gap:10px; }
+    .op-lock { flex:0 0 auto; padding:8px 12px; border-radius:9px; background:#fff4e6; border:1px solid #f0c98a; color:#8a5a12; font-size:12px; line-height:1.5; }
+    .main-card { flex:0 0 auto; display:flex; flex-direction:column; min-height:0; }
+    .workflow { flex:0 0 auto; display:flex; flex-direction:column; min-height:0; padding:12px 14px; }
+    .workflow[hidden] { display:none; }
+    .workflow-title { flex:0 0 auto; margin:0 2px 8px; }
+    .workflow-title h2 { margin:0; font-size:15px; }
+    .steps { flex:0 0 auto; display:grid; grid-template-columns:repeat(3,1fr); gap:7px; margin-bottom:8px; }
+    .step { min-height:52px; display:grid; grid-template-columns:24px 1fr; gap:7px; align-items:center; padding:8px; border:1px solid #cfdfdf; border-radius:9px; background:#fbfdfd; }
+    .step-index { display:grid; width:22px; height:22px; place-items:center; color:#fff; border-radius:50%; background:#9aaeb2; font-size:11px; font-weight:800; }
+    .step strong { display:block; font-size:12px; }
+    .step.active { border-color:#75b9cf; background:#f0f9fc; } .step.active .step-index { background:var(--blue); }
+    .step.done { border-color:#8acbad; background:#eefaf3; } .step.done .step-index { background:var(--ok); }
+    .step.waiting { border-color:#e8c880; background:#fffaf0; } .step.waiting .step-index { background:var(--wait); }
+
+    .viewport { flex:0 0 auto; height:min(34vh, 300px); min-height:160px; position:relative; width:100%; overflow:hidden; border:1px solid #a8c5c4; border-radius:10px; background:#152a30; }
+    .viewport img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; background:#152a30; }
+    /* Canvas must occupy the image's visible contain-box, not the full viewport. */
+    .viewport canvas { position:absolute; pointer-events:none; }
+    #liveCamera, #visionOverlay, #pryCamera { transform:rotate(180deg); transform-origin:center; }
+
+    .result-strip { flex:0 0 auto; display:grid; grid-template-columns:repeat(3,1fr); gap:7px; margin-top:8px; }
+    .result { min-height:50px; padding:7px 9px; border:1px solid #d5e3e3; border-radius:8px; background:#fbfdfd; }
+    .result label { display:block; color:var(--muted); font-size:10px; } .result strong { display:block; margin-top:4px; font-family:ui-monospace,Consolas,monospace; color:#123d51; font-size:12px; word-break:break-word; }
+    .side-results { display:grid; grid-template-columns:1fr; gap:6px; margin-top:10px; padding-top:10px; border-top:1px solid #d8e5e5; }
+    .side-results .result { min-height:auto; padding:6px 8px; }
+    .side-results .result label { font-size:10px; }
+    .side-results .result strong { font-size:11px; margin-top:2px; }
+    .result select, .compact-select { width:100%; min-height:30px; padding:0 6px; border:1px solid #b8d0d0; border-radius:6px; background:#fff; color:var(--ink); font:inherit; font-size:12px; }
+
+    .actions { flex:0 0 auto; display:flex; gap:9px; align-items:center; margin-top:8px; flex-wrap:wrap; }
+    .message { flex:0 0 auto; margin-top:8px; min-height:16px; font-size:12px; color:#0d5569; word-break:break-word; }
+    .actions .button { flex:1 1 0; min-width:120px; }
+    .button { min-height:38px; padding:0 15px; border:1px solid transparent; border-radius:8px; color:#fff; font-size:13px; font-weight:700; }
+    .button.primary { background:var(--teal); } .button.primary:hover { background:#0d7073; }
+    .button.secondary { color:#116c75; border-color:#8cbfbe; background:#fff; } .button.secondary:hover { background:#f1fafa; }
+    .button.execute { background:#238e87; } .button.execute:not(:disabled):hover { background:#11766f; }
+    .button.pry { background:var(--blue); } .button.pry:not(:disabled):hover { background:#125d92; }
+    .button.stop { color:#b33832; border-color:#e7aaa4; background:#fff; } .button.stop:hover { background:#fff3f1; }
+
+    .robot-control { flex:0 0 auto; margin:10px 14px 14px; padding:11px 14px; border:1px solid #d9e6e6; border-radius:12px; box-shadow:var(--shadow); }
+    .robot-control h3 { margin:0 0 8px; font-size:13px; color:#0d5569; }
+    .robot-buttons { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+    .robot-buttons .button { min-height:38px; font-size:12px; }
+    .button.danger { background:var(--danger); } .button.danger:not(:disabled):hover { background:#b53b32; }
+    .button.warnbtn { background:var(--wait); color:#5a3d05; } .button.warnbtn:not(:disabled):hover { background:#d98a2b; }
+    .button.homebtn { background:var(--blue); } .button.homebtn:not(:disabled):hover { background:#125d92; }
+
+    /* ===================== 右栏监控 / 参数 ===================== */
+    .monitor-card { padding:10px 12px; }
+    .monitor-card h2 { margin:0 0 9px; font-size:13px; color:#0d5569; }
+    .metric-row { display:flex; justify-content:space-between; gap:8px; padding:6px 0; border-bottom:1px solid #d7e4e4; font-size:11px; } .metric-row:last-child { border-bottom:0; } .metric-row span { color:var(--muted); } .metric-row strong { text-align:right; font-size:11px; }
+    .case-actions { display:flex; gap:8px; margin-top:8px; }
+    .case-actions .button { flex:1; min-height:32px; font-size:12px; }
+    .op-status { display:block; font-size:12px; padding:7px 10px; border-radius:8px; background:#fff4e6; color:#8a5a12; border:1px solid #f0c98a; line-height:1.5; }
+    .op-status.ok { background:#eefaf3; color:var(--ok); border-color:#8acbad; }
+    .param-grid { display:grid; grid-template-columns:1fr 92px; gap:8px 10px; align-items:center; min-width:0; }
+    .param { display:grid; grid-template-columns:1fr 92px; align-items:center; gap:6px; min-width:0; }
+    .param label { font-size:11px; color:#3c5a63; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .param input, .param select { width:100%; min-height:30px; padding:0 7px; border:1px solid #b8d0d0; border-radius:6px; background:#fff; color:var(--ink); font:inherit; font-size:12px; }
+    .log-actions { display:flex; gap:8px; }
+    .log-actions .button { flex:1; min-height:34px; font-size:12px; }
+    .robot-status { margin-top:8px; font-size:11px; color:#3c5a63; min-height:14px; }
+
+    /* ===================== 病例模态 ===================== */
+    .modal { position:fixed; inset:0; z-index:100; display:grid; place-items:center; background:rgba(7,37,47,.42); padding:16px; }
+    .modal-card { width:min(420px,100%); max-height:90vh; overflow:auto; padding:18px; border-radius:14px; background:#fff; box-shadow:0 18px 50px rgba(7,37,47,.28); }
+    .modal-card h3 { margin:0 0 4px; font-size:16px; color:#0d5569; }
+    .modal-card .modal-sub { margin:0 0 14px; color:var(--muted); font-size:11px; }
+    .form-field { margin-bottom:11px; }
+    .form-field label { display:block; margin-bottom:4px; font-size:12px; color:#3c5a63; }
+    .form-field input, .form-field select, .form-field textarea { width:100%; min-height:32px; padding:0 9px; border:1px solid #b8d0d0; border-radius:7px; background:#fff; color:var(--ink); font:inherit; font-size:13px; }
+    .modal-actions { display:flex; gap:9px; margin-top:6px; }
+    .modal-actions .button { flex:1; min-height:38px; }
+    .modal-error { margin-top:8px; color:var(--danger); font-size:12px; min-height:16px; }
+
+    /* ===================== 自适应 ===================== */
+    @media (max-width:1240px) { :root { --left:218px; --right:288px; } }
+    @media (max-width:1000px) { :root { --left:190px; --right:250px; } .side-title, .monitor-card h2, .workflow-title h2 { font-size:13px; } .device-value { max-width:64px; } .param-grid { grid-template-columns:1fr 84px; } .param { grid-template-columns:1fr 84px; } }
+    @media (max-width:820px) { body { overflow:auto; } .dashboard { height:auto; min-height:100vh; } .layout { grid-template-columns:1fr; } .col-left, .col-right { overflow:visible; } .viewport { min-height:260px; } .col-middle { min-height:520px; } }
+  </style>
+  <script src="/assets/vendor/jszip.min.js"></script>
+</head>
+<body>
+  <!-- ===================== 登录门禁 ===================== -->
+  <div class="gate" id="loginGate">
+    <div class="gate-card">
+      <div class="gate-brand">
+        <div class="gate-logo">⌬</div>
+        <div>
+          <h1>跟骨复位机器人主控系统</h1>
+          <p>Calcaneus Reduction Robot · Control Console</p>
+        </div>
+      </div>
+      <p class="gate-sub">请登录后继续操作。</p>
+      <div class="form-field"><label>用户名</label><input id="loginUser" type="text" placeholder="例如 admin" autocomplete="username"></div>
+      <div class="form-field"><label>密码</label><input id="loginPass" type="password" placeholder="密码" autocomplete="current-password"></div>
+      <div class="modal-error" id="loginError"></div>
+      <button class="button primary gate-submit" id="loginSubmit" type="button">登 录</button>
+    </div>
+  </div>
+
+  <!-- ===================== 仪表盘 ===================== -->
+  <div class="dashboard" id="dashboard" hidden>
+    <header class="topbar">
+      <div class="brand"><h1>跟骨复位机器人主控系统</h1></div>
+      <div class="top-status">
+        <span class="pill" id="topServicePill"><i class="dot wait" id="topDot"></i><span id="topService">设备连接中</span></span>
+        <span class="pill" id="topSafetyPill">安全回路监控中</span>
+        <span class="pill" id="topVisionPill">足跟视觉等待中</span>
+        <button class="pill btn-login" id="loginBtn" type="button">管理员登录</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <!-- 左栏：状态 / 导航 -->
+      <aside class="col col-left">
+        <section class="card side-card">
+          <h2 class="side-title">设备状态</h2>
+          <div class="device-row"><i class="dot wait" id="systemDot"></i><span>主控状态服务</span><span class="device-value" id="systemValue">连接中</span></div>
+          <div class="device-row"><i class="dot wait" id="fr5Dot"></i><span>FR5 机械臂</span><span class="device-value" id="fr5Value">--</span></div>
+          <div class="device-row"><i class="dot wait" id="ag95Dot"></i><span>AG95 夹爪</span><span class="device-value" id="ag95Value">--</span></div>
+          <div class="device-row"><i class="dot wait" id="d435Dot"></i><span>D435 深度相机</span><span class="device-value" id="d435Value">--</span></div>
+          <div class="device-row"><i class="dot wait" id="kwrDot"></i><span>KWR75D 力矩</span><span class="device-value" id="kwrValue">--</span></div>
+
+          <div class="side-results" id="leftClampResults">
+            <div class="result"><label>夹持宽度</label><strong id="clampWidth">-- mm</strong></div>
+            <div class="result"><label>相机夹持中心</label><strong id="clampCenter">--</strong></div>
+            <div class="result"><label>规划状态</label><strong id="clampPlanState">未获取</strong></div>
+          </div>
+          <div class="side-results" id="leftPryResults" hidden>
+            <div class="result"><label>夹持宽度</label><strong id="pryWidth">-- mm</strong></div>
+            <div class="result"><label>上端间距</label><strong id="pryGap">-- mm</strong></div>
+            <div class="result"><label>算法状态</label><strong id="pryPlanState">未获取</strong></div>
+          </div>
+        </section>
+
+        <section class="card nav-card">
+          <h2 class="side-title">复位方式</h2>
+          <button class="mode-tab active" id="clampTab" type="button" role="tab" aria-selected="true"><span class="mode-number">1</span><span><strong>夹挤复位</strong></span></button>
+          <button class="mode-tab" id="pryTab" type="button" role="tab" aria-selected="false"><span class="mode-number">2</span><span><strong>撬拨复位</strong></span></button>
+        </section>
+
+      </aside>
+
+      <!-- 中栏：核心操作 -->
+      <main class="col col-middle">
+        <div class="op-lock" id="opLockBanner" hidden>操作已锁定：请先在右侧「建立病例」并「保存参数」后，方可开启视觉与下发机器人指令。</div>
+
+        <section class="card main-card">
+          <section class="workflow" id="clampPanel" role="tabpanel">
+            <div class="workflow-title"><h2>夹挤复位 · 核心操作</h2></div>
+            <div class="steps">
+              <div class="step active" id="clampStep1"><i class="step-index">1</i><div><strong>开启视觉</strong></div></div>
+              <div class="step" id="clampStep2"><i class="step-index">2</i><div><strong>获取夹持点与宽度</strong></div></div>
+              <div class="step" id="clampStep3"><i class="step-index">3</i><div><strong>确认并执行</strong></div></div>
+            </div>
+            <div class="viewport">
+              <img id="liveCamera" alt="" hidden>
+              <canvas id="visionOverlay" aria-label="YOLO 足跟识别与夹持点叠加"></canvas>
+            </div>
+            <div class="actions"><button class="button primary" id="clampVisionBtn" type="button">开启夹挤视觉</button><button class="button stop" id="clampStopBtn" type="button" disabled>停止视觉</button></div>
+            <div class="message" id="clampMessage"></div>
+            <div class="actions"><button class="button secondary" id="clampPlanBtn" type="button" disabled>获取夹持点与宽度</button><button class="button execute" id="clampMoveBtn" type="button" disabled>确认并执行夹挤运动</button></div>
+          </section>
+
+          <section class="workflow" id="pryPanel" role="tabpanel" hidden>
+            <div class="workflow-title"><h2>撬拨复位 · 核心操作</h2></div>
+            <div class="steps">
+              <div class="step active" id="pryStep1"><i class="step-index">1</i><div><strong>开启视觉</strong></div></div>
+              <div class="step" id="pryStep2"><i class="step-index">2</i><div><strong>获取夹持点与宽度</strong></div></div>
+              <div class="step" id="pryStep3"><i class="step-index">3</i><div><strong>确认并执行</strong></div></div>
+            </div>
+            <div class="viewport">
+              <img id="pryCamera" alt="" hidden>
+            </div>
+            <div class="actions"><button class="button pry" id="pryVisionBtn" type="button">开启撬拨视觉</button><button class="button stop" id="pryStopBtn" type="button" disabled>停止视觉</button></div>
+            <div class="message" id="pryMessage"></div>
+            <div class="actions"><button class="button secondary" id="pryPlanBtn" type="button" disabled>获取夹持点与宽度</button><button class="button execute" id="pryMoveBtn" type="button" disabled>确认并执行撬拨运动</button></div>
+          </section>
+
+          <div class="robot-control">
+            <h3>机器人直控（真机 FR5）</h3>
+            <div class="robot-buttons">
+              <button class="button secondary" id="btnPause" type="button">暂停</button>
+              <button class="button secondary" id="btnResume" type="button">继续</button>
+              <button class="button homebtn" id="btnHome" type="button">回零</button>
+              <button class="button secondary" id="btnSetZero" type="button">设置零点</button>
+              <button class="button danger" id="btnEstop" type="button">急停</button>
+              <button class="button warnbtn" id="btnEstopReset" type="button">急停复位</button>
+              <button class="button secondary" id="btnGripperInc" type="button">夹爪+1mm</button>
+              <button class="button secondary" id="btnGripperDec" type="button">夹爪-1mm</button>
+            </div>
+            <div class="robot-status" id="robotStatus"></div>
+          </div>
+        </section>
+      </main>
+
+      <!-- 右栏：实时监控 / 参数 -->
+      <aside class="col col-right">
+        <section class="card monitor-card">
+          <h2>实时监测</h2>
+          <div class="metric-row"><span>FR5 模式 / 使能</span><strong id="robotMode">--</strong></div>
+          <div class="metric-row"><span>机械臂报警</span><strong id="robotError">--</strong></div>
+          <div class="metric-row"><span>运动完成</span><strong id="motionDone">--</strong></div>
+          <div class="metric-row"><span>夹爪开度</span><strong id="gripperOpening">--</strong></div>
+          <div class="metric-row"><span>D435 色彩 / 深度</span><strong id="cameraFps">--</strong></div>
+        </section>
+
+        <section class="card monitor-card">
+          <h2>病例管理</h2>
+          <div id="caseView"></div>
+          <div class="case-actions"><button class="button secondary" id="newCaseBtn" type="button">新建病例</button><button class="button stop" id="closeCaseBtn" type="button" hidden>关闭病例</button></div>
+        </section>
+
+        <section class="card monitor-card">
+          <h2>操作许可</h2>
+          <span class="op-status" id="opStatus">✗ 未建立病例 · ✗ 参数未保存</span>
+        </section>
+
+        <section class="card monitor-card" id="clampParamCard">
+          <h2>夹挤参数</h2>
+          <div class="param-grid">
+            <div class="param"><label>夹挤位移 (mm)</label><input id="clampDisp" type="number" min="0" max="40" step="0.5" value="5"></div>
+            <div class="param"><label>速度 (mm/s)</label><input id="speed" type="number" min="0.1" max="20" step="0.5" value="20"></div>
+            <div class="param"><label>力上限 (N)</label><input id="forceLimit" type="number" min="5" max="150" step="1" value="80"></div>
+            <div class="param"><label>力矩上限 (Nm)</label><input id="torqueLimit" type="number" min="0.5" max="15" step="0.5" value="8"></div>
+            <div class="param"><label>保持时间 (s)</label><input id="holdSec" type="number" min="1" max="30" step="1" value="3"></div>
+            <div class="param"><label>&nbsp;</label><button class="button secondary" id="saveParamsBtn" type="button" style="width:100%;min-height:30px;font-size:12px">保存参数</button></div>
+          </div>
+          <div class="robot-status" id="paramStatus"></div>
+        </section>
+
+        <section class="card monitor-card" id="pryParamCard" hidden>
+          <h2>撬拨参数</h2>
+          <div class="param-grid">
+            <div class="param"><label>撬拨方向</label><select class="compact-select" id="pryDir"><option value="X_PLUS">X+ 向右</option><option value="X_MINUS">X- 向左</option><option value="Y_PLUS">Y+ 朝脚底</option><option value="Y_MINUS">Y- 背离脚底</option></select></div>
+            <div class="param"><label>目标角度</label><select class="compact-select" id="pryAngle"><option value="5">5°</option><option value="10">10°</option><option value="15" selected>15°</option><option value="20">20°</option><option value="30">30°</option><option value="45">45°</option></select></div>
+            <div class="param"><label>撬拨位移 (mm)</label><input id="pryDisp" type="number" min="0" max="150" step="1" value="100"></div>
+            <div class="param"><label>&nbsp;</label><button class="button secondary" id="saveParamsBtn2" type="button" style="width:100%;min-height:30px;font-size:12px">保存参数</button></div>
+          </div>
+          <div class="robot-status" id="paramStatus2"></div>
+        </section>
+
+        <section class="card monitor-card">
+          <h2>日志导出</h2>
+          <div class="log-actions"><button class="button secondary" id="exportLogBtn" type="button">导出日志</button></div>
+        </section>
+      </aside>
+    </div>
+  </div>
+
+  <!-- 病例与任务模态框 -->
+  <div class="modal" id="caseModal" hidden>
+    <div class="modal-card">
+      <h3>病例与任务</h3>
+      <div class="form-field"><label>病例编号</label><input id="caseId" type="text" value="CASE-20260821-1628"></div>
+      <div class="form-field"><label>患者编码</label><input id="casePatient" type="text" value="P001"></div>
+      <div class="form-field"><label>操作者</label><input id="caseOperator" type="text" value="operator"></div>
+      <div class="form-field"><label>患侧</label>
+        <select id="caseSide">
+          <option value="左" selected>左</option>
+          <option value="右">右</option>
+        </select>
+      </div>
+      <div class="modal-error" id="caseError"></div>
+      <div class="modal-actions"><button class="button secondary" id="caseCancel" type="button">取消</button><button class="button primary" id="caseSubmit" type="button">建立病例</button></div>
+    </div>
+  </div>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    const model = { active:'clamp', snapshot:null, vision:{clamp:false,pry:false}, plan:{clamp:null,pry:null}, socket:null, fallback:null, pryPreview:null, robotMotionDone:null, workflowActive:false, paramsSaved:false };
+    const paths = { clamp:{start:'/api/workflow/clamp/vision/start',plan:'/api/workflow/clamp/plan'}, pry:{start:'/api/workflow/pry/vision/start',plan:'/api/workflow/pry/plan'} };
+    const fmt = (value,digits=1) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : '--';
+    const vec = (values,digits=1) => Array.isArray(values) ? '[' + values.map(v => fmt(v,digits)).join(', ') + ']' : '--';
+    const MAX_GRIPPER_OPENING_MM = 95.0;
+    function rawToOpeningMm(raw) { const r=Number(raw); return Number.isFinite(r) ? r/1000*MAX_GRIPPER_OPENING_MM : null; }
+    function setDot(id, valid) { const node=$(id); node.className='dot ' + (valid === true ? 'ok' : valid === false ? 'bad' : 'wait'); }
+    function setStep(branch,index,state) { const node=$(branch+'Step'+index); node.className='step' + (state ? ' '+state : ''); }
+    function showMessage(id,message) { const el=$(id); if (el) el.textContent=message; }
+    function isRobotBusy() { const stopped = model.robotMotionDone === true || model.robotMotionDone === 1; return !stopped || !!model.workflowActive; }
+    function updateMotionButtons() { const busy=isRobotBusy() || gripperAdjusting; const lock=!(logState.caseInfo && model.paramsSaved); $('btnGripperInc').disabled=busy||lock; $('btnGripperDec').disabled=busy||lock; }
+
+    /* ============================ 运行日志 ============================ */
+    const logState = { entries:[], operator:null, caseInfo:null };
+    function currentCaseId() { return logState.caseInfo ? logState.caseInfo.id : '未建立病例'; }
+    function logEvent(type, message, category) {
+      const entry = { ts: new Date().toISOString(), type: type, category: category || type, message: message, operator: logState.operator || '未登录', caseId: currentCaseId() };
+      logState.entries.push(entry);
+    }
+    function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    function downloadBlob(filename, text, mime) {
+      const blob = new Blob([text], { type: mime || 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+    function timestampName() { const d = new Date(); const p = n => String(n).padStart(2,'0'); return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`; }
+    function entriesToCsv(entries) {
+      const header = ['时间','类型','分类','内容','操作人','病例'];
+      const rows = entries.map(e => [e.ts, e.type, e.category, e.message, e.operator, e.caseId].map(v => `"${String(v).replace(/"/g,'""')}"`).join(','));
+      return '\ufeff' + header.join(',') + '\n' + rows.join('\n');
+    }
+    async function exportLogs() {
+      const stamp = timestampName();
+      const caseId = logState.caseInfo ? logState.caseInfo.id : '未建立病例';
+      const dateStr = stamp.split('_')[0];
+      const folderName = `log-${dateStr}-${caseId}`;
+      const all = logState.entries;
+      const robot = all.filter(e => e.category === 'robot' || e.category === 'motion');
+      const meta = { exported_at: new Date().toISOString(), case: logState.caseInfo, operator: logState.operator };
+      const files = [
+        { name: `${folderName}/operation_log_${stamp}_${caseId}.json`, content: JSON.stringify({ ...meta, entries: all }, null, 2) },
+        { name: `${folderName}/operation_log_${stamp}_${caseId}.csv`, content: entriesToCsv(all) },
+        { name: `${folderName}/robot_activity_${stamp}_${caseId}.json`, content: JSON.stringify({ ...meta, robot_activities: robot, latest_state_snapshot: model.snapshot }, null, 2) },
+        { name: `${folderName}/robot_activity_${stamp}_${caseId}.csv`, content: entriesToCsv(robot) }
+      ];
+      if (window.JSZip) {
+        try {
+          const zip = new JSZip();
+          files.forEach(f => zip.file(f.name, f.content));
+          const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a'); a.href = url; a.download = `${folderName}.zip`; document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(() => URL.revokeObjectURL(url), 1000);
+          logEvent('导出', `导出日志压缩包 ${folderName}.zip`, 'system');
+          return;
+        } catch (e) { console.error('zip export failed', e); }
+      }
+      files.forEach(f => downloadBlob(f.name.replace(folderName+'/', ''), f.content, f.name.endsWith('.json') ? 'application/json' : 'text/csv'));
+      logEvent('导出', '导出日志（操作日志 + 机械臂活动，离线模式逐个下载）', 'system');
+    }
+
+    /* ============================ 登录门禁 ============================ */
+    function applyLoginUI() {
+      const btn = $('loginBtn');
+      if (logState.operator) { btn.textContent = '管理员：' + logState.operator + ' · 退出'; btn.classList.add('ok'); }
+      else { btn.textContent = '管理员登录'; btn.classList.remove('ok'); }
+    }
+    function showLoginGate() {
+      $('loginError').textContent=''; $('loginUser').value=''; $('loginPass').value='';
+      $('loginGate').hidden=false; $('dashboard').hidden=true;
+      setTimeout(()=>{ try { $('loginUser').focus(); } catch(_){} }, 30);
+    }
+    function enterSystem() { $('loginGate').hidden=true; $('dashboard').hidden=false; refreshOperationGate(); }
+    function submitLogin() {
+      const u = $('loginUser').value.trim(); const p = $('loginPass').value;
+      if (!u) { $('loginError').textContent='请输入用户名'; return; }
+      if (!p) { $('loginError').textContent='请输入密码'; return; }
+      logState.operator = u; localStorage.setItem('fr5_operator', u);
+      applyLoginUI(); enterSystem(); logEvent('登录', `管理员「${u}」登录系统`, 'auth');
+    }
+    function logout() {
+      const u = logState.operator; logState.operator = null; localStorage.removeItem('fr5_operator');
+      applyLoginUI(); if (u) logEvent('退出', `管理员「${u}」退出`, 'auth'); showLoginGate();
+    }
+
+    /* ============================ 病例管理 ============================ */
+    function renderCase() {
+      const newBtn = $('newCaseBtn'); const closeBtn = $('closeCaseBtn'); const c = logState.caseInfo;
+      const html = c ? `<div class="case-info">
+        <div><span>病例编号</span><strong>${escapeHtml(c.id)}</strong></div>
+        ${c.patient ? `<div><span>患者编码</span><strong>${escapeHtml(c.patient)}</strong></div>` : ''}
+        ${c.operator ? `<div><span>操作者</span><strong>${escapeHtml(c.operator)}</strong></div>` : ''}
+        ${c.side ? `<div><span>患侧</span><strong>${escapeHtml(c.side)}</strong></div>` : ''}
+        <div><span>建立时间</span><strong>${new Date(c.created_at).toLocaleString('zh-CN')}</strong></div>
+      </div>` : '<div class="robot-status">尚未建立病例。</div>';
+      $('caseView').innerHTML = html;
+      newBtn.hidden = !!c; closeBtn.hidden = !c;
+    }
+    function openCase() {
+      $('caseError').textContent='';
+      $('caseId').value = 'CASE-20260821-1628';
+      $('casePatient').value = 'P001';
+      $('caseOperator').value = logState.operator || 'operator';
+      $('caseSide').value = '左';
+      $('caseModal').hidden=false; setTimeout(()=>{ try { $('caseId').focus(); } catch(_){} }, 30);
+    }
+    function closeCase() { $('caseModal').hidden=true; }
+    function submitCase() {
+      const id = $('caseId').value.trim(); if (!id) { $('caseError').textContent='病例编号必填'; return; }
+      const c = {
+        id,
+        patient: $('casePatient').value.trim(),
+        operator: $('caseOperator').value.trim(),
+        side: $('caseSide').value,
+        created_at: new Date().toISOString()
+      };
+      logState.caseInfo = c; localStorage.setItem('fr5_case', JSON.stringify(c));
+      model.paramsSaved = false; // 每个病例需重新确认参数
+      renderCase(); closeCase(); refreshOperationGate();
+      logEvent('病例', `新建病例 ${id}（患侧：${c.side}）`, 'case');
+    }
+    function closeCurrentCase() {
+      const c = logState.caseInfo; logState.caseInfo = null; localStorage.removeItem('fr5_case');
+      model.paramsSaved = false; renderCase(); refreshOperationGate();
+      if (c) logEvent('病例', `关闭病例 ${c.id}`, 'case');
+    }
+
+    /* ============================ 操作门禁 ============================ */
+    function refreshOperationGate() {
+      const ready = !!(logState.caseInfo && model.paramsSaved);
+      const ops = ['clampVisionBtn','pryVisionBtn','btnPause','btnResume','btnHome','btnSetZero','btnEstop','btnEstopReset'];
+      ops.forEach(id => { const el=$(id); if (el) el.disabled = !ready; });
+      const banner = $('opLockBanner'); if (banner) banner.hidden = ready;
+      updateMotionButtons();
+      const status = $('opStatus');
+      if (status) {
+        const c = !!logState.caseInfo, p = model.paramsSaved;
+        status.textContent = (c ? '✓ 病例已建立' : '✗ 未建立病例') + ' · ' + (p ? '✓ 参数已保存' : '✗ 参数未保存');
+        status.className = 'op-status ' + (c && p ? 'ok' : '');
+      }
+    }
+
+    /* ============================ 视觉与状态 ============================ */
+    async function getJson(path, options={}) { const response=await fetch(path,{cache:'no-store',...options,headers:{'Content-Type':'application/json',...(options.headers||{})}}); let body={}; try { body=await response.json(); } catch (_) {} if (!response.ok) throw new Error(body.detail || body.message || ('请求失败 '+response.status)); return body; }
+    function setCameraStream() {
+      clearInterval(model.pryPreview); model.pryPreview=null;
+      const image=$('liveCamera'); image.hidden=false;
+      if (model.cameraKeepalive) { clearInterval(model.cameraKeepalive); model.cameraKeepalive=null; }
+      let reconnecting=false;
+      function connect() { if (reconnecting) return; reconnecting=true; image.src='/api/d435/annotated.mjpg?t='+Date.now(); setTimeout(()=>{ reconnecting=false; }, 800); }
+      image.onerror=()=>{ setTimeout(connect, 1000); };
+      image.onload=()=>{ image.dataset.lastFrame=String(performance.now()); };
+      model.cameraKeepalive=setInterval(()=>{
+        if (image.hidden) return;
+        const noFrame = !image.complete || image.naturalWidth===0 || image.naturalHeight===0;
+        const idle = performance.now() - parseFloat(image.dataset.lastFrame || '0');
+        if (noFrame || (image.dataset.lastFrame && idle > 8000)) { connect(); image.dataset.lastFrame=String(performance.now()); }
+      }, 3000);
+      connect();
+    }
+    function setPryPreview() {
+      clearInterval(model.pryPreview); model.pryPreview=null;
+      const image=$('pryCamera');
+      image.hidden=false;
+      image.removeAttribute('src');
+      image.alt='撬拨视觉预览加载中';
+      let failCount=0;
+      function refresh() { image.src='/api/workflow/pry/preview.png?t='+Date.now(); }
+      image.onload=()=>{ failCount=0; image.alt='撬拨视觉预览'; };
+      image.onerror=()=>{
+        failCount++;
+        if (failCount<=3) { setTimeout(refresh, 600); }
+        else { image.alt='撬拨视觉预览加载失败，请停止后重新开启'; }
+      };
+      refresh();
+      model.pryPreview=setInterval(refresh, 1000);
+    }
+    function clearCanvas() { const canvas=$('visionOverlay'); canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height); }
+    function alignOverlayToVideo(image, canvas) {
+      const viewport=image.parentElement, sourceWidth=image.naturalWidth, sourceHeight=image.naturalHeight;
+      if (!viewport || !sourceWidth || !sourceHeight) return false;
+      const scale=Math.min(viewport.clientWidth/sourceWidth, viewport.clientHeight/sourceHeight);
+      const width=sourceWidth*scale, height=sourceHeight*scale;
+      canvas.style.left=((viewport.clientWidth-width)/2)+'px'; canvas.style.top=((viewport.clientHeight-height)/2)+'px';
+      canvas.style.width=width+'px'; canvas.style.height=height+'px';
+      return true;
+    }
+    function drawOverlay(vision) { const image=$('liveCamera'); const canvas=$('visionOverlay'); if (!vision || !image.naturalWidth || !image.naturalHeight || !alignOverlayToVideo(image,canvas)) return; if (canvas.width!==image.naturalWidth || canvas.height!==image.naturalHeight) { canvas.width=image.naturalWidth; canvas.height=image.naturalHeight; } const ctx=canvas.getContext('2d'); ctx.clearRect(0,0,canvas.width,canvas.height); if (!vision.heel_detected) return; const a=vision.clamp_contact_a_px, b=vision.clamp_contact_b_px, c=vision.heel_center_px; ctx.lineWidth=2; ctx.strokeStyle='#00dbd1'; ctx.fillStyle='#00dbd1'; if (Array.isArray(a)&&Array.isArray(b)) { ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.stroke(); for (const p of [a,b]) { ctx.beginPath(); ctx.arc(p[0],p[1],3.5,0,Math.PI*2); ctx.fill(); } } if (Array.isArray(c)) { ctx.strokeStyle='#fff'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.moveTo(c[0]-7,c[1]); ctx.lineTo(c[0]+7,c[1]); ctx.moveTo(c[0],c[1]-7); ctx.lineTo(c[0],c[1]+7); ctx.stroke(); } }
+    let lastOnline=null;
+    function applySnapshot(snapshot) {
+      if (!snapshot) return;
+      model.snapshot=snapshot;
+      const system=snapshot.system||{}, fr5=snapshot.fr5||{}, ag95=snapshot.ag95||{}, d435=snapshot.d435||{}, kwr=snapshot.kwr75d||{}, gateway=snapshot.gateway||{};
+      const online=gateway.valid!==false&&system.valid!==false;
+      setDot('systemDot',online); setDot('fr5Dot',!!fr5.valid); setDot('ag95Dot',!!ag95.valid); setDot('d435Dot',!!d435.valid); setDot('kwrDot',!!kwr.valid); setDot('topDot',online);
+      $('systemValue').textContent=online?'正常':'异常'; $('fr5Value').textContent=fr5.valid?(fr5.mode||'就绪'):'无效'; $('ag95Value').textContent=ag95.valid?'已连接':'无效'; $('d435Value').textContent=d435.valid?(fmt(d435.color_fps)+'/'+fmt(d435.depth_fps)+' fps'):'无效'; $('kwrValue').textContent=kwr.valid?'数据有效':'无效';
+      const servicePill=$('topServicePill'); servicePill.className='pill '+(online?'ok':'bad'); $('topService').textContent=online?'设备已连接':'设备未连接';
+      const visionPill=$('topVisionPill'); visionPill.className='pill '+(d435.valid?'ok':'wait'); visionPill.textContent=d435.valid?('足跟视觉 '+fmt(d435.color_fps)+' fps'):'足跟视觉等待中';
+      const safetyPill=$('topSafetyPill'); safetyPill.className='pill '+(online?'ok':'bad'); safetyPill.textContent=online?'安全回路正常':'安全回路异常';
+      $('robotMode').textContent=(fr5.mode||'--')+' / '+(fr5.enabled?'ON':'OFF'); const errors=fr5.errors||{}; $('robotError').textContent=(errors.main||errors.sub)?((errors.main||0)+' / '+(errors.sub||0)):'无';
+      $('motionDone').textContent=fr5.motion_done==null?'--':(fr5.motion_done?'已停止':'运动中');
+      model.robotMotionDone = fr5.motion_done; updateMotionButtons();
+      const openingMm = rawToOpeningMm(ag95.position_raw); $('gripperOpening').textContent = openingMm==null ? '--' : fmt(openingMm,2)+' mm';
+      $('cameraFps').textContent=d435.valid?(fmt(d435.color_fps)+' / '+fmt(d435.depth_fps)+' fps'):'--';
+      const vision=d435.clamp_vision||{};
+      if (model.vision.clamp) drawOverlay(vision);
+      if (lastOnline!==null && lastOnline!==online) logEvent('告警', online?'设备恢复在线':'设备离线，请检查控制柜网络/电源/急停', 'alert');
+      lastOnline=online;
+    }
+    function switchMode(branch) {
+      model.active=branch; const clamp=branch==='clamp';
+      $('clampTab').classList.toggle('active',clamp); $('pryTab').classList.toggle('active',!clamp);
+      $('clampTab').setAttribute('aria-selected',String(clamp)); $('pryTab').setAttribute('aria-selected',String(!clamp));
+      $('clampPanel').hidden=!clamp; $('pryPanel').hidden=clamp;
+      $('clampParamCard').hidden=!clamp; $('pryParamCard').hidden=clamp;
+      $('leftClampResults').hidden=!clamp; $('leftPryResults').hidden=clamp;
+      if (clamp&&model.vision.clamp) setCameraStream(); if (!clamp&&model.vision.pry) setPryPreview();
+    }
+    async function startVision(branch) {
+      try {
+        const result=await getJson(paths[branch].start,{method:'POST',body:'{}'});
+        model.vision[branch]=true; setStep(branch,1,'done'); setStep(branch,2,'active'); setStep(branch,3,'waiting');
+        $(branch+'PlanBtn').disabled=false; $(branch+'VisionBtn').disabled=true; $(branch+'StopBtn').disabled=false;
+        if (branch==='clamp') setCameraStream(); else setPryPreview();
+        showMessage(branch+'Message',result.message||'视觉已开启');
+        logEvent('视觉', (branch==='clamp'?'夹挤视觉':'撬拨视觉')+'已开启', 'vision');
+      } catch(error) { showMessage(branch+'Message',error.message); logEvent('视觉', (branch==='clamp'?'夹挤':'撬拨')+'视觉开启失败：'+error.message, 'alert'); }
+    }
+    function renderClampPlan(plan) {
+      $('clampWidth').textContent=plan.heel_width_mm==null?'-- mm':fmt(plan.heel_width_mm,2)+' mm'; $('clampCenter').textContent=vec(plan.clamp_contact_center_camera_mm,1);
+      $('clampPlanState').textContent=plan.valid&&plan.captured?'已冻结':'等待有效结果'; $('clampMoveBtn').disabled=!(plan.valid&&plan.captured);
+      setStep('clamp',2,plan.valid&&plan.captured?'done':'active'); setStep('clamp',3,plan.valid&&plan.captured?'waiting':''); showMessage('clampMessage',plan.message||'');
+    }
+    function renderPryPlan(plan) {
+      $('pryWidth').textContent=plan.width_mm==null?(plan.heel_width_mm==null?'-- mm':fmt(plan.heel_width_mm,2)+' mm'):fmt(plan.width_mm,2)+' mm';
+      $('pryGap').textContent=plan.surface_to_upper_midpoint_gap_mm==null?'-- mm':fmt(plan.surface_to_upper_midpoint_gap_mm,2)+' mm';
+      $('pryPlanState').textContent=plan.valid?'已获取':'等待'; $('pryMoveBtn').disabled=!plan.valid;
+      setStep('pry',2,plan.valid?'done':'active'); setStep('pry',3,plan.valid?'waiting':''); showMessage('pryMessage',plan.message||'');
+    }
+    async function capturePlan(branch) {
+      try {
+        const plan=await getJson(paths[branch].plan,{method:branch==='clamp'?'POST':'GET',body:branch==='clamp'?'{}':undefined});
+        model.plan[branch]=plan; if (branch==='clamp') renderClampPlan(plan); else renderPryPlan(plan);
+        logEvent('规划', (branch==='clamp'?'夹挤':'撬拨')+'已获取夹持点与宽度'+(plan.valid?'（有效）':'（无效）'), 'plan');
+      } catch(error) { showMessage(branch+'Message',error.message); logEvent('规划', (branch==='clamp'?'夹挤':'撬拨')+'获取失败：'+error.message, 'alert'); }
+    }
+    async function executeClamp() {
+      const plan=model.plan.clamp; if (!(plan&&plan.valid&&plan.captured)) return;
+      const params=new URLSearchParams({confirmed_clear:'true',confirm_text:'确认运动',capture_id:plan.capture_id,clamp_mm:String($('clampDisp').value||5),speed_mm_s:String($('speed').value||10)}).toString();
+      try { await getJson('/api/workflow/clamp/move?'+params,{method:'POST'}); showMessage('clampMessage','夹挤工作流已提交'); logEvent('运动', `提交夹挤运动（位移 ${$('clampDisp').value||5}mm，速度 ${$('speed').value||10}mm/s）`, 'motion'); } catch(error) { showMessage('clampMessage',error.message); logEvent('运动', '夹挤运动提交失败：'+error.message, 'alert'); }
+    }
+    async function executePry() {
+      const plan=model.plan.pry; if (!(plan&&plan.valid)) return;
+      const params=new URLSearchParams({confirmed_clear:'true',confirm_text:'确认运动',direction:$('pryDir').value,angle_deg:String($('pryAngle').value||15),pry_position_mm:String($('pryDisp').value||100),lever_arm_mm:'100',speed_mm_s:String($('speed').value||20)}).toString();
+      try { await getJson('/api/workflow/pry/move?'+params,{method:'POST'}); showMessage('pryMessage','撬拨工作流已提交'); logEvent('运动', `提交撬拨运动（方向 ${$('pryDir').value}，角度 ${$('pryAngle').value||15}°，位移 ${$('pryDisp').value||100}mm）`, 'motion'); } catch(error) { showMessage('pryMessage',error.message); logEvent('运动', '撬拨运动提交失败：'+error.message, 'alert'); }
+    }
+    let gripperTargetMm = null;
+    let gripperAdjusting = false;
+    async function adjustGripper(deltaMm) {
+      if (gripperAdjusting) { $('robotStatus').textContent='夹爪调整中，请稍候'; return; }
+      if (isRobotBusy()) { $('robotStatus').textContent='机械臂运动中，禁止调整夹爪'; return; }
+      const snapshot = model.snapshot || {}; const ag95 = snapshot.ag95 || {}; const currentRaw = Number(ag95.position_raw);
+      if (!Number.isFinite(currentRaw)) { $('robotStatus').textContent='无法读取当前夹爪开度'; return; }
+      const currentMm = rawToOpeningMm(currentRaw);
+      if (gripperTargetMm === null || !Number.isFinite(gripperTargetMm)) gripperTargetMm = currentMm;
+      let target = Math.max(0, Math.min(MAX_GRIPPER_OPENING_MM, gripperTargetMm + deltaMm));
+      if (Math.abs(target - gripperTargetMm) < 0.001) { $('robotStatus').textContent=`已到达限位 ${target.toFixed(2)} mm`; return; }
+      gripperTargetMm = target;
+      gripperAdjusting = true;
+      $('btnGripperInc').disabled = true; $('btnGripperDec').disabled = true;
+      $('robotStatus').textContent = `夹爪调整中：${deltaMm>0?'+':'-'}${Math.abs(deltaMm)} mm → ${target.toFixed(2)} mm`;
+      try {
+        const r = await getJson(`/api/robot/action/set-gripper-opening?opening_mm=${target.toFixed(2)}&ack_text=${encodeURIComponent('确认运动')}`, {method:'POST'});
+        $('robotStatus').textContent = r.message || '夹爪调整完成'; logEvent('指令', `夹爪点动 ${deltaMm>0?'+':'-'}${Math.abs(deltaMm)} mm → ${target.toFixed(2)} mm`, 'robot');
+      } catch (e) {
+        $('robotStatus').textContent = '夹爪调整失败：'+e.message; logEvent('指令', '夹爪点动失败：'+e.message, 'alert');
+        gripperTargetMm = null;
+      } finally {
+        gripperAdjusting = false; updateMotionButtons();
+      }
+    }
+    let lastWfActive=null;
+    async function pollWorkflow() {
+      try {
+        const status=await getJson('/api/workflow/status');
+        if (lastWfActive===false && status.active===true) { logEvent('运动', '机械臂工作流启动', 'motion'); window.alert('工作已开始'); }
+        if (lastWfActive===true && status.active===false) { logEvent('运动', status.stage==='failed'?'机械臂工作流结束（失败）':'机械臂工作流结束（完成）', status.stage==='failed'?'alert':'motion'); window.alert('工作已结束'); }
+        model.workflowActive = !!status.active;
+        updateMotionButtons();
+        lastWfActive=status.active;
+      } catch (_) {}
+    }
+    async function fallbackState() { try { applySnapshot(await getJson('/api/state')); } catch (_) {} }
+    function connectState() { const protocol=location.protocol==='https:'?'wss:':'ws:'; try { model.socket=new WebSocket(protocol+'//'+location.host+'/ws'); model.socket.onmessage=e=>{ try { applySnapshot(JSON.parse(e.data)); } catch (_) {} }; model.socket.onclose=()=>{ fallbackState(); clearTimeout(model.fallback); model.fallback=setTimeout(connectState,1500); }; model.socket.onerror=()=>model.socket.close(); } catch (_) { fallbackState(); } }
+    $('clampTab').addEventListener('click',()=>switchMode('clamp')); $('pryTab').addEventListener('click',()=>switchMode('pry'));
+    $('clampVisionBtn').addEventListener('click',()=>startVision('clamp')); $('pryVisionBtn').addEventListener('click',()=>startVision('pry'));
+    $('clampPlanBtn').addEventListener('click',()=>capturePlan('clamp')); $('pryPlanBtn').addEventListener('click',()=>capturePlan('pry'));
+    $('clampMoveBtn').addEventListener('click',executeClamp); $('pryMoveBtn').addEventListener('click',executePry);
+    function stopVision(branch) {
+      const teardown = async () => {
+        if (branch === 'pry') {
+          await getJson('/api/workflow/pry/vision/stop',{method:'POST',body:'{}'});
+          if (model.pryPreview) { clearInterval(model.pryPreview); model.pryPreview = null; }
+          const image = $('pryCamera'); image.hidden = true; image.removeAttribute('src'); image.alt='';
+        } else {
+          if (model.cameraKeepalive) { clearInterval(model.cameraKeepalive); model.cameraKeepalive = null; }
+          const image = $('liveCamera'); image.hidden = true; image.removeAttribute('src'); clearCanvas();
+        }
+      };
+      (async () => { try { await teardown(); model.vision[branch] = false; $(branch+'VisionBtn').disabled = false; $(branch+'StopBtn').disabled = true; $(branch+'PlanBtn').disabled = true; $(branch+'MoveBtn').disabled = true; setStep(branch, 1, 'active'); setStep(branch, 2, ''); setStep(branch, 3, ''); showMessage(branch+'Message', ''); logEvent('视觉', (branch==='clamp'?'夹挤':'撬拨')+'视觉已停止', 'vision'); } catch (error) { showMessage(branch+'Message', error.message); logEvent('视觉', (branch==='clamp'?'夹挤':'撬拨')+'视觉停止失败：'+error.message, 'alert'); } })();
+    }
+    $('clampStopBtn').addEventListener('click',()=>stopVision('clamp'));
+    $('pryStopBtn').addEventListener('click',()=>stopVision('pry'));
+
+    /* ============================ 参数与机器人直控 ============================ */
+    async function saveParams(targetStatus) {
+      const params = { pry_displacement_mm: Number($('pryDisp').value), clamp_displacement_mm: Number($('clampDisp').value), speed_mm_s: Number($('speed').value), force_limit_n: Number($('forceLimit').value), torque_limit_nm: Number($('torqueLimit').value), hold_seconds: Number($('holdSec').value), pry_direction: $('pryDir').value, pry_angle_deg: Number($('pryAngle').value) };
+      try { const r = await getJson('/api/robot/params', {method:'POST', body: JSON.stringify(params)}); if (targetStatus) targetStatus.textContent = '参数已保存'; model.paramsSaved = true; refreshOperationGate(); logEvent('参数', '保存规划与安全参数', 'param'); }
+      catch (e) { if (targetStatus) targetStatus.textContent = '保存失败：' + e.message; logEvent('参数', '保存参数失败：'+e.message, 'alert'); }
+    }
+    async function robotAction(action, label, danger) {
+      const statusEl = $('robotStatus'); const phrase = '确认运动'; const promptMsg = danger ? `“${label}”将让真机 FR5 运动。请确认现场无人、无障碍且实体急停可用。是否继续？` : `确认向真机 FR5 下发“${label}”？`;
+      const ok = window.confirm(promptMsg); if (!ok) { statusEl.textContent = `${label}已取消`; return; }
+      statusEl.textContent = `${label}指令下发中…`;
+      try { const r = await getJson(`/api/robot/action/${action}?ack_text=${encodeURIComponent(phrase)}`, {method:'POST'}); statusEl.textContent = r.message || `${label}完成`; logEvent('指令', `向机械臂下发：${label}`, 'robot'); }
+      catch (e) { statusEl.textContent = `${label}失败：${e.message}`; logEvent('指令', `机械臂指令失败（${label}）：${e.message}`, 'alert'); }
+    }
+    function bindRobotButtons(suffix) {
+      const ids = ['Pause', 'Resume', 'Home', 'SetZero', 'Estop', 'EstopReset'];
+      for (const name of ids) { const el = $('btn' + name + suffix); if (el) el.addEventListener('click', () => robotAction(mapAction(name), labelOf(name), dangerOf(name))); }
+    }
+    const mapAction = n => ({ Pause: 'pause', Resume: 'resume', Home: 'home', SetZero: 'set-zero', Estop: 'emergency-stop', EstopReset: 'emergency-reset' }[n]);
+    const labelOf = n => ({ Pause: '暂停', Resume: '继续', Home: '回零', SetZero: '设置零点', Estop: '急停', EstopReset: '急停复位' }[n]);
+    const dangerOf = n => (n === 'Home' || n === 'Estop' || n === 'EstopReset');
+    bindRobotButtons('');
+    $('saveParamsBtn').addEventListener('click', () => saveParams($('paramStatus')));
+    $('saveParamsBtn2').addEventListener('click', () => saveParams($('paramStatus2')));
+    $('btnGripperInc').addEventListener('click', () => adjustGripper(1.0));
+    $('btnGripperDec').addEventListener('click', () => adjustGripper(-1.0));
+
+    /* ============================ 登录 / 病例 / 导出 事件 ============================ */
+    $('loginBtn').addEventListener('click', () => { if (logState.operator) logout(); else showLoginGate(); });
+    $('loginSubmit').addEventListener('click', submitLogin);
+    $('loginPass').addEventListener('keydown', e => { if (e.key === 'Enter') submitLogin(); });
+    $('newCaseBtn').addEventListener('click', openCase);
+    $('caseCancel').addEventListener('click', closeCase);
+    $('caseSubmit').addEventListener('click', submitCase);
+    $('closeCaseBtn').addEventListener('click', closeCurrentCase);
+    $('exportLogBtn').addEventListener('click', exportLogs);
+    [$('caseModal')].forEach(m => m.addEventListener('click', e => { if (e.target === m) m.hidden = true; }));
+
+    // 初始化参数框为网关已存值
+    (async () => { try { const p = await getJson('/api/robot/params'); $('pryDisp').value=p.pry_displacement_mm; $('clampDisp').value=p.clamp_displacement_mm; $('speed').value=p.speed_mm_s; $('forceLimit').value=p.force_limit_n; $('torqueLimit').value=p.torque_limit_nm; $('holdSec').value=p.hold_seconds; $('pryDir').value=p.pry_direction; $('pryAngle').value=p.pry_angle_deg; } catch (_) {} })();
+
+    // 恢复登录态与病例（演示：每次加载均要求登录，病例可在刷新后保留以便快速继续）
+    applyLoginUI();
+    try { const cs = localStorage.getItem('fr5_case'); if (cs) { logState.caseInfo = JSON.parse(cs); } } catch (_) {}
+    renderCase();
+    showLoginGate();
+
+    connectState(); fallbackState(); pollWorkflow(); setInterval(pollWorkflow,2500);
+  </script>
+</body>
+</html>

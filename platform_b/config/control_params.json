@@ -1,0 +1,10 @@
+{
+  "pry_displacement_mm": 50.0,
+  "clamp_displacement_mm": 15.0,
+  "speed_mm_s": 20.0,
+  "force_limit_n": 80.0,
+  "torque_limit_nm": 8.0,
+  "hold_seconds": 3.0,
+  "pry_direction": "X_PLUS",
+  "pry_angle_deg": 45.0
+}

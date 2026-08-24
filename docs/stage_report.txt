@@ -1,0 +1,22 @@
+===== CURRENT WEB RELEASE AUDIT =====
+
+scope:
+  http://127.0.0.1:8080/ current control.html and its verified runtime chain
+
+migrated:
+  control.html, gateway, robot_control, pry vision service
+  state_service real source and D435 monitor
+  clamp/pry planning, calibration, heel model, workflow scripts
+  local JSZip vendor, release startup scripts
+
+excluded:
+  old pages, Three.js/STL viewer, traction controller, Platform-A GUI,
+  historical calibration/debug/test scripts, logs, build/install/log/.venv,
+  pycache, temporary images and case data
+
+status:
+  RELEASE_CANDIDATE
+  Browser non-motion functions and API guards inspected.
+  Real robot movement was not executed during release audit.
+  CHECKPOINT: human must confirm FR5/AG95/D435/KWR75D readiness before motion.
+
