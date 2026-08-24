@@ -56,6 +56,23 @@ wait_for_url() {
   return 1
 }
 
+ensure_http_unit() {
+  local unit="$1"
+  local command="$2"
+  local name="$3"
+  local url="$4"
+
+  if is_running "$unit" && ! curl --silent --fail --max-time 1 "$url" >/dev/null; then
+    say "$name：服务状态存在但端口无响应，正在重启"
+    systemctl --user kill "$unit" >/dev/null 2>&1 || true
+    systemctl --user stop --no-block "$unit" >/dev/null 2>&1 || true
+    sleep 1
+  fi
+
+  start_unit "$unit" "$command"
+  wait_for_url "$name" "$url" 20
+}
+
 ensure_usb_in_wsl() {
   local name="$1"
   local hardware_id="$2"
@@ -93,8 +110,7 @@ start_all() {
   ensure_usb_in_wsl "AG95" "0403:6001"
   ensure_usb_in_wsl "D435" "8086:0b07"
   start_unit "$CAMERA_UNIT" "$PROJECT/scripts/run_d435_camera.sh"
-  start_unit "$STATE_UNIT" "$PROJECT/scripts/run_state_service_real.sh"
-  wait_for_url "共同数据服务" "http://127.0.0.1:8765/health" 20
+  ensure_http_unit "$STATE_UNIT" "$PROJECT/scripts/run_state_service_real.sh"     "共同数据服务" "http://127.0.0.1:8765/health"
   start_unit "$WATCHDOG_UNIT" "$PYTHON" "$PROJECT/scripts/watch_d435_camera.py"
   start_unit "$GATEWAY_UNIT" "$PYTHON" "$PROJECT/platform_b/gateway.py"
   wait_for_url "Web 控制台" "http://127.0.0.1:8080/health" 15
