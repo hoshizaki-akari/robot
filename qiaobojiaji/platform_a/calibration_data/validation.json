@@ -1,0 +1,79 @@
+{
+  "created_at": "2026-08-17T19:21:29+08:00",
+  "sample_count": 5,
+  "max_translation_error_mm": 4.882,
+  "max_rotation_error_deg": 1.001,
+  "passed": true,
+  "checks": [
+    {
+      "index": 1,
+      "offset": [
+        20,
+        0,
+        15,
+        0,
+        6,
+        6
+      ],
+      "visible_marker_count": 8,
+      "translation_error_mm": 3.736,
+      "rotation_error_deg": 0.497
+    },
+    {
+      "index": 2,
+      "offset": [
+        -20,
+        0,
+        15,
+        0,
+        -6,
+        -6
+      ],
+      "visible_marker_count": 12,
+      "translation_error_mm": 3.035,
+      "rotation_error_deg": 0.687
+    },
+    {
+      "index": 3,
+      "offset": [
+        0,
+        20,
+        15,
+        -6,
+        0,
+        6
+      ],
+      "visible_marker_count": 12,
+      "translation_error_mm": 4.777,
+      "rotation_error_deg": 1.001
+    },
+    {
+      "index": 4,
+      "offset": [
+        0,
+        -20,
+        15,
+        0,
+        0,
+        -6
+      ],
+      "visible_marker_count": 8,
+      "translation_error_mm": 0.98,
+      "rotation_error_deg": 0.867
+    },
+    {
+      "index": 5,
+      "offset": [
+        20,
+        -20,
+        25,
+        -6,
+        6,
+        0
+      ],
+      "visible_marker_count": 12,
+      "translation_error_mm": 4.882,
+      "rotation_error_deg": 0.58
+    }
+  ]
+}

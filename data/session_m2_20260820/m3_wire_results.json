@@ -1,0 +1,78 @@
+{
+  "wire_a": {
+    "roi_xywh": [
+      121,
+      35,
+      99,
+      188
+    ],
+    "seed_line_px": [
+      129.0,
+      54.0,
+      185.0,
+      180.0
+    ],
+    "entry_pixel": [
+      185,
+      180
+    ],
+    "candidate_source": "Hough",
+    "algorithm": "Gray + CLAHE + Scharr/Canny + LSD/Hough candidate + edge-point iterative TLS robust fit",
+    "inlier_count": 231,
+    "line_center_px": [
+      156.526,
+      116.668
+    ],
+    "line_direction_px": [
+      0.3874129,
+      0.9219063
+    ],
+    "visible_segment_px": [
+      130,
+      54,
+      183,
+      181
+    ],
+    "segment_extent_source": "manual_seed_endpoints_on_robust_fit",
+    "visible_length_px": 137.855,
+    "fit_rms_px": 1.1
+  },
+  "wire_b": {
+    "roi_xywh": [
+      145,
+      7,
+      143,
+      233
+    ],
+    "seed_line_px": [
+      264.0,
+      0.0,
+      224.0,
+      155.0
+    ],
+    "entry_pixel": [
+      224,
+      155
+    ],
+    "candidate_source": "Hough",
+    "algorithm": "Gray + CLAHE + Scharr/Canny + LSD/Hough candidate + edge-point iterative TLS robust fit",
+    "inlier_count": 265,
+    "line_center_px": [
+      241.604,
+      83.306
+    ],
+    "line_direction_px": [
+      -0.2586485,
+      0.9659715
+    ],
+    "visible_segment_px": [
+      264,
+      0,
+      223,
+      155
+    ],
+    "segment_extent_source": "manual_seed_endpoints_on_robust_fit",
+    "visible_length_px": 160.072,
+    "fit_rms_px": 1.049
+  }
+}

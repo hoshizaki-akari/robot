@@ -1,0 +1,72 @@
+{
+  "algorithm": "sole aligned depth -> local depth ROI -> RANSAC plane -> PCA refine; Y+=project(C_S-O, heel plane); X+ sign from right_hint",
+  "sole_roi_xywh": [
+    130,
+    70,
+    100,
+    170
+  ],
+  "sole_point_count": 540,
+  "sole_inlier_count": 532,
+  "sole_inlier_ratio": 0.9851851851851852,
+  "sole_centroid_base_m": [
+    -0.7233107658913767,
+    -0.6634601924704493,
+    0.17791989237023154
+  ],
+  "sole_normal_base": [
+    0.2570038939886522,
+    0.9660705998896755,
+    0.025624100051948383
+  ],
+  "sole_rms_m": 0.002318915861587403,
+  "pivot_base_xyz_m": [
+    -0.9672295771662207,
+    -0.863593252659622,
+    0.3012634865682615
+  ],
+  "heel_normal_base": [
+    0.48459065836090726,
+    -0.6827916658439361,
+    0.5467791463501559
+  ],
+  "heel_y_plus": [
+    0.8713514238888515,
+    0.4317630507624105,
+    -0.23308231181968136
+  ],
+  "heel_y_minus": [
+    -0.8713514238888515,
+    -0.4317630507624105,
+    0.23308231181968136
+  ],
+  "right_hint": [
+    -0.7351249716554863,
+    0.6778758236850276,
+    0.008697339355568474
+  ],
+  "heel_x_plus": [
+    -0.5866747609723433,
+    0.2099564935293163,
+    0.7821323389701501
+  ],
+  "heel_x_minus": [
+    0.5866747609723433,
+    -0.2099564935293163,
+    -0.7821323389701501
+  ],
+  "status": "WAITING_CP4",
+  "yolo_heel_detection": {
+    "model": "/mnt/c/Users/zhj/Desktop/ji_cheng_YOLO/deeplearning/ultralytics-8.3.163/results/ablation_yolo11_heel_mask_only/Base_20260326_112439/weights/best.pt",
+    "class": "heel",
+    "confidence": 0.6937397718429565,
+    "box_xyxy": [
+      166.75433349609375,
+      99.75733947753906,
+      204.53077697753906,
+      144.9580841064453
+    ],
+    "mask_path": "data/session_m2_20260820/m6_debug_yolo/sole_heel_yolo_mask.png"
+  },
+  "sole_mask_point_count": 540
+}

@@ -1,0 +1,40 @@
+{
+  "wire_a": {
+    "roi_xywh": [
+      121,
+      35,
+      99,
+      188
+    ],
+    "seed_line_px": [
+      129,
+      54,
+      185,
+      180
+    ],
+    "entry_pixel": [
+      185,
+      180
+    ],
+    "source": "manual_opencv"
+  },
+  "wire_b": {
+    "roi_xywh": [
+      145,
+      7,
+      143,
+      233
+    ],
+    "seed_line_px": [
+      264,
+      0,
+      224,
+      155
+    ],
+    "entry_pixel": [
+      224,
+      155
+    ],
+    "source": "manual_opencv"
+  }
+}

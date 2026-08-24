@@ -1,0 +1,46 @@
+{
+  "method": "PARK",
+  "euler_convention": "rpy",
+  "flange_T_camera": [
+    [
+      0.6627087997777664,
+      -0.5533792261497975,
+      0.5045676156502368,
+      -0.04183236434129292
+    ],
+    [
+      -0.6170278668805946,
+      -0.7852967108689443,
+      -0.05084965477956657,
+      0.05056475033608815
+    ],
+    [
+      -0.4243744315930173,
+      0.2776337658936135,
+      0.8618734442166285,
+      -0.05904232191186498
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "translation_rmse_mm": 39.127,
+  "rotation_rmse_deg": 92.512,
+  "camera_mount": "eye_in_hand",
+  "sample_count": 18,
+  "runtime_formula": "base_T_camera = base_T_flange @ flange_T_camera",
+  "validated": false,
+  "warning": "结果还要用独立位置检查，检查通过前不能用于自动运动",
+  "board_settings": {
+    "dictionary": "DICT_5X5_50",
+    "markers_x": 4,
+    "markers_y": 3,
+    "first_marker_id": 0,
+    "marker_length_mm": 5.5,
+    "marker_gap_mm": 0.5
+  },
+  "created_at": "2026-08-17T16:52:09+08:00"
+}

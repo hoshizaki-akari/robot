@@ -1,0 +1,11 @@
+{
+  "device": "DH-Robotics AG-160-95",
+  "description": "2026-08-19 手工测量：两指内侧最窄开度（mm）。用于平台A夹挤和界面显示。",
+  "points": [
+    {"raw": 200, "gap_mm": 23.0},
+    {"raw": 400, "gap_mm": 42.0},
+    {"raw": 600, "gap_mm": 60.0},
+    {"raw": 800, "gap_mm": 78.0},
+    {"raw": 1000, "gap_mm": 95.0}
+  ]
+}

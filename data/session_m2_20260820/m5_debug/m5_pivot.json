@@ -1,0 +1,49 @@
+{
+  "algorithm": "aligned depth -> needle mask exclusion -> RANSAC plane -> PCA refine -> 3D wire/heel-plane intersection",
+  "roi_xywh": [
+    121,
+    35,
+    99,
+    188
+  ],
+  "approx_entry_pixel": [
+    185.0,
+    180.0
+  ],
+  "heel_point_count": 4362,
+  "inlier_count": 1644,
+  "inlier_ratio": 0.3768913342503439,
+  "heel_centroid_camera_m": [
+    -0.03396528826797425,
+    0.09131891002417325,
+    0.6340401466491739
+  ],
+  "heel_normal_camera": [
+    0.8972624662532147,
+    0.3943749282540187,
+    0.19846531842575565
+  ],
+  "heel_rms_m": 0.0043706984672275285,
+  "heel_plane_base_normal": [
+    0.48459065836090726,
+    -0.6827916658439361,
+    0.5467791463501559
+  ],
+  "heel_plane_base_d": -0.2856684500221914,
+  "pivot_base_xyz_m": [
+    -0.9672295771662207,
+    -0.863593252659622,
+    0.3012634865682615
+  ],
+  "wire_direction_v0": [
+    -0.20590286729876023,
+    -0.1413637903849039,
+    -0.9683079510187667
+  ],
+  "pivot_pixel": [
+    182.5613012638319,
+    179.51919125857842
+  ],
+  "debug_image": "data/session_m2_20260820/m5_debug/wire_a_pivot_overlay.png",
+  "status": "WAITING_CP3"
+}

@@ -1,0 +1,56 @@
+{
+  "wire_a": {
+    "candidate_source": "Hough",
+    "score": 82.151,
+    "inlier_count": 309,
+    "line_center_px": [
+      165.12,
+      136.867
+    ],
+    "line_direction_px": [
+      0.3888235,
+      0.9213123
+    ],
+    "visible_segment_px": [
+      128,
+      49,
+      179,
+      171
+    ],
+    "flesh_fraction": 0.33,
+    "flesh_transitions": 1,
+    "visible_length_px": 132.231,
+    "fit_rms_px": 1.106,
+    "coverage": 1.0,
+    "contrast": 0.205,
+    "algorithm": "full-frame Gray + CLAHE + Canny + LSD/Hough candidates + edge-point trimmed TLS robust fit",
+    "annotation_independent": true
+  },
+  "wire_b": {
+    "candidate_source": "Hough",
+    "score": 72.01,
+    "inlier_count": 318,
+    "line_center_px": [
+      236.079,
+      103.365
+    ],
+    "line_direction_px": [
+      0.2626867,
+      -0.9648812
+    ],
+    "visible_segment_px": [
+      223,
+      151,
+      260,
+      16
+    ],
+    "flesh_fraction": 0.381,
+    "flesh_transitions": 1,
+    "visible_length_px": 139.979,
+    "fit_rms_px": 1.083,
+    "coverage": 0.929,
+    "contrast": 0.148,
+    "algorithm": "full-frame Gray + CLAHE + Canny + LSD/Hough candidates + edge-point trimmed TLS robust fit",
+    "annotation_independent": true
+  }
+}

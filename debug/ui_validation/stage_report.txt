@@ -1,0 +1,39 @@
+===== HTML MAIN CONTROL UI / CLAMP CAPTURE CHAIN =====
+
+workspace:
+/home/zhj/projects/fr5_platform_ws
+
+service_chain:
+D435 camera -> fr5-state :8765 -> fr5-platform-b :8080 -> platform_b/control.html
+
+implemented:
+- template-based compact layout: top system bar, left device state, center workflow/field of view, right monitoring
+- independent top-level clamp and pry panels
+- clamp visual display now uses one D435 MJPEG connection with live contact-point overlay
+- no continuous planning requests while video is running
+- Get clamp point and width calls one POST endpoint that freezes the newest valid stable result
+- motion endpoint consumes only the frozen capture id; it never re-reads live vision
+- stable left/right contact points now derive clamp_contact_center_camera_mm consistently
+- incomplete coordinate conversion now marks the plan invalid instead of leaking a motion-capable result
+
+validation:
+- gateway.py, state_service/app.py, d435_monitor.py and clamp_planner.py py_compile: PASS
+- scripts/platforms.sh restart service chain: PASS
+- real :8765 and :8080 health: PASS (4/4 device classes valid)
+- D435 MJPEG proxy: PASS; 13 multipart frames received in 2 seconds
+- non-hardware capture-to-motion contract test: PASS
+- browser opened http://127.0.0.1:8080 and clicked: 开启夹挤视觉 -> 获取夹持点与宽度
+- browser received real D435 video and the current backend response was shown: 没有识别到足跟
+- execute button remained disabled; no robot or gripper motion request was made
+- browser switched both clamp/pry independent panels: PASS
+
+current_real_result:
+heel_detected = false
+message = 没有识别到足跟
+reason = current real camera scene did not provide a valid existing YOLO heel result; the vision algorithm was not changed
+
+status:
+WAITING_CHECKPOINT
+
+checkpoint:
+Place the heel model in the D435 view and verify the displayed heel/contact line and width. Only after that visual confirmation should an operator use the explicit execution confirmation; this validation session did not submit movement.

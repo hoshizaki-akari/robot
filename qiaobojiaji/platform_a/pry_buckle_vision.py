@@ -1,0 +1,268 @@
+"""Live pry-buckle vision worker.
+
+This is deliberately separate from clamp_vision.py.  It subscribes to the
+already running D435 ROS topics and performs no robot or gripper operation.
+"""
+from __future__ import annotations
+
+import sys
+import threading
+import os
+import ctypes
+import time
+from pathlib import Path
+from typing import Any
+
+import cv2
+import numpy as np
+
+try:
+    from .pry_buckle.horizontal_diameter import CameraIntrinsics, HorizontalDiameterEstimator
+except ImportError:
+    from pry_buckle.horizontal_diameter import CameraIntrinsics, HorizontalDiameterEstimator
+
+
+def _load_runtime_dependencies() -> None:
+    """Allow the system ROS Python to see the existing vision venv packages."""
+    ros_site = Path("/opt/ros/humble/local/lib/python3.10/dist-packages")
+    ros_site_system = Path("/opt/ros/humble/lib/python3.10/site-packages")
+    venv_site = Path(__file__).resolve().parents[1] / ".venv/lib/python3.10/site-packages"
+    for path in (ros_site, ros_site_system, venv_site):
+        if path.exists() and str(path) not in sys.path:
+            sys.path.insert(0, str(path))
+    ros_lib = "/opt/ros/humble/lib"
+    old_ld = os.environ.get("LD_LIBRARY_PATH", "")
+    if ros_lib not in old_ld.split(":"):
+        os.environ["LD_LIBRARY_PATH"] = ros_lib + ((":" + old_ld) if old_ld else "")
+    # When the GUI is started directly from the venv, the dynamic loader has
+    # not seen ROS' environment setup. Preload ROS shared libraries so rclpy
+    # can still subscribe to the already running camera topics.
+    ros_root = Path(ros_lib)
+    ros_shared = sorted(ros_root.glob("*.so*"))
+    # rclpy is imported from the venv process, so the dynamic loader may not
+    # re-read LD_LIBRARY_PATH after Python has started. Load the core ROS
+    # dependency chain by absolute path first, then retry the complete set.
+    priority = [
+        ros_root / "librcutils.so",
+        ros_root / "librmw.so",
+        ros_root / "librcl.so",
+        ros_root / "librcl_action.so",
+    ]
+    for _ in range(5):
+        for library in priority + ros_shared:
+            try:
+                ctypes.CDLL(str(library), mode=ctypes.RTLD_GLOBAL)
+            except OSError:
+                pass
+
+
+class PryBuckleVisionWorker:
+    # The aligned depth is measured on the visible heel surface. The gripper
+    # centre is approximately 35 mm farther along the physical optical axis
+    # in this setup; keep this as an explicit task parameter, not a hidden
+    # change to hand-eye calibration.
+    CAMERA_DEPTH_TO_GRIPPER_CENTER_BIAS_MM = 35.0
+    def __init__(self, model_path: Path | None = None) -> None:
+        self.model_path = model_path or Path(__file__).resolve().parent / "models" / "heel_seg.pt"
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._result: dict[str, Any] = {"valid": False, "message": "撬拨视觉尚未启动"}
+        self._frame_png: bytes | None = None
+
+    @property
+    def result(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._result)
+
+    @property
+    def frame_png(self) -> bytes | None:
+        with self._lock:
+            return self._frame_png
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="platform-a-pry-vision", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            # CPU YOLO inference can outlive a single GUI poll interval.  Do
+            # not detach that native torch thread and then let the process
+            # exit; that was the source of intermittent abort/segfaults when
+            # switching branches or reconnecting the service.
+            self._thread.join(timeout=15.0)
+        if self._thread is not None and self._thread.is_alive():
+            with self._lock:
+                self._result = {"valid": False, "message": "撬拨视觉正在停止，请稍候"}
+            return
+        self._thread = None
+        with self._lock:
+            self._result = {"valid": False, "message": "撬拨视觉已停止"}
+            self._frame_png = None
+
+    def _run(self) -> None:
+        try:
+            _load_runtime_dependencies()
+            import rclpy
+            from cv_bridge import CvBridge
+            from rclpy.node import Node
+            from rclpy.qos import qos_profile_sensor_data
+            from sensor_msgs.msg import CameraInfo, Image
+            from ultralytics import YOLO
+
+            rclpy.init(args=None)
+            node = Node("platform_a_pry_buckle_vision")
+            bridge = CvBridge()
+            detector = YOLO(str(self.model_path))
+            estimator = HorizontalDiameterEstimator()
+            state: dict[str, Any] = {"image": None, "depth": None, "intrinsics": None}
+            processed = -1
+            frame_id = 0
+            last_inference_time = 0.0
+            last_valid_result: dict[str, Any] | None = None
+            last_valid_overlay: bytes | None = None
+            last_valid_at = 0.0
+
+            def on_color(message: Image) -> None:
+                nonlocal frame_id
+                image = bridge.imgmsg_to_cv2(message, desired_encoding="bgr8")
+                state["image"] = image
+                frame_id += 1
+
+            def on_depth(message: Image) -> None:
+                depth = bridge.imgmsg_to_cv2(message, desired_encoding="passthrough")
+                state["depth"] = depth.astype(np.float32) * (1000.0 if message.encoding.lower() == "32fc1" else 1.0)
+
+            def on_info(message: CameraInfo) -> None:
+                state["intrinsics"] = CameraIntrinsics(float(message.k[0]), float(message.k[4]), float(message.k[2]), float(message.k[5]))
+
+            node.create_subscription(Image, "/camera/camera/color/image_raw", on_color, qos_profile_sensor_data)
+            node.create_subscription(Image, "/camera/camera/aligned_depth_to_color/image_raw", on_depth, qos_profile_sensor_data)
+            node.create_subscription(CameraInfo, "/camera/camera/color/camera_info", on_info, qos_profile_sensor_data)
+            while not self._stop.is_set():
+                rclpy.spin_once(node, timeout_sec=0.1)
+                image = state["image"]
+                if image is None or frame_id == processed:
+                    continue
+                processed = frame_id
+                # Keep the live preview responsive on CPU-only machines. The
+                # camera remains live at its native rate; segmentation is a
+                # bounded-rate estimator, not a frame-by-frame controller.
+                now = time.monotonic()
+                if now - last_inference_time < 0.25:
+                    continue
+                last_inference_time = now
+                try:
+                    # The current calibrated observation frame produces a
+                    # legitimate heel score around 0.15.  A 0.35 cutoff
+                    # incorrectly converted that valid detection into a
+                    # permanent "no mask" state after returning to zero.
+                    prediction = detector.predict(source=image, imgsz=640, conf=0.10, retina_masks=True, verbose=False, device="cpu")[0]
+                    if prediction.masks is None or prediction.boxes is None:
+                        raise RuntimeError("视野内未识别到足跟，请调整足部位置或相机角度后重试")
+                    index = int(np.argmax(prediction.boxes.conf.detach().cpu().numpy()))
+                    raw_mask = prediction.masks.data[index].detach().cpu().numpy()
+                    mask = cv2.resize(raw_mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST) > 0.5
+                    result = estimator.estimate(mask, state["depth"], state["intrinsics"])
+                    result.update({
+                        "image_width": int(image.shape[1]), "image_height": int(image.shape[0]),
+                        "heel_detected": True, "heel_outline_px": [],
+                        "heel_center_px": result.get("center_px"),
+                        "clamp_contact_a_px": result.get("contact_left_px"),
+                        "clamp_contact_b_px": result.get("contact_right_px"),
+                        "heel_width_mm": result.get("width_mm"),
+                    })
+                    center_camera = result.get("center_camera_mm")
+                    if center_camera and len(center_camera) == 3:
+                        # The deployed D435 image stream is rotated 180 deg,
+                        # while flange_T_camera is expressed in the physical
+                        # (unrotated) optical frame. Convert image coordinates
+                        # before the hand-eye/Base transform.
+                        result["clamp_contact_center_camera_mm"] = [
+                            round(float(-center_camera[0]), 3),
+                            round(float(-center_camera[1]), 3),
+                            round(float(center_camera[2] + self.CAMERA_DEPTH_TO_GRIPPER_CENTER_BIAS_MM), 3),
+                        ]
+                    top_camera = result.get("upper_midpoint_camera_mm")
+                    if top_camera and len(top_camera) == 3:
+                        result["heel_upper_midpoint_camera_mm"] = [
+                            round(float(-top_camera[0]), 3),
+                            round(float(-top_camera[1]), 3),
+                            round(float(top_camera[2] + self.CAMERA_DEPTH_TO_GRIPPER_CENTER_BIAS_MM), 3),
+                        ]
+                        result["surface_to_upper_midpoint_gap_mm"] = float(result.get("surface_to_upper_midpoint_gap_mm", 0.0))
+                    if result.get("valid"):
+                        last_valid_result = dict(result)
+                    elif last_valid_result is not None and result.get("center_px"):
+                        jump = float(np.linalg.norm(
+                            np.asarray(result["center_px"], dtype=np.float32)
+                            - np.asarray(last_valid_result.get("center_px"), dtype=np.float32)
+                        ))
+                        if jump <= 30.0:
+                            held = dict(last_valid_result)
+                            held["measurement_status"] = "held_last_valid_result"
+                            held["message"] = "当前帧深度/分割异常，沿用最近有效夹持点"
+                            result = held
+                    # Segmentation/depth can fail intermittently while the
+                    # camera is live. Hold the last geometrically valid
+                    # result briefly so the UI and the operator see a stable
+                    # target instead of alternating valid/rejected frames.
+                    if (
+                        not result.get("valid")
+                        and last_valid_result is not None
+                        and time.monotonic() - last_valid_at <= 3.0
+                    ):
+                        held = dict(last_valid_result)
+                        held["measurement_status"] = "held_last_valid_result"
+                        held["message"] = "当前帧短暂无效，保持最近有效夹持点"
+                        result = held
+                    overlay = estimator.draw_overlay(image, mask, result)
+                    if not result.get("valid"):
+                        overlay = image.copy()
+                    ok, encoded = cv2.imencode(".png", overlay)
+                    if not ok:
+                        raise RuntimeError("撬拨视觉结果编码失败")
+                    if result.get("valid"):
+                        last_valid_result = dict(result)
+                        last_valid_overlay = encoded.tobytes()
+                        last_valid_at = time.monotonic()
+                    with self._lock:
+                        self._result = result
+                        self._frame_png = encoded.tobytes()
+                except Exception as error:
+                    if (
+                        last_valid_result is not None
+                        and last_valid_overlay is not None
+                        and time.monotonic() - last_valid_at <= 3.0
+                    ):
+                        held = dict(last_valid_result)
+                        held["measurement_status"] = "held_last_valid_result"
+                        held["message"] = "当前帧短暂无效，保持最近有效夹持点"
+                        with self._lock:
+                            self._result = held
+                            self._frame_png = last_valid_overlay
+                        continue
+                    # Keep the latest raw frame visible even when YOLO has no
+                    # mask, depth is temporarily invalid, or PNG overlay
+                    # drawing fails.  A single bad frame must not stop the
+                    # preview stream.
+                    fallback = state.get("image")
+                    encoded_fallback = None
+                    if fallback is not None:
+                        preview = fallback.copy()
+                        ok, encoded = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        if ok:
+                            encoded_fallback = encoded.tobytes()
+                    with self._lock:
+                        self._result = {"valid": False, "heel_detected": False, "message": f"撬拨视觉不可用：{error}"}
+                        if encoded_fallback is not None:
+                            self._frame_png = encoded_fallback
+            node.destroy_node()
+            rclpy.shutdown()
+        except Exception as error:
+            with self._lock:
+                self._result = {"valid": False, "heel_detected": False, "message": f"撬拨视觉线程启动失败：{error}"}

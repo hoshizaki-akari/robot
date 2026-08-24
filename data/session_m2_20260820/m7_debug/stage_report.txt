@@ -1,0 +1,32 @@
+===== M7 TRAJECTORIES =====
+
+X_PLUS:
+  waypoint count = 46
+  max radius error = 8.32667268469e-17 m
+  final angle = 45.000000 deg
+  start point = [-0.9754656918581711, -0.8692478042750181, 0.26253116852751085]
+  final point = [-1.0005072043931513, -0.8632005449928265, 0.27907237783449407]
+
+X_MINUS:
+  waypoint count = 46
+  max radius error = 8.32667268469e-17 m
+  final angle = 45.000000 deg
+  start point = [-0.9754656918581711, -0.8692478042750181, 0.26253116852751085]
+  final point = [-0.9455995750379067, -0.8719827039100493, 0.26867882582665126]
+
+Y_PLUS:
+  waypoint count = 46
+  max radius error = 8.32667268469e-17 m
+  final angle = 45.000000 deg
+  start point = [-0.9754656918581711, -0.8692478042750181, 0.26253116852751085]
+  final point = [-0.9484911005030786, -0.8554371900784439, 0.2668781970461885]
+
+Y_MINUS:
+  waypoint count = 46
+  max radius error = 8.32667268469e-17 m
+  final angle = 45.000000 deg
+  start point = [-0.9754656918581711, -0.8692478042750181, 0.26253116852751085]
+  final point = [-0.9976156789279794, -0.879746058824432, 0.28087300661495684]
+
+checks = {'max_radius_error_m': 8.326672684688674e-17, 'final_angle_error_deg': 1.4210854715202004e-14, 'max_rotation_orthogonality_error': 2.220446049250313e-16, 'max_closing_axis_wire_dot': 1.1102230246251565e-16, 'max_tcp_z_sole_normal_error': 0.0}
+status = WAITING_CP5

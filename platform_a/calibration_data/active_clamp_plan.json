@@ -1,0 +1,102 @@
+{
+  "valid": true,
+  "motion_allowed_for_lab_model": true,
+  "human_use_allowed": false,
+  "config": {
+    "clamp_displacement_mm": 12.0,
+    "pre_approach_mm": 60.0,
+    "near_approach_mm": 20.0,
+    "minimum_needle_clearance_mm": 20.0,
+    "maximum_axis_error_deg": 12.0,
+    "maximum_lab_tcp_error_mm": 4.0,
+    "force_limit_n": 80.0,
+    "torque_limit_nm": 8.0,
+    "gripper_force_level": 80,
+    "gripper_speed_percent": 10
+  },
+  "heel_width_mm": 47.44,
+  "predicted_contact_opening_mm": 47.44,
+  "requested_clamp_displacement_mm": 12.0,
+  "predicted_final_opening_mm": 35.44,
+  "clamp_center_base_mm": [
+    404.9,
+    -386.98,
+    21.15
+  ],
+  "clamp_axis_base": [
+    0.761128,
+    0.643629,
+    -0.08016
+  ],
+  "approach_axis_base": [
+    0.107791,
+    -0.247444,
+    -0.962888
+  ],
+  "axis_error_deg": 1.286,
+  "needle_clearance_mm": 27.509,
+  "combined_position_error_mm": 8.138,
+  "stages": {
+    "pre": {
+      "distance_from_target_mm": 60.0,
+      "gripper_center_base_mm": [
+        398.433,
+        -372.133,
+        78.923
+      ],
+      "flange_pose_mm_deg": [
+        378.011421,
+        -312.486045,
+        294.776895,
+        -166.005966,
+        -3.483943,
+        -139.136963
+      ]
+    },
+    "near": {
+      "distance_from_target_mm": 20.0,
+      "gripper_center_base_mm": [
+        402.744,
+        -382.031,
+        40.408
+      ],
+      "flange_pose_mm_deg": [
+        382.323058,
+        -322.383795,
+        256.261387,
+        -166.005966,
+        -3.483943,
+        -139.136963
+      ]
+    },
+    "contact_center": {
+      "distance_from_target_mm": 0.0,
+      "gripper_center_base_mm": [
+        404.9,
+        -386.98,
+        21.15
+      ],
+      "flange_pose_mm_deg": [
+        384.478876,
+        -327.33267,
+        237.003634,
+        -166.005966,
+        -3.483943,
+        -139.136963
+      ]
+    }
+  },
+  "message": "仅允许足模型实验；必须按60 mm、20 mm、夹取中心三段确认后执行",
+  "created_at": "2026-08-18T11:04:07+08:00",
+  "revised_at_pre": "2026-08-18T11:06:34+08:00",
+  "revision_shift_mm": 17.733,
+  "camera_frame_id": 5141,
+  "observation_flange_pose_mm_deg": [
+    278.9777526855469,
+    -217.54258728027344,
+    435.02294921875,
+    -166.00596618652344,
+    -3.483942985534668,
+    -139.136962890625
+  ]
+}

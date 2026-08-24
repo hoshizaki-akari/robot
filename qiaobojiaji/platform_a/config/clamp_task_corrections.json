@@ -1,0 +1,6 @@
+{
+  "image_left_correction_mm": 13.0,
+  "meaning": "初始相机画面中，夹爪中心相对视觉结果向画面左侧平移",
+  "confirmed_at": "2026-08-18",
+  "source": "足模型现场照片和操作者确认"
+}

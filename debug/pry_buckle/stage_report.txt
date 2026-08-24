@@ -1,0 +1,23 @@
+===== PRY-BUCKLE HORIZONTAL DIAMETER =====
+
+Scope:
+Independent new module. platform_a, state_service and all motion scripts were not modified.
+
+Live D435 frame:
+foreground coherent depth layer = 364.00 mm
+horizontal diameter = 55.04 mm
+target acceptance range = 50.00 - 60.00 mm
+result = VALID
+
+Method:
+YOLO heel mask -> image-horizontal centroid chord -> nearest coherent depth
+layer -> local plane -> endpoint ray/plane intersection.
+No manual depth correction or old clamp position is used.
+
+Validation:
+3 unit tests passed (55 mm accept, 106 mm reject, metre depth conversion).
+
+Debug:
+debug/pry_buckle/live_frame/
+debug/pry_buckle/live_measurement_v2/horizontal_diameter_overlay.png
+debug/pry_buckle/live_measurement_v2/horizontal_diameter_result.json

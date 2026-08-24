@@ -1,0 +1,156 @@
+{
+  "valid": true,
+  "motion_allowed_for_lab_model": true,
+  "human_use_allowed": false,
+  "config": {
+    "clamp_displacement_mm": 8.0,
+    "surface_to_grip_center_mm": 45.197,
+    "image_left_correction_mm": 13.0,
+    "pre_approach_mm": 60.0,
+    "near_approach_mm": 20.0,
+    "maximum_axis_error_deg": 12.0,
+    "maximum_orientation_change_deg": 35.0,
+    "maximum_plane_rmse_mm": 5.0,
+    "minimum_plane_inliers": 70,
+    "maximum_contact_plane_error_mm": 1.0,
+    "maximum_lab_tcp_error_mm": 4.0,
+    "force_limit_n": 80.0,
+    "torque_limit_nm": 8.0,
+    "gripper_force_level": 80,
+    "gripper_speed_percent": 10
+  },
+  "heel_width_mm": 52.21,
+  "predicted_contact_opening_mm": 52.21,
+  "requested_clamp_displacement_mm": 8.0,
+  "predicted_final_opening_mm": 44.21,
+  "visual_side_point_plane_offset_mm": 0.452,
+  "raw_visual_surface_center_base_mm": [
+    301.67,
+    -491.6,
+    34.49
+  ],
+  "visual_surface_center_base_mm": [
+    289.182,
+    -495.128,
+    33.712
+  ],
+  "image_right_axis_base": [
+    0.960614,
+    0.271365,
+    0.05985
+  ],
+  "image_left_correction_mm": 13.0,
+  "clamp_center_base_mm": [
+    292.094,
+    -495.836,
+    -11.386
+  ],
+  "surface_to_grip_center_mm": 45.197,
+  "clamp_axis_base": [
+    -0.960751,
+    -0.271333,
+    -0.057765
+  ],
+  "approach_axis_base": [
+    0.06442,
+    -0.015676,
+    -0.9978
+  ],
+  "axis_error_deg": 24.365,
+  "orientation_change_deg": 24.38,
+  "heel_plane_rmse_mm": 2.626,
+  "heel_plane_inlier_count": 234,
+  "contact_plane_error_mm": 0.452,
+  "target_rpy_deg": [
+    -178.132156,
+    3.311563,
+    -164.229406
+  ],
+  "finger_mid_height_aligned": true,
+  "combined_position_error_mm": 8.138,
+  "current_plane_gap_mm": 288.186,
+  "alignment_clearance_mm": 288.186,
+  "stages": {
+    "align": {
+      "distance_from_target_mm": 288.186130044563,
+      "gripper_center_base_mm": [
+        270.617,
+        -490.61,
+        321.264
+      ],
+      "flange_pose_mm_deg": [
+        265.00282,
+        -480.136638,
+        545.822235,
+        -178.132156,
+        3.311563,
+        -164.229406
+      ]
+    },
+    "pre": {
+      "distance_from_target_mm": 60.0,
+      "gripper_center_base_mm": [
+        285.317,
+        -494.187,
+        93.58
+      ],
+      "flange_pose_mm_deg": [
+        279.702617,
+        -483.713638,
+        318.138175,
+        -178.132156,
+        3.311563,
+        -164.229406
+      ]
+    },
+    "near": {
+      "distance_from_target_mm": 20.0,
+      "gripper_center_base_mm": [
+        287.894,
+        -494.814,
+        53.668
+      ],
+      "flange_pose_mm_deg": [
+        282.279425,
+        -484.34067,
+        278.226186,
+        -178.132156,
+        3.311563,
+        -164.229406
+      ]
+    },
+    "contact_center": {
+      "distance_from_target_mm": 0.0,
+      "distance_from_surface_mm": -45.197,
+      "gripper_center_base_mm": [
+        292.094,
+        -495.836,
+        -11.386
+      ],
+      "flange_pose_mm_deg": [
+        286.479429,
+        -485.362685,
+        213.172636,
+        -178.132156,
+        3.311563,
+        -164.229406
+      ]
+    }
+  },
+  "message": "仅允许足模型实验；视觉在表面外完成对中，最后沿锁定方向进入人工确认的夹持深度",
+  "created_at": "2026-08-19T15:10:01+08:00",
+  "camera_frame_id": 2096,
+  "stable_frame_count": 8,
+  "center_jitter_max_mm": 0.01,
+  "plane_normal_jitter_max_deg": 1.301,
+  "observation_flange_pose_mm_deg": [
+    261.04180908203125,
+    -345.2281494140625,
+    543.4209594726562,
+    -177.86093139648438,
+    1.9059473276138306,
+    -139.87875366210938
+  ],
+  "route_frozen_from_initial_view": true,
+  "mid_route_vision_updates_allowed": false
+}

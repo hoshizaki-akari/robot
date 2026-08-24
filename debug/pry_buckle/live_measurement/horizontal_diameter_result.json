@@ -1,0 +1,38 @@
+{
+  "horizontal_diameter": true,
+  "center_px": [
+    91,
+    100
+  ],
+  "contact_left_px": [
+    70,
+    100
+  ],
+  "contact_right_px": [
+    113,
+    100
+  ],
+  "image_axis": [
+    1.0,
+    0.0
+  ],
+  "expected_width_range_mm": [
+    50.0,
+    60.0
+  ],
+  "valid": false,
+  "message": "拒绝计算：水平直径不在50–60 mm目标区间，需检查深度对齐或重新观察",
+  "left_depth_mm": 708.0,
+  "right_depth_mm": 363.0,
+  "contact_left_camera_mm": [
+    -328.362,
+    -42.672,
+    708.0
+  ],
+  "contact_right_camera_mm": [
+    -117.044,
+    -21.879,
+    363.0
+  ],
+  "width_mm": 405.11
+}

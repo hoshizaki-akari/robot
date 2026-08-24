@@ -1,0 +1,57 @@
+{
+  "model": {
+    "flange_face_offset_mm": 99.0,
+    "rear_adapter": {
+      "name": "机械臂到传感器连接件",
+      "shape": "cylinder",
+      "diameter_mm": 65.0,
+      "thickness_mm": 5.0
+    },
+    "sensor": {
+      "name": "KWR75D",
+      "shape": "cylinder",
+      "diameter_mm": 75.0,
+      "thickness_mm": 33.5
+    },
+    "front_adapter": {
+      "name": "传感器到夹爪连接件",
+      "shape": "cylinder",
+      "diameter_mm": 65.0,
+      "thickness_mm": 15.0
+    },
+    "gripper": {
+      "name": "AG-160-95",
+      "overall_length_mm": 184.6,
+      "overall_open_width_mm": 162.3,
+      "body_width_mm": 67.0,
+      "body_length_mm": 90.0,
+      "finger_length_mm": 94.6,
+      "finger_width_mm": 18.0,
+      "stroke_mm": 95.0,
+      "position_raw_min": 0,
+      "position_raw_max": 1000
+    }
+  },
+  "force_control": {
+    "mode": "preview_only",
+    "send_robot_motion": false,
+    "default_target_force_n": 10.0,
+    "target_force_min_n": 0.0,
+    "target_force_max_n": 10.0,
+    "target_presets_n": [0.0, 5.0, 10.0],
+    "direction_capture_threshold_n": 3.0,
+    "deadband_n": 0.5,
+    "gain_mm_s_per_n": 0.05,
+    "kp_mm_s_per_n": 0.05,
+    "ki_mm_s_per_n_s": 0.008,
+    "filter_alpha": 0.3,
+    "integral_limit_n_s": 20.0,
+    "baseline_sample_count": 8,
+    "baseline_max_span_n": 2.0,
+    "max_lateral_force_n": 20.0,
+    "max_speed_mm_s": 0.5,
+    "max_step_mm": 0.05,
+    "max_force_n": 80.0,
+    "increase_force_motion_sign": -1
+  }
+}

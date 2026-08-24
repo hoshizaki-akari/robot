@@ -1,0 +1,46 @@
+{
+  "method": "HORAUD",
+  "euler_convention": "rpy",
+  "flange_T_camera": [
+    [
+      -0.40960270363621476,
+      -0.8929148992391908,
+      -0.18689196850204862,
+      -0.10313226316386466
+    ],
+    [
+      0.7707122715058808,
+      -0.4483159087658902,
+      0.4527863077630124,
+      -0.30770818478845247
+    ],
+    [
+      -0.48808628307313706,
+      0.041422562258769335,
+      0.8718118785677149,
+      -0.11861892139886976
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "translation_rmse_mm": 84.441,
+  "rotation_rmse_deg": 22.566,
+  "camera_mount": "eye_in_hand",
+  "sample_count": 16,
+  "runtime_formula": "base_T_camera = base_T_flange @ flange_T_camera",
+  "validated": false,
+  "warning": "结果还要用独立位置检查，检查通过前不能用于自动运动",
+  "board_settings": {
+    "dictionary": "DICT_5X5_50",
+    "markers_x": 4,
+    "markers_y": 3,
+    "first_marker_id": 0,
+    "marker_length_mm": 55.0,
+    "marker_gap_mm": 5.0
+  },
+  "created_at": "2026-08-17T19:12:12+08:00"
+}

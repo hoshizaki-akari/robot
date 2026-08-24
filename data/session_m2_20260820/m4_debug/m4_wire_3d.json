@@ -1,0 +1,56 @@
+{
+  "algorithm": "undistortPoints -> normalized homogeneous image line -> backprojection planes -> SVD plane intersection",
+  "input_result": "data/session_m2_20260820/m3_wire_results_independent.json",
+  "tf_sample_index": 7,
+  "plane_angle_deg": 43.595337418298925,
+  "P0_m": [
+    -0.9611512566938443,
+    -0.8594201469985796,
+    0.3298482562679582
+  ],
+  "wire_direction_unsigned": [
+    0.2059028672987602,
+    0.14136379038490388,
+    0.9683079510187665
+  ],
+  "planes": {
+    "A_normal_base": [
+      -0.8573065421527596,
+      0.5031689986828083,
+      0.10884140547888321
+    ],
+    "A_d": -0.42746883335583535,
+    "B_normal_base": [
+      0.29552565114899715,
+      -0.9522922402017365,
+      0.07618450475339267
+    ],
+    "B_d": -0.559503612120202
+  },
+  "reprojection": {
+    "wire_a": {
+      "projected_segment_px": [
+        65.82956389913372,
+        -99.72143537854294,
+        3984.3935766510167,
+        9274.098359831849
+      ],
+      "rms_px": 1.6204496934933255e-14
+    },
+    "wire_b": {
+      "projected_segment_px": [
+        268.97801984243705,
+        -16.75763996564885,
+        -1516.7167333678112,
+        6498.6151082339165
+      ],
+      "rms_px": 3.092562177294852e-14
+    }
+  },
+  "overlay_images": {
+    "wire_a": "data/session_m2_20260820/m4_debug/wire_a_reprojection.png",
+    "wire_b": "data/session_m2_20260820/m4_debug/wire_b_reprojection.png"
+  },
+  "status": "WAITING_CP2",
+  "rviz_marker_topic": "/m4/wire_3d"
+}

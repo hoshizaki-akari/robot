@@ -1,0 +1,9 @@
+===== M5 HEEL PIVOT =====
+
+heel point count = 4362
+inlier ratio = 0.376891
+heel RMS mm = 4.370698
+pivot Base XYZ = [-0.9672295771662207, -0.863593252659622, 0.3012634865682615]
+wire direction v0 = [-0.20590286729876023, -0.1413637903849039, -0.9683079510187667]
+debug image = data/session_m2_20260820/m5_debug/wire_a_pivot_overlay.png
+status = WAITING_CP3

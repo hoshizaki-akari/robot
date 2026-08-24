@@ -1,0 +1,43 @@
+{
+  "flange_to_gripper_center_mm": [
+    1.5481,
+    7.4563,
+    217.4089
+  ],
+  "fixed_cone_tip_base_mm": [
+    244.7423,
+    -243.4067,
+    100.0154
+  ],
+  "sample_count": 6,
+  "angle_spread_deg": 24.0,
+  "fit_rmse_mm": 2.0113,
+  "fit_max_error_mm": 2.9434,
+  "sample_errors_mm": [
+    2.7104,
+    2.9434,
+    1.2379,
+    2.0222,
+    0.5451,
+    1.5311
+  ],
+  "condition_number": 22.468,
+  "validated": false,
+  "created_at": "2026-08-20T17:06:13+08:00",
+  "opening_raw": 505,
+  "opening_mm_nominal": 47.975,
+  "difference_from_220mm_guess_mm": 8.0441,
+  "motion_allowed": false,
+  "validation": {
+    "sample_count": 3,
+    "errors_mm": [
+      2.022,
+      14.9968,
+      14.9465
+    ],
+    "rmse_mm": 12.2799,
+    "max_error_mm": 14.9968,
+    "passed": false,
+    "threshold_mm": 3.0
+  }
+}

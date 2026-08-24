@@ -1,0 +1,31 @@
+{
+  "status": "measured_offset_ready",
+  "motion_allowed": false,
+  "center_definition": "Geometric center between the two fingers at the captured opening",
+  "opening_raw": 505,
+  "opening_mm_nominal": 47.975,
+  "measured_flange_to_center_mm": 220.0,
+  "measured_offset_frame": "flange",
+  "measured_offset_vector_mm": [0.0, 0.0, 220.0],
+  "offset_direction_confirmed": true,
+  "measurement_note": "Measured by user: about 22 cm from flange mounting face to the geometric center between the two fingers.",
+  "flange_pose_mm_deg": [
+    242.78738403320312,
+    -242.91661071777344,
+    316.8984680175781,
+    -178.7382354736328,
+    0.40008577704429626,
+    -144.27816772460938
+  ],
+  "tcp_pose_mm_deg": [
+    242.7871551513672,
+    -242.9170227050781,
+    316.8968200683593,
+    -178.7386932373047,
+    0.3999372720718384,
+    -144.2783966064453
+  ],
+  "frame_id": "base",
+  "created_at": "2026-08-17T11:42:17.225096+00:00",
+  "note": "This is a reference snapshot. Motion remains blocked until the offset direction and an independent position check are confirmed."
+}

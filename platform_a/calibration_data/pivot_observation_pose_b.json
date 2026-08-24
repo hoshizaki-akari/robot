@@ -1,0 +1,35 @@
+{
+  "captured_at": "2026-08-19T19:42:12+08:00",
+  "meaning": "撬拨三维重建第2观察位：侧前方斜视，同时看到针孔和露出针线",
+  "tcp_pose_mm_deg": [
+    129.341522,
+    72.990395,
+    410.326752,
+    -133.141937,
+    -4.669675,
+    -165.800964
+  ],
+  "flange_pose_mm_deg": [
+    129.341415,
+    72.989441,
+    410.327637,
+    -133.141937,
+    -4.669675,
+    -165.800964
+  ],
+  "joint_position_deg": [
+    84.354550,
+    -192.843344,
+    131.199166,
+    -74.334366,
+    -78.735642,
+    -17.077540
+  ],
+  "ag95_opening_raw": 1000,
+  "source": "fr5-state-service",
+  "visual_check": {
+    "puncture_visible": true,
+    "needle_line_visible": true,
+    "suitable_for_3d_reconstruction": true
+  }
+}

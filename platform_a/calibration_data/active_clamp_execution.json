@@ -1,0 +1,32 @@
+{
+  "created_at": "2026-08-18T11:04:07+08:00",
+  "stage": "retreated",
+  "history": [
+    {
+      "stage": "pre",
+      "completed_at": "2026-08-18T11:04:55+08:00"
+    },
+    {
+      "stage": "pre_replan",
+      "completed_at": "2026-08-18T11:06:34+08:00",
+      "shift_mm": 17.733
+    },
+    {
+      "stage": "near",
+      "completed_at": "2026-08-18T11:07:19+08:00"
+    },
+    {
+      "stage": "contact_center",
+      "completed_at": "2026-08-18T11:08:44+08:00"
+    },
+    {
+      "stage": "retreated",
+      "completed_at": "2026-08-18T11:16:36+08:00",
+      "via": [
+        "near",
+        "pre",
+        "observation"
+      ]
+    }
+  ]
+}

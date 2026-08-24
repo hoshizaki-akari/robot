@@ -1,0 +1,35 @@
+================================
+M2 RESULT
+
+status:
+COMPLETED_REAL_DATA_CAPTURE
+
+session:
+/home/zhj/projects/fr5_platform_ws/data/session_m2_20260820/
+
+observations:
+wire_a: 15 RGB + 15 raw Depth + 15 live Base->Camera TF
+wire_b: 15 RGB + 15 raw Depth + 15 live Base->Camera TF
+sole:   15 RGB + 15 raw Depth + 15 live Base->Camera TF
+
+topics:
+RGB: /camera/camera/color/image_raw
+Depth: /camera/camera/aligned_depth_to_color/image_raw
+CameraInfo: /camera/camera/color/camera_info
+
+image:
+RGB = 424x240, 3-channel PNG
+Depth = 424x240, 16UC1, original frames saved as uint16 NPY
+median = pixelwise median over depth > 0; invalid-only pixels = 0
+
+tf:
+base_T_camera = live base_T_flange from FR5 state service multiplied by
+validated platform_a/config/handeye_calibration.json flange_T_camera.
+The taught pose TCP values were not used for TF recording.
+camera frame = camera_color_optical_frame
+wire_a -> wire_b camera-center baseline = 442.75 mm
+
+verification:
+All three observations passed RGB, Depth, CameraInfo and TF completeness checks.
+No needle detection, 3D reconstruction, RANSAC, RViz or robot rotation was run.
+================================

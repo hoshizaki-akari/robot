@@ -1,0 +1,20 @@
+# Local Python environments and generated Python files
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# ROS 2 / local build output
+build/
+install/
+log/
+
+# Local runtime and machine-specific case records
+platform_a/data/
+*.log
+
+# Local editor / OS metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,57 @@
+{
+  "horizontal_diameter": true,
+  "center_px": [
+    91,
+    100
+  ],
+  "contact_left_px": [
+    70,
+    100
+  ],
+  "contact_right_px": [
+    113,
+    100
+  ],
+  "upper_midpoint_px": [
+    91,
+    79
+  ],
+  "image_axis": [
+    1.0,
+    0.0
+  ],
+  "target_width_range_mm": [
+    50.0,
+    60.0
+  ],
+  "accepted_width_range_mm": [
+    45.0,
+    65.0
+  ],
+  "valid": true,
+  "message": "horizontal diameter valid",
+  "foreground_layer_depth_mm": 364.0,
+  "foreground_plane_inlier_count": 521,
+  "contact_left_camera_mm": [
+    -171.431,
+    -22.278,
+    369.631
+  ],
+  "contact_right_camera_mm": [
+    -116.867,
+    -21.846,
+    362.453
+  ],
+  "center_camera_mm": [
+    -144.516,
+    -22.065,
+    366.091
+  ],
+  "upper_midpoint_camera_mm": [
+    -144.097,
+    -47.254,
+    365.029
+  ],
+  "surface_to_upper_midpoint_gap_mm": 25.215,
+  "width_mm": 55.04
+}

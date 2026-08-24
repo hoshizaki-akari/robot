@@ -1,0 +1,11 @@
+===== M4 3D WIRE =====
+
+plane_angle_deg = 43.595337
+P0 = [-0.9611512566938443, -0.8594201469985796, 0.3298482562679582]
+wire_direction_unsigned = [0.2059028672987602, 0.14136379038490388, 0.9683079510187665]
+reprojection_A_px = 0.000000
+reprojection_B_px = 0.000000
+RViz Marker topic = /m4/wire_3d
+algorithm = undistortPoints + normalized line + backprojection planes + SVD intersection
+debug = data/session_m2_20260820/m4_debug
+status = WAITING_CP2

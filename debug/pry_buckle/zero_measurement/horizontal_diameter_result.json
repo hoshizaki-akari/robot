@@ -1,0 +1,38 @@
+{
+  "horizontal_diameter": true,
+  "center_px": [
+    99,
+    149
+  ],
+  "contact_left_px": [
+    79,
+    149
+  ],
+  "contact_right_px": [
+    120,
+    149
+  ],
+  "image_axis": [
+    1.0,
+    0.0
+  ],
+  "expected_width_range_mm": [
+    50.0,
+    60.0
+  ],
+  "valid": false,
+  "message": "rejected: horizontal diameter is outside 50-60 mm",
+  "foreground_layer_depth_mm": 383.0,
+  "foreground_plane_inlier_count": 502,
+  "contact_left_camera_mm": [
+    -172.526,
+    40.19,
+    397.34
+  ],
+  "contact_right_camera_mm": [
+    -113.838,
+    38.456,
+    380.191
+  ],
+  "width_mm": 61.17
+}
