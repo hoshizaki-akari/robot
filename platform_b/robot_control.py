@@ -158,13 +158,13 @@ def home(confirm_text: str) -> dict[str, Any]:
 
 
 def set_zero(confirm_text: str) -> dict[str, Any]:
-    """设置零点：仅把当前停稳的法兰位姿写入 home_position.json，不运动。"""
+    """设置夹挤/撬拨共享零点：仅写入当前停稳法兰位姿，不运动。"""
     _require_confirm(confirm_text, "设置零点")
     _run_script(
-        [str(ROOT / "scripts/save_home_position.py")],
+        [str(ROOT / "scripts/save_pry_home_position.py")],
         timeout=30.0,
     )
-    path = ROOT / "platform_a/config/home_position.json"
+    path = ROOT / "platform_a/config/pry_home_position.json"
     data: dict[str, Any] = {}
     if path.exists():
         try:
@@ -174,7 +174,7 @@ def set_zero(confirm_text: str) -> dict[str, Any]:
     return {
         "action": "set_zero",
         "ok": True,
-        "message": "已记录当前停稳位置为新的默认回零零点",
+        "message": "已记录当前停稳位置为新的夹挤/撬拨共享零点",
         "saved_at": data.get("saved_at"),
         "flange_pose_mm_deg": data.get("flange_pose_mm_deg"),
     }

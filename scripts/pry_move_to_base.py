@@ -17,8 +17,7 @@ if FAIRINO_SDK_ROOT.is_dir() and str(FAIRINO_SDK_ROOT) not in sys.path:
 
 from fairino import Robot
 STATE_URL = "http://127.0.0.1:8765/api/state"
-HOME = ROOT / "platform_a/config/home_position.json"
-PRY_HOME = ROOT / "platform_a/config/pry_home_position.json"
+HOME = ROOT / "platform_a/config/pry_home_position.json"
 ROBOT_IP = "192.168.58.2"
 
 
@@ -60,12 +59,11 @@ def main() -> int:
         ag95 = state().get("ag95") or {}
     if not grip_ok:
         raise RuntimeError("夹爪开度不足，至少需要保持标定开度")
-    home_file = HOME if HOME.is_file() else PRY_HOME
-    if not home_file.is_file():
+    if not HOME.is_file():
         raise RuntimeError(
-            "没有找到初始零点配置：platform_a/config/home_position.json"
+            "没有找到夹挤/撬拨共享零点配置：platform_a/config/pry_home_position.json"
         )
-    target = json.loads(home_file.read_text(encoding="utf-8"))["flange_pose_mm_deg"]
+    target = json.loads(HOME.read_text(encoding="utf-8"))["flange_pose_mm_deg"]
     current = [float(v) for v in fr5["flange_pose_mm_deg"]]
     lift = current.copy(); lift[2] += 60.0
     robot = Robot.RPC(ROBOT_IP)
