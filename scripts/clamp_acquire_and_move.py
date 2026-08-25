@@ -14,11 +14,15 @@ from urllib.request import urlopen
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 FAIRINO_SDK_ROOT = ROOT / "vendor" / "fairino-python-sdk" / "linux"
 if FAIRINO_SDK_ROOT.is_dir() and str(FAIRINO_SDK_ROOT) not in sys.path:
     sys.path.insert(0, str(FAIRINO_SDK_ROOT))
 ROBOT_IP = "192.168.58.2"
 STATE_URL = "http://127.0.0.1:8765/api/state"
+MAX_APPROACH_SEGMENT_MM = 250.0
+MAX_TOTAL_APPROACH_MM = 500.0
 
 
 def state() -> dict:
@@ -91,6 +95,7 @@ def main() -> int:
     parser.add_argument("--speed-mm-s", type=float, default=10.0)
     parser.add_argument("--center-camera-mm", type=str, default="")
     parser.add_argument("--width-mm", type=float, default=None)
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if not 0.0 <= args.clamp_mm <= 40.0:
         raise RuntimeError("clamp displacement must be between 0 and 40 mm")
@@ -114,8 +119,12 @@ def main() -> int:
     center_base = (base_t_flange @ flange_t_camera @ np.r_[center_camera / 1000.0, 1.0])[:3] * 1000.0
     target = np.asarray(flange_pose_for_center(center_base, current[3:], tcp["flange_to_gripper_center_mm"]), dtype=float)
     distance = float(np.linalg.norm(target[:3] - np.asarray(current[:3])))
-    if distance > 320.0:
+    if distance > MAX_TOTAL_APPROACH_MM:
         raise RuntimeError(f"clamp target exceeds safe distance: {distance:.1f} mm")
+    approach_segments = max(1, int(np.ceil(distance / MAX_APPROACH_SEGMENT_MM)))
+    print(json.dumps({"current": current, "center_camera_mm": center_camera.tolist(), "center_target": target.tolist(), "width_mm": width_mm, "target_opening_mm": opening_mm, "approach_segments": approach_segments, "max_approach_segment_mm": MAX_APPROACH_SEGMENT_MM}, ensure_ascii=False))
+    if args.dry_run:
+        return 0
 
     # 接近阶段先把夹爪张开到物体宽度，保证安全接近不碰触；
     # 真正的“夹挤”（闭合到 width-clamp_mm）在前进 1.5cm 之后执行。
@@ -130,12 +139,18 @@ def main() -> int:
             raise RuntimeError("cannot enable automatic motion")
         robot.ResumeMotion()
         robot.ProgramResume()
-        code = robot.MoveL(target.tolist(), 0, 0, vel=float(args.speed_mm_s),
-                           acc=0.0, ovl=float(args.speed_mm_s), blendR=-1.0,
-                           overSpeedStrategy=2, speedPercent=max(5, int(args.speed_mm_s)))
-        if int(code) != 0:
-            raise RuntimeError(f"MoveL rejected: {code}")
-        wait_target(target)
+        current_position = np.asarray(current[:3], dtype=float)
+        for segment_index in range(1, approach_segments + 1):
+            waypoint = target.copy()
+            waypoint[:3] = current_position + (target[:3] - current_position) * (
+                segment_index / approach_segments
+            )
+            code = robot.MoveL(waypoint.tolist(), 0, 0, vel=float(args.speed_mm_s),
+                               acc=0.0, ovl=float(args.speed_mm_s), blendR=-1.0,
+                               overSpeedStrategy=2, speedPercent=max(5, int(args.speed_mm_s)))
+            if int(code) != 0:
+                raise RuntimeError(f"MoveL approach segment rejected: {code}")
+            wait_target(waypoint)
 
         # 到达夹持点后，沿 TCP 坐标系 Z+ 方向再前进 1.5cm
         advance_mm = 15.0

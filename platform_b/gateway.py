@@ -336,10 +336,6 @@ def require_motion_confirmation(request: MotionRequest) -> None:
 
 
 def run_workflow(command: list[str], branch: str, label: str) -> None:
-    if workflow_snapshot()["active"]:
-        raise RuntimeError("已有一条真实工作流正在执行")
-    with workflow_lock:
-        workflow_state.update({"active": True, "branch": branch, "stage": label, "message": "已提交到现有脚本", "returncode": None})
     env = os.environ.copy()
     env["FR5_PLATFORM_ROOT"] = str(ROOT.parent)
     env["PYTHONPATH"] = str(ROOT.parent) + os.pathsep + env.get("PYTHONPATH", "")
@@ -366,8 +362,21 @@ def run_workflow(command: list[str], branch: str, label: str) -> None:
 
 
 def launch_workflow(command: list[str], branch: str, label: str) -> dict[str, Any]:
-    if workflow_snapshot()["active"]:
-        raise HTTPException(status_code=409, detail="已有一条真实工作流正在执行")
+    with workflow_lock:
+        if workflow_state["active"]:
+            raise HTTPException(status_code=409, detail="已有一条真实工作流正在执行")
+        # Set this before starting the worker thread.  The old implementation
+        # let the thread set it asynchronously, so the HTTP response could
+        # still say idle and a second click could submit another workflow.
+        workflow_state.update(
+            {
+                "active": True,
+                "branch": branch,
+                "stage": label,
+                "message": "已提交到现有脚本",
+                "returncode": None,
+            }
+        )
     thread = threading.Thread(target=run_workflow, args=(command, branch, label), daemon=True)
     thread.start()
     return workflow_snapshot()
@@ -474,6 +483,7 @@ def move_clamp(
     capture_id: str = "",
     clamp_mm: float = 5.0,
     speed_mm_s: float = 10.0,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     # 使用查询参数而非请求体：规避本项目 Pydantic 请求体解析在特定模型上的已知问题。
     if not confirmed_clear:
@@ -498,6 +508,8 @@ def move_clamp(
         f"--center-camera-mm={','.join(f'{float(v):.5f}' for v in center)}",
         "--width-mm", f"{float(width):.5f}",
     ]
+    if dry_run:
+        command.append("--dry-run")
     return launch_workflow(command, "clamp", "夹挤：移动到夹持点并执行夹挤")
 
 
@@ -510,6 +522,7 @@ def move_pry(
     pry_position_mm: float = 100.0,
     lever_arm_mm: float = 100.0,
     speed_mm_s: float = 40.0,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     if not confirmed_clear:
         raise HTTPException(status_code=400, detail="未确认现场无人、无障碍且实体急停可用")
@@ -537,6 +550,8 @@ def move_pry(
         "--speed-mm-s", f"{speed_mm_s:.5f}",
         "--confirmed-clear", "--experimental-first-six", "--close-after",
     ]
+    if dry_run:
+        command.append("--dry-run")
     return launch_workflow(command, "pry", "撬拨：移动到夹持点并执行撬拨")
 
 

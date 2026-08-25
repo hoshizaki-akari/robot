@@ -18,8 +18,10 @@ import numpy as np
 
 try:
     from .pry_buckle.horizontal_diameter import CameraIntrinsics, HorizontalDiameterEstimator
+    from .pry_buckle.depth_guided_heel import refine_target_chord_at_center
 except ImportError:
     from pry_buckle.horizontal_diameter import CameraIntrinsics, HorizontalDiameterEstimator
+    from pry_buckle.depth_guided_heel import refine_target_chord_at_center
 
 
 def _load_runtime_dependencies() -> None:
@@ -149,7 +151,13 @@ class PryBuckleVisionWorker:
                 state["depth"] = depth.astype(np.float32) * (1000.0 if message.encoding.lower() == "32fc1" else 1.0)
 
             def on_info(message: CameraInfo) -> None:
-                state["intrinsics"] = CameraIntrinsics(float(message.k[0]), float(message.k[4]), float(message.k[2]), float(message.k[5]))
+                state["intrinsics"] = CameraIntrinsics(
+                    float(message.k[0]), float(message.k[4]),
+                    float(message.k[2]), float(message.k[5]),
+                    image_width=int(getattr(message, "width", 0) or 0) or None,
+                    image_height=int(getattr(message, "height", 0) or 0) or None,
+                    image_rotation_deg=180,
+                )
 
             node.create_subscription(Image, "/camera/camera/color/image_raw", on_color, qos_profile_sensor_data)
             node.create_subscription(Image, "/camera/camera/aligned_depth_to_color/image_raw", on_depth, qos_profile_sensor_data)
@@ -168,24 +176,58 @@ class PryBuckleVisionWorker:
                     continue
                 last_inference_time = now
                 try:
-                    # The D435 image stream is rotated 180 deg.  Rotate the
-                    # color frame back before YOLO so the model (trained on
-                    # upright images) can detect the heel reliably.
-                    image = cv2.rotate(image_raw, cv2.ROTATE_180)
+                    # The camera launch pipeline already applies the single
+                    # configured 180-degree rotation.  The published color
+                    # and aligned-depth topics are therefore already upright;
+                    # rotating here made the pry preview upside down and put
+                    # its pixel geometry in the opposite frame.
+                    image = image_raw
                     depth_raw = state["depth"]
-                    depth = None if depth_raw is None else cv2.rotate(depth_raw, cv2.ROTATE_180)
+                    depth = depth_raw
                     intr_raw = state["intrinsics"]
                     intr = None
                     if intr_raw is not None:
                         ih, iw = image.shape[:2]
-                        intr = CameraIntrinsics(intr_raw.fx, intr_raw.fy, iw - intr_raw.cx, ih - intr_raw.cy)
-                    prediction = detector.predict(source=image, imgsz=640, conf=0.10, retina_masks=True, verbose=False, device="cpu")[0]
+                        intr = intr_raw
+                    prediction = detector.predict(
+                        source=image,
+                        imgsz=960,
+                        conf=0.20,
+                        retina_masks=True,
+                        verbose=False,
+                        device="cpu",
+                    )[0]
                     if prediction.masks is None or prediction.boxes is None:
                         raise RuntimeError("视野内未识别到足跟，请调整足部位置或相机角度后重试")
-                    index = int(np.argmax(prediction.boxes.conf.detach().cpu().numpy()))
-                    raw_mask = prediction.masks.data[index].detach().cpu().numpy()
-                    mask = cv2.resize(raw_mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST) > 0.5
-                    result = estimator.estimate(mask, depth, intr)
+                    confidences = prediction.boxes.conf.detach().cpu().numpy()
+                    result = None
+                    mask = None
+                    yolo_confidence = None
+                    for index in np.argsort(confidences)[::-1]:
+                        confidence = float(confidences[int(index)])
+                        if confidence < 0.20:
+                            continue
+                        raw_mask = prediction.masks.data[int(index)].detach().cpu().numpy()
+                        candidate_mask = cv2.resize(
+                            raw_mask,
+                            (image.shape[1], image.shape[0]),
+                            interpolation=cv2.INTER_NEAREST,
+                        ) > 0.5
+                        if int(np.count_nonzero(candidate_mask)) < 500:
+                            continue
+                        candidate = estimator.estimate(candidate_mask, depth, intr)
+                        if candidate.get("valid"):
+                            candidate = refine_target_chord_at_center(
+                                candidate_mask, depth, intr, candidate, estimator
+                            )
+                            if not 50.0 <= float(candidate.get("width_mm", 0.0)) <= 60.0:
+                                continue
+                            result = candidate
+                            mask = candidate_mask
+                            yolo_confidence = confidence
+                            break
+                    if result is None or mask is None:
+                        raise RuntimeError("YOLO 未找到满足宽度和深度约束的足跟")
                     result.update({
                         "image_width": int(image.shape[1]), "image_height": int(image.shape[0]),
                         "heel_detected": True, "heel_outline_px": [],
@@ -193,6 +235,8 @@ class PryBuckleVisionWorker:
                         "clamp_contact_a_px": result.get("contact_left_px"),
                         "clamp_contact_b_px": result.get("contact_right_px"),
                         "heel_width_mm": result.get("width_mm"),
+                        "detection_method": "yolo",
+                        "yolo_confidence": yolo_confidence,
                     })
                     center_camera = result.get("center_camera_mm")
                     if center_camera and len(center_camera) == 3:

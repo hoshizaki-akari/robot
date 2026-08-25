@@ -14,6 +14,12 @@ class CameraIntrinsics:
     fy: float
     cx: float
     cy: float
+    # The RealSense launch file rotates the published color/depth images by
+    # 180 degrees for the upright UI. CameraInfo still describes the native
+    # optical frame, so geometry maps display pixels back to native pixels.
+    image_width: int | None = None
+    image_height: int | None = None
+    image_rotation_deg: int = 0
 
 
 class HorizontalDiameterEstimator:
@@ -100,7 +106,8 @@ class HorizontalDiameterEstimator:
         if xs.size < 70:
             return None
         z = depth[ys, xs].astype(np.float64)
-        points = np.column_stack(((xs - intrinsics.cx) * z / intrinsics.fx, (ys - intrinsics.cy) * z / intrinsics.fy, z))
+        native_xs, native_ys = HorizontalDiameterEstimator._native_pixels(xs, ys, intrinsics)
+        points = np.column_stack(((native_xs - intrinsics.cx) * z / intrinsics.fx, (native_ys - intrinsics.cy) * z / intrinsics.fy, z))
         center = np.mean(points, axis=0)
         _, _, vt = np.linalg.svd(points - center, full_matrices=False)
         normal = vt[-1]
@@ -116,9 +123,26 @@ class HorizontalDiameterEstimator:
         return np.r_[point, normal], float(np.median(z)), int(np.count_nonzero(inliers))
 
     @staticmethod
+    def _native_pixels(
+        xs: np.ndarray | float,
+        ys: np.ndarray | float,
+        intrinsics: CameraIntrinsics,
+    ) -> tuple[np.ndarray | float, np.ndarray | float]:
+        rotation = int(intrinsics.image_rotation_deg) % 360
+        if rotation == 180 and intrinsics.image_width and intrinsics.image_height:
+            return (
+                intrinsics.image_width - 1 - np.asarray(xs),
+                intrinsics.image_height - 1 - np.asarray(ys),
+            )
+        if rotation == 0:
+            return xs, ys
+        raise ValueError(f"暂不支持的图像几何旋转：{intrinsics.image_rotation_deg}°")
+
+    @staticmethod
     def _ray_plane(pixel: tuple[int, int], plane: np.ndarray, intrinsics: CameraIntrinsics) -> np.ndarray | None:
         point, normal = plane[:3], plane[3:]
-        ray = np.asarray([(pixel[0] - intrinsics.cx) / intrinsics.fx, (pixel[1] - intrinsics.cy) / intrinsics.fy, 1.0])
+        native_x, native_y = HorizontalDiameterEstimator._native_pixels(float(pixel[0]), float(pixel[1]), intrinsics)
+        ray = np.asarray([(native_x - intrinsics.cx) / intrinsics.fx, (native_y - intrinsics.cy) / intrinsics.fy, 1.0])
         denominator = float(normal @ ray)
         if abs(denominator) < 1e-7:
             return None

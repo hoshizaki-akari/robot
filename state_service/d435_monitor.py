@@ -25,12 +25,14 @@ try:
         build_target_display_mask,
         estimate_depth_guided_target_chord,
         extract_depth_heel_candidate,
+        refine_target_chord_at_center,
     )
 except ImportError:  # 允许脚本直接以模块方式运行
     from depth_guided_heel import (
         build_target_display_mask,
         estimate_depth_guided_target_chord,
         extract_depth_heel_candidate,
+        refine_target_chord_at_center,
     )
 
 
@@ -374,6 +376,9 @@ class D435Monitor:
             self._intrinsics = CameraIntrinsics(
                 fx=float(matrix[0]), fy=float(matrix[4]),
                 cx=float(matrix[2]), cy=float(matrix[5]),
+                image_width=int(getattr(message, "width", 0) or 0) or None,
+                image_height=int(getattr(message, "height", 0) or 0) or None,
+                image_rotation_deg=180,
             )
             self._distortion_coefficients = [float(value) for value in message.d]
 
@@ -414,9 +419,18 @@ class D435Monitor:
         estimator = HorizontalDiameterEstimator()
         last_inference_time = 0.0
         last_yolo_inference_at = 0.0
+        last_yolo_result: dict[str, Any] | None = None
+        last_yolo_mask: np.ndarray | None = None
+        last_yolo_confidence: float | None = None
+        last_yolo_at = 0.0
         inference_period_s = float(os.environ.get("FR5_VISION_INFERENCE_PERIOD_S", "0.75"))
         yolo_check_period_s = float(
-            os.environ.get("FR5_VISION_YOLO_CHECK_PERIOD_S", "5.0")
+            os.environ.get("FR5_VISION_YOLO_CHECK_PERIOD_S", "2.0")
+        )
+        yolo_hold_period_s = max(4.0, yolo_check_period_s * 2.5)
+        yolo_imgsz = int(os.environ.get("FR5_VISION_YOLO_IMGSZ", "960"))
+        yolo_min_confidence = float(
+            os.environ.get("FR5_VISION_YOLO_MIN_CONF", "0.20")
         )
         # 夹持中心比可见足跟表面沿光轴远约 35mm，与 PryBuckleVisionWorker 一致。
         GRIPPER_BIAS_MM = 35.0
@@ -450,38 +464,67 @@ class D435Monitor:
                 depth_candidate_result: dict[str, Any] | None = None
                 depth_mask: np.ndarray | None = None
 
-                # Reject tiny/background YOLO masks before geometry.  This is
-                # deliberately stricter than the model confidence threshold:
-                # a 7x8 px shelf fragment is not a heel candidate.
+                # The trained model needs a larger inference canvas in this
+                # current view.  At 640px the real heel is only a low-score
+                # fragment; at 960px it produces the round heel mask shown in
+                # the reference image.  Keep the last good mask between the
+                # bounded YOLO inference calls so the UI cannot jump to the
+                # depth fallback on every intermediate frame.
                 if now - last_yolo_inference_at >= yolo_check_period_s:
                     last_yolo_inference_at = now
                     prediction = detector.predict(
-                        source=img, imgsz=640, conf=0.10,
+                        source=img, imgsz=yolo_imgsz, conf=yolo_min_confidence,
                         retina_masks=True, verbose=False, device="cpu",
                     )[0]
+                    found_yolo = False
                     if prediction.masks is not None and prediction.boxes is not None:
                         confidences = prediction.boxes.conf.detach().cpu().numpy()
                         for index in np.argsort(confidences)[::-1]:
+                            confidence = float(confidences[int(index)])
+                            if confidence < yolo_min_confidence:
+                                continue
                             raw_mask = prediction.masks.data[int(index)].detach().cpu().numpy()
                             mask = cv2.resize(
                                 raw_mask, (iw, ih), interpolation=cv2.INTER_NEAREST
                             ) > 0.5
-                            if int(np.count_nonzero(mask)) < 300:
+                            if int(np.count_nonzero(mask)) < 500:
                                 continue
                             candidate = estimator.estimate(mask, dep, intr)
                             if candidate.get("valid"):
-                                result = candidate
-                                selected_mask = mask
-                                yolo_confidence = float(confidences[int(index)])
-                                break
+                                candidate = refine_target_chord_at_center(
+                                    mask, dep, intr, candidate, estimator
+                                )
+                                if 50.0 <= float(candidate.get("width_mm", 0.0)) <= 60.0:
+                                    last_yolo_result = dict(candidate)
+                                    last_yolo_mask = mask
+                                    last_yolo_confidence = confidence
+                                    last_yolo_at = now
+                                    found_yolo = True
+                                    break
+                    if not found_yolo and now - last_yolo_at > yolo_hold_period_s:
+                        last_yolo_result = None
+                        last_yolo_mask = None
+                        last_yolo_confidence = None
 
-                # Current-view depth consensus: when the aligned depth image
-                # can identify the single central near object, prefer its
-                # fixed upper-heel chord even if YOLO also returned a valid
-                # but different mask.  This prevents a low-quality YOLO
-                # fragment from moving the contacts between unrelated rows.
+                if (
+                    last_yolo_result is not None
+                    and last_yolo_mask is not None
+                    and now - last_yolo_at <= yolo_hold_period_s
+                ):
+                    # Keep the depth geometry captured with the accepted YOLO
+                    # mask.  Re-fitting it on every depth frame caused a
+                    # one-pixel endpoint change to oscillate around the
+                    # 50--60 mm target band.
+                    result = dict(last_yolo_result)
+                    selected_mask = last_yolo_mask
+                    yolo_confidence = last_yolo_confidence
+                    detection_method = "yolo"
+
+                # If YOLO is temporarily unavailable, select one coherent
+                # near-depth component and use the same plane/width geometry
+                # at the fixed round-heel row as a display-only fallback.
                 depth_diag: dict[str, Any] = {}
-                if dep is not None and intr is not None:
+                if result is None and dep is not None and intr is not None:
                     depth_mask, depth_diag = extract_depth_heel_candidate(dep)
                     if depth_mask is not None:
                         candidate = estimate_depth_guided_target_chord(
@@ -502,11 +545,7 @@ class D435Monitor:
                                 or candidate.get("center_px"),
                                 candidate.get("target_circle_radius_px", 10),
                             )
-                            detection_method = (
-                                "depth_guided_consensus"
-                                if yolo_confidence is not None
-                                else "depth_guided_fallback"
-                            )
+                            detection_method = "depth_guided_fallback"
                         else:
                             depth_candidate_result = candidate
 

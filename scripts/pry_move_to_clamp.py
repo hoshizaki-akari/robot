@@ -16,6 +16,8 @@ from platform_a.tool_center_calibration import flange_pose_for_center
 
 STATE_URL = "http://127.0.0.1:8765/api/state"
 ROBOT_IP = "192.168.58.2"
+MAX_APPROACH_SEGMENT_MM = 250.0
+MAX_TOTAL_APPROACH_MM = 500.0
 
 def state() -> dict:
     with urlopen(STATE_URL, timeout=3.0) as response:
@@ -65,9 +67,10 @@ def main() -> int:
     total = float(args.surface_gap_mm + args.pry_position_mm)
     final_target = target.copy(); final_target[:3] += pose_to_matrix(target.tolist())[:3, :3][:, 1] * (-total)
     distance = float(np.linalg.norm(target[:3] - np.asarray(current[:3])))
-    if distance > 320.0 or not 80.0 <= final_target[2] <= 700.0:
+    if distance > MAX_TOTAL_APPROACH_MM or not 80.0 <= final_target[2] <= 700.0:
         raise RuntimeError(f"目标超出安全范围: distance={distance:.1f} final_z={final_target[2]:.1f}")
-    print(json.dumps({"current": current, "center_camera_mm": center_camera.tolist(), "center_base_mm": center_base.tolist(), "center_target": target.tolist(), "final_tool_y_minus_target": final_target.tolist(), "surface_gap_mm": args.surface_gap_mm, "pry_position_mm": args.pry_position_mm, "tool_y_minus_total_mm": total, "pre_approach_tool_z_minus_retreat_mm": 10.0}, ensure_ascii=False))
+    approach_segments = max(1, int(np.ceil(distance / MAX_APPROACH_SEGMENT_MM)))
+    print(json.dumps({"current": current, "center_camera_mm": center_camera.tolist(), "center_base_mm": center_base.tolist(), "center_target": target.tolist(), "final_tool_y_minus_target": final_target.tolist(), "surface_gap_mm": args.surface_gap_mm, "pry_position_mm": args.pry_position_mm, "tool_y_minus_total_mm": total, "pre_approach_tool_z_minus_retreat_mm": 10.0, "approach_segments": approach_segments, "max_approach_segment_mm": MAX_APPROACH_SEGMENT_MM}, ensure_ascii=False))
     if args.dry_run:
         return 0
     from fairino import Robot
@@ -92,7 +95,16 @@ def main() -> int:
             raise RuntimeError("无法进入自动使能状态")
         robot.ResumeMotion()
         robot.ProgramResume()
-        move_wait(target, int(args.speed_mm_s), 180)
+        # Approach in bounded straight-line segments.  The previous single
+        # MoveL rejected this valid current setup at ~333--360 mm because its
+        # per-command limit was incorrectly applied to the total approach.
+        current_position = np.asarray(current[:3], dtype=np.float64)
+        for segment_index in range(1, approach_segments + 1):
+            waypoint = target.copy()
+            waypoint[:3] = current_position + (target[:3] - current_position) * (
+                segment_index / approach_segments
+            )
+            move_wait(waypoint, int(args.speed_mm_s), 180)
         print("已到达夹持中心")
 
         # 撬拨专用安全顺序：到达夹持点后先沿 Tool Z- 回退 10 mm，

@@ -131,10 +131,11 @@ def estimate_depth_guided_target_chord(
     """Estimate a usable upper heel chord instead of the whole-foot width.
 
     A depth component can contain the full foot, whose middle row is much
-    wider than the intended clamp section.  Use a fixed upper-heel band and
-    a fixed relative row, then choose a symmetric chord around that row's
-    center.  This prevents the contacts from jumping between unrelated rows
-    when a depth hole or a nearby background object changes by one frame.
+    wider than the intended clamp section.  Use a fixed heel-relative row and
+    a symmetric chord around the component median, matching the round heel
+    location learned by the trained detector.  This prevents the contacts
+    from jumping between unrelated rows when a depth hole or a nearby
+    background object changes by one frame.
     """
 
     geometry = estimator or HorizontalDiameterEstimator()
@@ -150,47 +151,16 @@ def estimate_depth_guided_target_chord(
     top_y = int(np.min(ys))
     bottom_y = int(np.max(ys))
     component_height = max(1, bottom_y - top_y)
-    upper_pixels = ys <= top_y + int(round(component_height * 0.25))
-    if not np.any(upper_pixels):
-        return base
-    center_hint = int(round(float(np.median(xs[upper_pixels]))))
-    target_y = top_y + int(round(component_height * 0.12))
-
-    row_candidates: list[tuple[int, int, int]] = []
-    for y in range(max(top_y, target_y - 6), min(bottom_y, target_y + 6) + 1):
-        row = mask[y]
-        runs: list[tuple[int, int]] = []
-        x = 0
-        while x < row.size:
-            if not bool(row[x]):
-                x += 1
-                continue
-            start = x
-            while x + 1 < row.size and bool(row[x + 1]):
-                x += 1
-            runs.append((start, x))
-            x += 1
-        if not runs:
-            continue
-        left, right = min(
-            runs,
-            key=lambda run: (
-                0
-                if run[0] <= center_hint <= run[1]
-                else min(abs(center_hint - run[0]), abs(center_hint - run[1])),
-                -(run[1] - run[0]),
-            ),
-        )
-        if right - left >= 12:
-            row_candidates.append((y, left, right))
-    if not row_candidates:
-        return base
-    y, run_left, run_right = min(row_candidates, key=lambda item: abs(item[0] - target_y))
-    center_x = int(round((run_left + run_right) * 0.5))
+    # The full depth component contains the foot below the heel.  The actual
+    # round heel in the current view is around one third of the component
+    # height, not at its top edge.  Use the component median x and a fixed
+    # relative y so the fallback agrees with the trained YOLO target.
+    center_x = int(round(float(np.median(xs))))
+    y = top_y + int(round(component_height * 0.32))
     point_center = geometry._ray_plane((center_x, y), plane, intrinsics)
     if point_center is None:
         return base
-    max_half_px = min(center_x - run_left, run_right - center_x)
+    max_half_px = min(center_x, mask.shape[1] - 1 - center_x, 40)
     if max_half_px < 8:
         return base
     target_mid_mm = (target_min_mm + target_max_mm) * 0.5
@@ -262,3 +232,75 @@ def build_target_display_mask(
     circle = np.zeros(mask.shape, dtype=np.uint8)
     cv2.circle(circle, (cx, cy), radius, 1, thickness=-1)
     return mask & circle.astype(bool)
+
+
+def refine_target_chord_at_center(
+    heel_mask: np.ndarray,
+    depth_mm: np.ndarray,
+    intrinsics: CameraIntrinsics,
+    result: dict[str, Any],
+    estimator: HorizontalDiameterEstimator | None = None,
+    target_min_mm: float = 50.0,
+    target_max_mm: float = 60.0,
+) -> dict[str, Any]:
+    """Keep a YOLO center/row but choose a symmetric 50--60 mm chord."""
+
+    geometry = estimator or HorizontalDiameterEstimator()
+    center = result.get("center_px")
+    mask = np.asarray(heel_mask, dtype=bool)
+    if center is None or mask.ndim != 2:
+        return result
+    foreground = geometry._foreground_plane(depth_mm, mask, intrinsics)
+    if foreground is None:
+        return result
+    plane = foreground[0]
+    center_x, center_y = int(center[0]), int(center[1])
+    point_center = geometry._ray_plane((center_x, center_y), plane, intrinsics)
+    if point_center is None:
+        return result
+    max_half_px = min(center_x, mask.shape[1] - 1 - center_x, 40)
+    candidates: list[tuple[float, int, np.ndarray, np.ndarray, float]] = []
+    target_mid_mm = (target_min_mm + target_max_mm) * 0.5
+    for half_px in range(8, max_half_px + 1):
+        point_left = geometry._ray_plane(
+            (center_x - half_px, center_y), plane, intrinsics
+        )
+        point_right = geometry._ray_plane(
+            (center_x + half_px, center_y), plane, intrinsics
+        )
+        if point_left is None or point_right is None:
+            continue
+        width = float(np.linalg.norm(point_right - point_left))
+        in_target = target_min_mm <= width <= target_max_mm
+        score = abs(width - target_mid_mm) + (0.0 if in_target else 100.0)
+        candidates.append((score, half_px, point_left, point_right, width))
+    if not candidates:
+        return result
+    _, half_px, point_left, point_right, width = min(
+        candidates, key=lambda item: item[0]
+    )
+    top_pixel = result.get("upper_midpoint_px") or geometry.upper_midpoint(
+        mask, center_x
+    )
+    point_top = geometry._ray_plane(tuple(top_pixel), plane, intrinsics)
+    if point_top is None:
+        return result
+    refined = dict(result)
+    refined.update(
+        {
+            "contact_left_px": [center_x - half_px, center_y],
+            "contact_right_px": [center_x + half_px, center_y],
+            "contact_left_camera_mm": [round(float(v), 3) for v in point_left],
+            "contact_right_camera_mm": [round(float(v), 3) for v in point_right],
+            "center_camera_mm": [round(float(v), 3) for v in point_center],
+            "width_mm": round(width, 2),
+            "valid": bool(geometry.expected_min_mm <= width <= geometry.expected_max_mm),
+            "target_width_range_mm": [target_min_mm, target_max_mm],
+            "target_circle_center_px": [center_x, center_y],
+            "target_circle_radius_px": half_px,
+            "surface_to_upper_midpoint_gap_mm": round(
+                float(np.linalg.norm(point_center - point_top)), 3
+            ),
+        }
+    )
+    return refined
