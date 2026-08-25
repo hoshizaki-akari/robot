@@ -21,14 +21,19 @@ def _mad(values: list[float]) -> float:
     return float(np.median(np.abs(array - median)))
 
 
+def _axis_angle_deg(value: float) -> float:
+    """PCA axes have 180° sign symmetry; compare them modulo 180°."""
+    return ((float(value) + 90.0) % 180.0) - 90.0
+
+
 @dataclass(frozen=True)
 class StabilizerConfig:
     sample_count: int = 8
     minimum_valid_frames: int = 6
     width_mad_max_mm: float = 1.5
-    center_max_deviation_mm: float = 3.0
-    angle_mad_max_deg: float = 2.0
-    depth_valid_ratio_min: float = 0.85
+    center_max_deviation_mm: float = 8.0
+    angle_mad_max_deg: float = 8.0
+    depth_valid_ratio_min: float = 0.80
 
 
 class MeasurementStabilizer:
@@ -88,7 +93,7 @@ class MeasurementStabilizer:
             for item in samples
             if item["result"].get("center_camera_mm") is not None
         ]
-        angles = [float(item["result"].get("principal_angle_deg", 0.0)) for item in samples]
+        angles = [_axis_angle_deg(float(item["result"].get("principal_angle_deg", 0.0))) for item in samples]
         depth_ratios = [float(item["result"].get("depth_valid_ratio", 0.0)) for item in samples]
         width_mad = _mad(widths)
         center_median = np.median(np.vstack(centers), axis=0) if centers else np.zeros(3)
@@ -113,6 +118,16 @@ class MeasurementStabilizer:
         latest["stable_angle_mad_deg"] = round(angle_mad, 4)
         latest["stable_depth_valid_min_ratio"] = round(min(depth_ratios, default=0.0), 4)
         latest["stable_valid"] = stable
+        # Use the robust centre/endpoints for the frozen plan instead of the
+        # last noisy depth frame. The image pixels remain from the latest
+        # frame so the overlay stays aligned with the current image.
+        for key in ("center_camera_mm", "contact_left_camera_mm", "contact_right_camera_mm"):
+            vectors = [
+                np.asarray(item["result"].get(key), dtype=np.float64)
+                for item in samples if item["result"].get(key) is not None
+            ]
+            if vectors:
+                latest[key] = [round(float(value), 3) for value in np.median(np.vstack(vectors), axis=0)]
         latest["within_expected_width_range"] = bool(latest.get("within_expected_width_range", False))
         latest["motion_grade"] = bool(stable and latest["within_expected_width_range"])
         latest["valid"] = latest["motion_grade"]

@@ -18,6 +18,8 @@ from urllib.request import urlopen
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 STATE_URL = os.environ.get("FR5_STATE_URL", "http://127.0.0.1:8765")
 CONFIG_FILE = ROOT / "platform_a" / "config" / "vision_alignment.json"
 ROBOT_IP = os.environ.get("FR5_ROBOT_IP", "192.168.58.2")
@@ -162,7 +164,15 @@ def main() -> int:
     config = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
     plan = get_json("/api/platform-a/clamp/plan")
     snapshot = get_json("/api/state")
-    target, alignment = build_target_pose(plan, snapshot, config)
+    try:
+        target, alignment = build_target_pose(plan, snapshot, config)
+    except ValueError as error:
+        print(json.dumps({
+            "status": "MANUAL_REQUIRED",
+            "safe_by_geometry": False,
+            "message": str(error),
+        }, ensure_ascii=False, indent=2))
+        return 2
     output = dict(alignment)
     output["status"] = "DRY_RUN"
     if not alignment["safe_by_geometry"]:

@@ -91,6 +91,20 @@ class HeelGeometryEstimator:
         if xs.size < 70:
             return None
         z = depth_mm[ys, xs].astype(np.float64)
+        # D435 contour samples frequently contain a second, farther depth
+        # layer. Select the nearest coherent local layer before fitting; a
+        # single SVD over mixed foreground/background points can turn a
+        # 55-mm heel width into hundreds of millimetres.
+        edges = np.arange(100.0, 3010.0, 10.0)
+        counts, _ = np.histogram(z, bins=edges)
+        populated = np.flatnonzero(counts >= max(30, int(z.size * 0.04)))
+        if populated.size == 0:
+            return None
+        layer_depth = float((edges[int(populated[0])] + edges[int(populated[0]) + 1]) * 0.5)
+        layer = np.abs(z - layer_depth) <= 35.0
+        if int(np.count_nonzero(layer)) < 70:
+            return None
+        xs, ys, z = xs[layer], ys[layer], z[layer]
         points = np.column_stack(((xs - intrinsics.cx) * z / intrinsics.fx, (ys - intrinsics.cy) * z / intrinsics.fy, z))
         seed = np.mean(points, axis=0)
         _, _, vt = np.linalg.svd(points - seed, full_matrices=False)
