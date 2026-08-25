@@ -17,9 +17,13 @@ import cv2
 import numpy as np
 
 try:
-    from .pry_buckle.horizontal_diameter import CameraIntrinsics, HorizontalDiameterEstimator
+    from pry_buckle.heel_geometry import HeelGeometryEstimator
+    from pry_buckle.horizontal_diameter import CameraIntrinsics
+    from pry_buckle.measurement_stabilizer import MeasurementStabilizer
 except ImportError:
-    from pry_buckle.horizontal_diameter import CameraIntrinsics, HorizontalDiameterEstimator
+    from pry_buckle.heel_geometry import HeelGeometryEstimator
+    from pry_buckle.horizontal_diameter import CameraIntrinsics
+    from pry_buckle.measurement_stabilizer import MeasurementStabilizer
 
 
 def _load_runtime_dependencies() -> None:
@@ -129,7 +133,8 @@ class PryBuckleVisionWorker:
             node = Node("platform_a_pry_buckle_vision")
             bridge = CvBridge()
             detector = YOLO(str(self.model_path))
-            estimator = HorizontalDiameterEstimator()
+            estimator = HeelGeometryEstimator()
+            stabilizer = MeasurementStabilizer()
             state: dict[str, Any] = {"image": None, "depth": None, "intrinsics": None}
             processed = -1
             frame_id = 0
@@ -186,6 +191,7 @@ class PryBuckleVisionWorker:
                     raw_mask = prediction.masks.data[index].detach().cpu().numpy()
                     mask = cv2.resize(raw_mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST) > 0.5
                     result = estimator.estimate(mask, depth, intr)
+                    result = stabilizer.update(result, frame_id, now)
                     result.update({
                         "image_width": int(image.shape[1]), "image_height": int(image.shape[0]),
                         "heel_detected": True, "heel_outline_px": [],
@@ -213,7 +219,7 @@ class PryBuckleVisionWorker:
                             round(float(top_camera[2] + self.CAMERA_DEPTH_TO_GRIPPER_CENTER_BIAS_MM), 3),
                         ]
                         result["surface_to_upper_midpoint_gap_mm"] = float(result.get("surface_to_upper_midpoint_gap_mm", 0.0))
-                    if result.get("valid"):
+                    if result.get("motion_grade"):
                         last_valid_result = dict(result)
                     elif last_valid_result is not None and result.get("center_px"):
                         jump = float(np.linalg.norm(
@@ -222,6 +228,10 @@ class PryBuckleVisionWorker:
                         ))
                         if jump <= 30.0:
                             held = dict(last_valid_result)
+                            held["valid"] = False
+                            held["motion_grade"] = False
+                            held["stable_valid"] = False
+                            held["display_only"] = True
                             held["measurement_status"] = "held_last_valid_result"
                             held["message"] = "当前帧深度/分割异常，沿用最近有效夹持点"
                             result = held
@@ -235,6 +245,10 @@ class PryBuckleVisionWorker:
                         and time.monotonic() - last_valid_at <= 3.0
                     ):
                         held = dict(last_valid_result)
+                        held["valid"] = False
+                        held["motion_grade"] = False
+                        held["stable_valid"] = False
+                        held["display_only"] = True
                         held["measurement_status"] = "held_last_valid_result"
                         held["message"] = "当前帧短暂无效，保持最近有效夹持点"
                         result = held
@@ -244,7 +258,7 @@ class PryBuckleVisionWorker:
                     ok, encoded = cv2.imencode(".png", overlay)
                     if not ok:
                         raise RuntimeError("撬拨视觉结果编码失败")
-                    if result.get("valid"):
+                    if result.get("motion_grade"):
                         last_valid_result = dict(result)
                         last_valid_overlay = encoded.tobytes()
                         last_valid_at = time.monotonic()
@@ -258,6 +272,10 @@ class PryBuckleVisionWorker:
                         and time.monotonic() - last_valid_at <= 3.0
                     ):
                         held = dict(last_valid_result)
+                        held["valid"] = False
+                        held["motion_grade"] = False
+                        held["stable_valid"] = False
+                        held["display_only"] = True
                         held["measurement_status"] = "held_last_valid_result"
                         held["message"] = "当前帧短暂无效，保持最近有效夹持点"
                         with self._lock:

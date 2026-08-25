@@ -16,9 +16,13 @@ import cv2
 import numpy as np
 
 try:
-    from pry_buckle.horizontal_diameter import CameraIntrinsics, HorizontalDiameterEstimator
+    from pry_buckle.horizontal_diameter import CameraIntrinsics
+    from pry_buckle.heel_geometry import HeelGeometryEstimator
+    from pry_buckle.measurement_stabilizer import MeasurementStabilizer
 except ImportError:  # 允许脚本直接以模块方式运行
-    from horizontal_diameter import CameraIntrinsics, HorizontalDiameterEstimator
+    from horizontal_diameter import CameraIntrinsics
+    from heel_geometry import HeelGeometryEstimator
+    from measurement_stabilizer import MeasurementStabilizer
 
 
 class D435Monitor:
@@ -42,6 +46,8 @@ class D435Monitor:
         self._vision_result: dict[str, Any] = {
             "valid": False,
             "motion_allowed": False,
+            "motion_grade": False,
+            "display_only": False,
             "message": "夹挤识别正在启动",
         }
         self._vision_frame_id = 0
@@ -378,7 +384,8 @@ class D435Monitor:
         default_model = Path(__file__).resolve().parents[1] / "platform_a" / "models" / "heel_seg.pt"
         model_path = Path(os.environ.get("PLATFORM_A_HEEL_MODEL", str(default_model)))
         detector = YOLO(str(model_path))
-        estimator = HorizontalDiameterEstimator()
+        estimator = HeelGeometryEstimator()
+        stabilizer = MeasurementStabilizer()
         last_inference_time = 0.0
         last_valid_result: dict[str, Any] | None = None
         last_valid_at = 0.0
@@ -420,6 +427,7 @@ class D435Monitor:
                 raw_mask = prediction.masks.data[index].detach().cpu().numpy()
                 mask = cv2.resize(raw_mask, (iw, ih), interpolation=cv2.INTER_NEAREST) > 0.5
                 result = estimator.estimate(mask, dep, intr)
+                result = stabilizer.update(result, frame_id, now)
                 result.update({
                     "image_width": int(iw), "image_height": int(ih),
                     "heel_detected": True, "heel_outline_px": [],
@@ -449,7 +457,7 @@ class D435Monitor:
                     result["surface_to_upper_midpoint_gap_mm"] = float(
                         result.get("surface_to_upper_midpoint_gap_mm", 0.0)
                     )
-                if result.get("valid"):
+                if result.get("motion_grade"):
                     last_valid_result = dict(result)
                     last_valid_at = now
                 elif (
@@ -459,11 +467,15 @@ class D435Monitor:
                 ):
                     # 单帧短暂无效时沿用最近有效夹持点，避免界面在 valid/rejected 间闪烁。
                     held = dict(last_valid_result)
+                    held["valid"] = False
+                    held["motion_grade"] = False
+                    held["stable_valid"] = False
+                    held["display_only"] = True
                     held["measurement_status"] = "held_last_valid_result"
                     held["message"] = "当前帧短暂无效，保持最近有效夹持点"
                     result = held
                 overlay = estimator.draw_overlay(img, mask, result)
-                if not result.get("valid"):
+                if not result.get("motion_grade"):
                     overlay = img.copy()
                 ok, encoded = cv2.imencode(".png", overlay)
                 if not ok:
@@ -477,6 +489,8 @@ class D435Monitor:
                     self._vision_result = {
                         "valid": False,
                         "motion_allowed": False,
+                        "motion_grade": False,
+                        "display_only": False,
                         "message": f"夹挤识别不可用：{error}",
                     }
                     self._vision_result_at = monotonic()

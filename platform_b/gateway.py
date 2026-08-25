@@ -234,11 +234,20 @@ def capture_clamp_plan() -> dict[str, Any]:
     plan = clamp_plan()
     center = plan.get("clamp_contact_center_camera_mm")
     width = plan.get("heel_width_mm")
-    if not plan.get("valid") or not center or len(center) != 3 or width is None:
+    if (
+        not plan.get("valid")
+        or not plan.get("motion_grade")
+        or plan.get("display_only")
+        or plan.get("measurement_status") in {"held_last_valid_result", "stale"}
+        or not center
+        or len(center) != 3
+        or width is None
+    ):
         with clamp_capture_lock:
             clamp_capture = None
             clamp_capture_at = 0.0
         plan["captured"] = False
+        plan["motion_allowed"] = False
         plan["message"] = plan.get("message") or "当前没有可用于规划的稳定夹持点与宽度"
         return plan
     captured = copy.deepcopy(plan)
@@ -421,6 +430,44 @@ def start_clamp_vision() -> dict[str, Any]:
 @app.post("/api/workflow/clamp/plan")
 def capture_clamp_plan_route() -> dict[str, Any]:
     return capture_clamp_plan()
+
+
+@app.post("/api/workflow/clamp/align-and-plan")
+def clamp_align_and_plan(
+    auto_align: bool = False,
+    confirmed_clear: bool = False,
+    confirm_text: str = "",
+) -> dict[str, Any]:
+    """Return a bounded alignment suggestion or explicitly launch one move."""
+    command = [sys.executable, str(ROOT.parent / "scripts/clamp_auto_align.py")]
+    if auto_align:
+        if not confirmed_clear or confirm_text.strip() != "确认一次自动对准":
+            raise HTTPException(status_code=400, detail="真实自动对准需要现场确认和确认文字")
+        command.extend([
+            "--execute", "--confirmed-clear", "--confirm-text", "确认一次自动对准",
+        ])
+    else:
+        command.append("--dry-run")
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=ROOT.parent,
+            text=True,
+            capture_output=True,
+            timeout=90.0 if auto_align else 10.0,
+            check=False,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=f"对准规划启动失败：{error}") from error
+    output = (completed.stdout or completed.stderr).strip()
+    if completed.returncode not in (0, 2):
+        raise HTTPException(status_code=409, detail=output or "对准规划失败")
+    try:
+        result = json.loads(output)
+    except json.JSONDecodeError:
+        result = {"status": "FAILED", "message": output or "对准规划没有返回JSON"}
+    result["auto_align_requested"] = auto_align
+    return result
 
 
 @app.post("/api/workflow/pry/vision/start")

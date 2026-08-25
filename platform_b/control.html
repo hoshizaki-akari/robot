@@ -223,7 +223,7 @@
             </div>
             <div class="actions"><button class="button primary" id="clampVisionBtn" type="button">开启夹挤视觉</button><button class="button stop" id="clampStopBtn" type="button" disabled>停止视觉</button></div>
             <div class="message" id="clampMessage"></div>
-            <div class="actions"><button class="button secondary" id="clampPlanBtn" type="button" disabled>获取夹持点与宽度</button><button class="button execute" id="clampMoveBtn" type="button" disabled>确认并执行夹挤运动</button></div>
+            <div class="actions"><button class="button secondary" id="clampPlanBtn" type="button" disabled>获取夹持点与宽度</button><button class="button secondary" id="clampAlignBtn" type="button" disabled>生成对准建议</button><button class="button pry" id="clampAlignExecuteBtn" type="button" disabled>执行一次自动对准</button><button class="button execute" id="clampMoveBtn" type="button" disabled>确认并执行夹挤运动</button></div>
           </section>
 
           <section class="workflow" id="pryPanel" role="tabpanel" hidden>
@@ -561,8 +561,13 @@
     }
     function renderClampPlan(plan) {
       $('clampWidth').textContent=plan.heel_width_mm==null?'-- mm':fmt(plan.heel_width_mm,2)+' mm'; $('clampCenter').textContent=vec(plan.clamp_contact_center_camera_mm,1);
-      $('clampPlanState').textContent=plan.valid&&plan.captured?'已冻结':'等待有效结果'; $('clampMoveBtn').disabled=!(plan.valid&&plan.captured);
+      $('clampPlanState').textContent=plan.valid&&plan.captured?'已冻结':(plan.message||'等待有效结果'); $('clampMoveBtn').disabled=!(plan.valid&&plan.captured); $('clampAlignBtn').disabled=!plan.valid; $('clampAlignExecuteBtn').disabled=!plan.valid;
       setStep('clamp',2,plan.valid&&plan.captured?'done':'active'); setStep('clamp',3,plan.valid&&plan.captured?'waiting':''); showMessage('clampMessage',plan.message||'');
+    }
+    async function requestClampAlignment(execute=false) {
+      if (execute && !window.confirm('将仅执行一次小范围低速自动对准。请确认现场无人、无障碍且实体急停可用，是否继续？')) return;
+      const query = execute ? '?auto_align=true&confirmed_clear=true&confirm_text='+encodeURIComponent('确认一次自动对准') : '?auto_align=false';
+      try { const result=await getJson('/api/workflow/clamp/align-and-plan'+query,{method:'POST'}); showMessage('clampMessage',result.status==='DRY_RUN'?('对准建议：平移 '+JSON.stringify(result.delta_camera_translation_mm)+' mm，旋转 '+result.delta_camera_rotation_deg+'°，安全='+result.safe_by_geometry):('自动对准已完成，请等待新帧并重新获取夹持点')); logEvent('视觉',execute?'已执行一次自动对准':'已生成自动对准建议','plan'); } catch(error) { showMessage('clampMessage',error.message); logEvent('视觉','自动对准失败：'+error.message,'alert'); }
     }
     function renderPryPlan(plan) {
       $('pryWidth').textContent=plan.width_mm==null?(plan.heel_width_mm==null?'-- mm':fmt(plan.heel_width_mm,2)+' mm'):fmt(plan.width_mm,2)+' mm';
@@ -627,7 +632,7 @@
     function connectState() { const protocol=location.protocol==='https:'?'wss:':'ws:'; try { model.socket=new WebSocket(protocol+'//'+location.host+'/ws'); model.socket.onmessage=e=>{ try { applySnapshot(JSON.parse(e.data)); } catch (_) {} }; model.socket.onclose=()=>{ fallbackState(); clearTimeout(model.fallback); model.fallback=setTimeout(connectState,1500); }; model.socket.onerror=()=>model.socket.close(); } catch (_) { fallbackState(); } }
     $('clampTab').addEventListener('click',()=>switchMode('clamp')); $('pryTab').addEventListener('click',()=>switchMode('pry'));
     $('clampVisionBtn').addEventListener('click',()=>startVision('clamp')); $('pryVisionBtn').addEventListener('click',()=>startVision('pry'));
-    $('clampPlanBtn').addEventListener('click',()=>capturePlan('clamp')); $('pryPlanBtn').addEventListener('click',()=>capturePlan('pry'));
+    $('clampPlanBtn').addEventListener('click',()=>capturePlan('clamp')); $('pryPlanBtn').addEventListener('click',()=>capturePlan('pry')); $('clampAlignBtn').addEventListener('click',()=>requestClampAlignment(false)); $('clampAlignExecuteBtn').addEventListener('click',()=>requestClampAlignment(true));
     $('clampMoveBtn').addEventListener('click',executeClamp); $('pryMoveBtn').addEventListener('click',executePry);
     function stopVision(branch) {
       const teardown = async () => {

@@ -1,0 +1,17 @@
+{
+  "vision_geometry_v2": true,
+  "clamp_auto_align_enabled": false,
+  "dry_run_default": true,
+  "sample_count": 8,
+  "minimum_valid_frames": 6,
+  "width_mad_max_mm": 1.5,
+  "center_max_deviation_mm": 3.0,
+  "angle_mad_max_deg": 2.0,
+  "depth_valid_ratio_min": 0.85,
+  "max_axis_translation_mm": 5.0,
+  "max_total_translation_mm": 8.0,
+  "max_axis_rotation_deg": 3.0,
+  "max_total_rotation_deg": 5.0,
+  "settle_seconds": 1.0,
+  "alignment_target_principal_angle_deg": 0.0
+}

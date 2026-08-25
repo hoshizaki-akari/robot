@@ -234,6 +234,7 @@ def clamp_plan() -> dict[str, Any]:
         return {"valid": False, "motion_allowed": False, "message": "当前没有真实相机"}
     vision = monitor.vision_snapshot()
     snapshot = store.get()
+    vision["color_intrinsics"] = (snapshot.get("d435") or {}).get("color_intrinsics")
     return build_clamp_plan(vision, snapshot.get("fr5") or {})
 
 

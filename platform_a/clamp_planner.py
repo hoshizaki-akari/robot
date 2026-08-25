@@ -36,7 +36,9 @@ def build_clamp_plan(vision: dict[str, Any], fr5: dict[str, Any]) -> dict[str, A
     result = dict(vision)
     result["motion_allowed"] = False
     result["coordinate_system"] = "camera"
-    if not vision.get("valid"):
+    if not vision.get("valid") or not vision.get("motion_grade") or vision.get("display_only"):
+        if vision.get("display_only"):
+            result["message"] = "当前视觉结果仅用于显示，不能用于机器人运动"
         return result
     if not CALIBRATION_FILE.is_file():
         result["message"] = "识别有效，但还没有相机标定文件"
