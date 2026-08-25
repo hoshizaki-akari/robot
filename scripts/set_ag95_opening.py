@@ -20,7 +20,7 @@ from state_service.ag95_reader import (
     REG_GRIP_STATUS,
     REG_INIT_STATUS,
     crc16,
-    find_device,
+    open_ag95_port,
     read_register,
 )
 
@@ -76,17 +76,8 @@ def main() -> int:
             print("已取消。")
             return 2
 
-    device = find_device()
-    with serial.Serial(
-        device,
-        baudrate=115200,
-        bytesize=serial.EIGHTBITS,
-        parity=serial.PARITY_NONE,
-        stopbits=serial.STOPBITS_ONE,
-        timeout=0.5,
-        write_timeout=0.5,
-        exclusive=True,
-    ) as port:
+    # Wait for the read-only state sampler to release the shared port lock.
+    with open_ag95_port(timeout_s=8.0) as (port, _device):
         initialized = read_register(port, REG_INIT_STATUS)
         if initialized != 1:
             print("夹爪正在寻找完全张开的位置……")
