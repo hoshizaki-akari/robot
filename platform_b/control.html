@@ -79,7 +79,9 @@
     .viewport img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; background:#152a30; }
     /* Canvas must occupy the image's visible contain-box, not the full viewport. */
     .viewport canvas { position:absolute; pointer-events:none; }
-    #liveCamera, #visionOverlay, #pryCamera { transform:rotate(180deg); transform-origin:center; }
+    /* The camera launch pipeline already publishes the configured 180° image.
+       Keep the video and pixel-coordinate overlay in the same orientation. */
+    #liveCamera, #visionOverlay, #pryCamera { transform:none; transform-origin:center; }
 
     .result-strip { flex:0 0 auto; display:grid; grid-template-columns:repeat(3,1fr); gap:7px; margin-top:8px; }
     .result { min-height:50px; padding:7px 9px; border:1px solid #d5e3e3; border-radius:8px; background:#fbfdfd; }
@@ -518,7 +520,7 @@
       canvas.style.width=width+'px'; canvas.style.height=height+'px';
       return true;
     }
-    function drawOverlay(vision) { const image=$('liveCamera'); const canvas=$('visionOverlay'); if (!vision || !image.naturalWidth || !image.naturalHeight || !alignOverlayToVideo(image,canvas)) return; if (canvas.width!==image.naturalWidth || canvas.height!==image.naturalHeight) { canvas.width=image.naturalWidth; canvas.height=image.naturalHeight; } const ctx=canvas.getContext('2d'); ctx.clearRect(0,0,canvas.width,canvas.height); if (!vision.heel_detected) return; const a=vision.clamp_contact_a_px, b=vision.clamp_contact_b_px, c=vision.heel_center_px; ctx.lineWidth=2; ctx.strokeStyle='#00dbd1'; ctx.fillStyle='#00dbd1'; if (Array.isArray(a)&&Array.isArray(b)) { ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.stroke(); for (const p of [a,b]) { ctx.beginPath(); ctx.arc(p[0],p[1],3.5,0,Math.PI*2); ctx.fill(); } } if (Array.isArray(c)) { ctx.strokeStyle='#fff'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.moveTo(c[0]-7,c[1]); ctx.lineTo(c[0]+7,c[1]); ctx.moveTo(c[0],c[1]-7); ctx.lineTo(c[0],c[1]+7); ctx.stroke(); } }
+    function drawOverlay(vision) { const image=$('liveCamera'); const canvas=$('visionOverlay'); if (!vision || !image.naturalWidth || !image.naturalHeight || !alignOverlayToVideo(image,canvas)) return; if (canvas.width!==image.naturalWidth || canvas.height!==image.naturalHeight) { canvas.width=image.naturalWidth; canvas.height=image.naturalHeight; } const ctx=canvas.getContext('2d'); ctx.clearRect(0,0,canvas.width,canvas.height); if (!vision.heel_detected) return; const a=vision.clamp_contact_a_px, b=vision.clamp_contact_b_px, c=vision.heel_center_px; ctx.lineWidth=2; ctx.strokeStyle='#00dbd1'; ctx.fillStyle='#00dbd1'; if (Array.isArray(a)&&Array.isArray(b)) { ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.stroke(); for (const p of [a,b]) { ctx.beginPath(); ctx.arc(p[0],p[1],2.5,0,Math.PI*2); ctx.fill(); } } if (Array.isArray(c)) { ctx.strokeStyle='#fff'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.moveTo(c[0]-7,c[1]); ctx.lineTo(c[0]+7,c[1]); ctx.moveTo(c[0],c[1]-7); ctx.lineTo(c[0],c[1]+7); ctx.stroke(); } }
     let lastOnline=null;
     function applySnapshot(snapshot) {
       if (!snapshot) return;

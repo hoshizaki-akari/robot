@@ -413,7 +413,7 @@ def start_clamp_vision() -> dict[str, Any]:
     return {
         "branch": "clamp",
         "running": True,
-        "algorithm": "state_service.D435Monitor -> PryBuckleVisionWorker (YOLO heel_seg + HorizontalDiameterEstimator)",
+        "algorithm": "state_service.D435Monitor (YOLO + depth-guided heel fallback + HorizontalDiameterEstimator)",
         "message": "夹挤视觉已接入真实 D435；请保持足跟稳定后获取夹持点与宽度",
     }
 
@@ -495,7 +495,7 @@ def move_clamp(
         sys.executable, str(ROOT.parent / "scripts/clamp_acquire_and_move.py"),
         "--clamp-mm", f"{clamp_mm:.3f}",
         "--speed-mm-s", f"{speed_mm_s:.3f}",
-        "--center-camera-mm", ",".join(f"{float(v):.5f}" for v in center),
+        f"--center-camera-mm={','.join(f'{float(v):.5f}' for v in center)}",
         "--width-mm", f"{float(width):.5f}",
     ]
     return launch_workflow(command, "clamp", "夹挤：移动到夹持点并执行夹挤")
@@ -528,7 +528,7 @@ def move_pry(
         raise HTTPException(status_code=409, detail="撬拨结果缺少足跟表面间距")
     command = [
         sys.executable, str(ROOT.parent / "scripts/pry_move_to_clamp.py"),
-        "--center-camera-mm", ",".join(f"{float(v):.5f}" for v in center),
+        f"--center-camera-mm={','.join(f'{float(v):.5f}' for v in center)}",
         "--surface-gap-mm", f"{gap:.5f}",
         "--pry-position-mm", f"{pry_position_mm:.5f}",
         "--pry-direction", direction,

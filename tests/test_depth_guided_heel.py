@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 
 from pry_buckle.depth_guided_heel import (
+    build_target_display_mask,
     estimate_depth_guided_target_chord,
     extract_depth_heel_candidate,
 )
@@ -37,6 +38,21 @@ class DepthGuidedHeelTests(unittest.TestCase):
         self.assertGreaterEqual(result["width_mm"], 50.0)
         self.assertLessEqual(result["width_mm"], 60.0)
         self.assertEqual(result["contact_left_px"][1], result["contact_right_px"][1])
+        self.assertEqual(result["selected_chord_y_px"], 90)
+        self.assertEqual(
+            result["contact_left_px"][0] + result["contact_right_px"][0],
+            2 * result["center_px"][0],
+        )
+
+        display_mask = build_target_display_mask(
+            mask,
+            result["target_circle_center_px"],
+            result["target_circle_radius_px"],
+        )
+        self.assertGreater(int(np.count_nonzero(display_mask)), 0)
+        ys, xs = np.nonzero(display_mask)
+        cx, cy = result["target_circle_center_px"]
+        self.assertLessEqual(int(np.max((xs - cx) ** 2 + (ys - cy) ** 2)), result["target_circle_radius_px"] ** 2)
 
 
 if __name__ == "__main__":

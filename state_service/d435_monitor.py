@@ -22,11 +22,13 @@ except ImportError:  # 允许脚本直接以模块方式运行
 
 try:
     from pry_buckle.depth_guided_heel import (
+        build_target_display_mask,
         estimate_depth_guided_target_chord,
         extract_depth_heel_candidate,
     )
 except ImportError:  # 允许脚本直接以模块方式运行
     from depth_guided_heel import (
+        build_target_display_mask,
         estimate_depth_guided_target_chord,
         extract_depth_heel_candidate,
     )
@@ -491,7 +493,12 @@ class D435Monitor:
                         )
                         if candidate.get("valid"):
                             result = candidate
-                            selected_mask = depth_mask
+                            selected_mask = build_target_display_mask(
+                                depth_mask,
+                                candidate.get("target_circle_center_px")
+                                or candidate.get("center_px"),
+                                candidate.get("target_circle_radius_px", 10),
+                            )
                             detection_method = "depth_guided_fallback"
                         else:
                             depth_candidate_result = candidate
@@ -500,7 +507,12 @@ class D435Monitor:
                     if depth_candidate_result is not None:
                         result = depth_candidate_result
                         detection_method = "depth_guided_fallback"
-                        selected_mask = depth_mask
+                        selected_mask = build_target_display_mask(
+                            depth_mask,
+                            result.get("target_circle_center_px")
+                            or result.get("center_px"),
+                            result.get("target_circle_radius_px", 10),
+                        )
                     else:
                         raise RuntimeError(
                             "视野内未识别到满足几何约束的足跟："
