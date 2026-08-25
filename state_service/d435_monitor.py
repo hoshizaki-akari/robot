@@ -448,6 +448,7 @@ class D435Monitor:
                 yolo_confidence: float | None = None
                 selected_mask: np.ndarray | None = None
                 depth_candidate_result: dict[str, Any] | None = None
+                depth_mask: np.ndarray | None = None
 
                 # Reject tiny/background YOLO masks before geometry.  This is
                 # deliberately stricter than the model confidence threshold:
@@ -474,11 +475,13 @@ class D435Monitor:
                                 yolo_confidence = float(confidences[int(index)])
                                 break
 
-                # Current-view fallback: select a coherent near-depth object,
-                # then use exactly the same horizontal endpoints and plane
-                # intersection as the normal geometry path.
+                # Current-view depth consensus: when the aligned depth image
+                # can identify the single central near object, prefer its
+                # fixed upper-heel chord even if YOLO also returned a valid
+                # but different mask.  This prevents a low-quality YOLO
+                # fragment from moving the contacts between unrelated rows.
                 depth_diag: dict[str, Any] = {}
-                if result is None and dep is not None and intr is not None:
+                if dep is not None and intr is not None:
                     depth_mask, depth_diag = extract_depth_heel_candidate(dep)
                     if depth_mask is not None:
                         candidate = estimate_depth_guided_target_chord(
@@ -499,7 +502,11 @@ class D435Monitor:
                                 or candidate.get("center_px"),
                                 candidate.get("target_circle_radius_px", 10),
                             )
-                            detection_method = "depth_guided_fallback"
+                            detection_method = (
+                                "depth_guided_consensus"
+                                if yolo_confidence is not None
+                                else "depth_guided_fallback"
+                            )
                         else:
                             depth_candidate_result = candidate
 
