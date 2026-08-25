@@ -80,38 +80,6 @@ ensure_http_unit() {
   wait_for_url "$name" "$url" 20
 }
 
-ensure_usb_in_wsl() {
-  local name="$1"
-  local hardware_id="$2"
-  local line
-  local busid
-
-  if lsusb | grep -q "$hardware_id"; then
-    say "$name：已连接到WSL"
-    return 0
-  fi
-  if ! command -v usbipd.exe >/dev/null 2>&1; then
-    say "$name：WSL中未发现设备，且无法调用Windows的USB连接工具"
-    return 1
-  fi
-  line="$(usbipd.exe list 2>/dev/null | tr -d '\r' | grep "$hardware_id" | head -n 1 || true)"
-  busid="${line%% *}"
-  if [[ -z "$line" || -z "$busid" ]]; then
-    say "$name：Windows也没有发现设备，请检查USB线和供电"
-    return 1
-  fi
-  say "$name：正在重新接入WSL"
-  usbipd.exe attach --wsl Ubuntu-22.04-F --busid "$busid" >/dev/null 2>&1 || true
-  sleep 2
-  if lsusb | grep -q "$hardware_id"; then
-    say "$name：已重新接入WSL"
-    return 0
-  fi
-  say "$name：Windows尚未允许共享。请用管理员PowerShell运行："
-  say "usbipd bind --busid $busid"
-  return 1
-}
-
 start_all() {
   cd "$PROJECT"
   stop_conflicting_stack
@@ -214,7 +182,8 @@ assert_port_available_for() {
 }
 
 ensure_usb_in_wsl() {
-  local name="$1" hardware_id="$2" line output busid
+  local name="$1" hardware_id="$2" line output busid attach_output
+  local distro="${WSL_DISTRO_NAME:-Ubuntu-22.04-F}"
   if lsusb | grep -q "$hardware_id"; then
     say "$name：已连接到WSL"
     return 0
@@ -228,26 +197,32 @@ ensure_usb_in_wsl() {
     say "请在 Windows PowerShell 执行：wsl --shutdown；随后重新打开 Ubuntu-22.04-F，再运行本脚本"
     return 1
   fi
-  line="$(printf '%s\n' "$output" | tr -d '\r' | grep "$hardware_id" | head -n 1 || true)"
-  busid="${line%% *}"
-  if [[ -z "$line" || -z "$busid" ]]; then
-    say "$name：Windows 未发现设备，请检查 USB 线和供电"
+  line="$(printf '%s\n' "$output" | tr -d '\r' | grep -F "$hardware_id" | head -n 1 || true)"
+  busid="$(printf '%s\n' "$line" | awk '{print $1}')"
+  if [[ -z "$line" || ! "$busid" =~ ^[0-9]+-[0-9]+$ ]]; then
+    say "$name：Windows 未发现可用的 USB 总线号（$hardware_id）。"
+    say "这通常是 usbipd 的错误状态残留；请在管理员 PowerShell 执行："
+    say "usbipd unbind --hardware-id $hardware_id"
+    say "然后重新插拔该设备，再执行本脚本。"
     return 1
   fi
   if [[ "$line" == *"Not shared"* ]]; then
     say "$name：Windows 已发现设备但未共享。请用管理员 PowerShell 执行：usbipd bind --busid $busid"
     return 1
   fi
-  say "$name：正在重新接入 WSL"
-  usbipd.exe attach --wsl Ubuntu-22.04-F --busid "$busid" >/dev/null 2>&1 || true
-  for _ in 1 2 3; do
+  say "$name：正在接入 WSL 发行版 $distro（busid=$busid）"
+  attach_output="$(usbipd.exe attach --wsl "$distro" --hardware-id "$hardware_id" 2>&1 || true)"
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
     sleep 1
     if lsusb | grep -q "$hardware_id"; then
-      say "$name：已重新接入 WSL"
+      say "$name：已接入 WSL"
       return 0
     fi
   done
-  say "$name：Windows 已共享但未能附加到 WSL。请在 Windows PowerShell 执行：usbipd attach --wsl Ubuntu-22.04-F --busid $busid"
+  say "$name：附加失败，usbipd 原始信息："
+  printf '%s\n' "$attach_output" | tail -n 8
+  say "请在管理员 PowerShell 执行：usbipd unbind --busid $busid"
+  say "重新插拔后再执行：usbipd bind --busid $busid"
   return 1
 }
 
@@ -258,4 +233,3 @@ case "${1:-start}" in
   status) show_status ;;
   *) say "用法：bash scripts/platforms.sh start|stop|restart|status"; exit 2 ;;
 esac
-
