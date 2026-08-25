@@ -20,6 +20,17 @@ try:
 except ImportError:  # 允许脚本直接以模块方式运行
     from horizontal_diameter import CameraIntrinsics, HorizontalDiameterEstimator
 
+try:
+    from pry_buckle.depth_guided_heel import (
+        estimate_depth_guided_target_chord,
+        extract_depth_heel_candidate,
+    )
+except ImportError:  # 允许脚本直接以模块方式运行
+    from depth_guided_heel import (
+        estimate_depth_guided_target_chord,
+        extract_depth_heel_candidate,
+    )
+
 
 class D435Monitor:
     """可选 ROS 2 图像订阅器；没有启动相机节点时返回明确的无效状态。"""
@@ -365,23 +376,46 @@ class D435Monitor:
             self._distortion_coefficients = [float(value) for value in message.d]
 
     def _run_clamp_vision(self) -> None:
-        """夹持分支视觉：复用撬拨验证过的水平直径算法（pry_buckle）。
+        """Extract a validated current-view heel candidate.
 
-        不再使用已废弃的 HeelClampVision（clamp_vision.py，含针孔检测与多帧
-        稳定）。改为直接在共同状态服务已经订阅到的相机帧上跑 YOLO 足跟分割 +
-        HorizontalDiameterEstimator 求水平夹持直径。与 PryBuckleVisionWorker
-        共用同一套模型与几何，只是订阅由本类的 ROS 节点统一完成，避免同进程内
-        创建第二个 ROS Node（会触发 rclpy wait set 限制）。
+        The camera launch already enables the RealSense rotation filter.  The
+        previous implementation rotated the color/depth pair a second time,
+        then ran a small full-frame inference.  The current view contains a
+        much smaller heel than the model's training crops, so a low-confidence
+        background box could be mistaken for the target while the real heel
+        was rejected.  We now require a usable mask and geometry; if YOLO does
+        not provide one, a coherent near-depth component is used as a
+        display-only candidate and is still checked by the same plane/width
+        estimator.
         """
-        from ultralytics import YOLO
-
         default_model = Path(__file__).resolve().parents[1] / "platform_a" / "models" / "heel_seg.pt"
         model_path = Path(os.environ.get("PLATFORM_A_HEEL_MODEL", str(default_model)))
+        vision_threads = max(1, int(os.environ.get("FR5_VISION_TORCH_THREADS", "1")))
+        os.environ.setdefault("OMP_NUM_THREADS", str(vision_threads))
+        os.environ.setdefault("MKL_NUM_THREADS", str(vision_threads))
+        os.environ.setdefault("OPENBLAS_NUM_THREADS", str(vision_threads))
+        from ultralytics import YOLO
+
+        try:
+            import torch
+
+            torch.set_num_threads(vision_threads)
+            try:
+                torch.set_num_interop_threads(vision_threads)
+            except RuntimeError:
+                # Another already-running torch component may have fixed the
+                # inter-op pool; the intra-op limit above is still effective.
+                pass
+        except (ImportError, ValueError, RuntimeError):
+            pass
         detector = YOLO(str(model_path))
         estimator = HorizontalDiameterEstimator()
         last_inference_time = 0.0
-        last_valid_result: dict[str, Any] | None = None
-        last_valid_at = 0.0
+        last_yolo_inference_at = 0.0
+        inference_period_s = float(os.environ.get("FR5_VISION_INFERENCE_PERIOD_S", "0.75"))
+        yolo_check_period_s = float(
+            os.environ.get("FR5_VISION_YOLO_CHECK_PERIOD_S", "5.0")
+        )
         # 夹持中心比可见足跟表面沿光轴远约 35mm，与 PryBuckleVisionWorker 一致。
         GRIPPER_BIAS_MM = 35.0
         while True:
@@ -395,31 +429,84 @@ class D435Monitor:
                 continue
             self._vision_processed_id = frame_id
             now = monotonic()
-            if now - last_inference_time < 0.25:
+            if now - last_inference_time < inference_period_s:
+                threading.Event().wait(0.05)
                 continue
             last_inference_time = now
             try:
-                # 部署的 D435 图像流旋转了 180°，模型在正立图上训练。旋转回
-                # 正立、深度同步旋转、内参主点翻转，坐标即落在物理光轴系。
-                img = cv2.rotate(image, cv2.ROTATE_180)
-                dep = cv2.rotate(depth, cv2.ROTATE_180) if depth is not None else None
+                # rotation_filter.rotation:=180.0 is already applied by the
+                # camera node.  Keep RGB, aligned depth and intrinsics in the
+                # same published orientation; do not rotate a second time.
+                img = image
+                dep = depth
                 ih, iw = img.shape[:2]
-                intr = None
-                if intrinsics is not None:
-                    intr = CameraIntrinsics(
-                        intrinsics.fx, intrinsics.fy,
-                        iw - intrinsics.cx, ih - intrinsics.cy,
-                    )
-                prediction = detector.predict(
-                    source=img, imgsz=640, conf=0.10,
-                    retina_masks=True, verbose=False, device="cpu",
-                )[0]
-                if prediction.masks is None or prediction.boxes is None:
-                    raise RuntimeError("视野内未识别到足跟，请调整足部位置或相机角度后重试")
-                index = int(np.argmax(prediction.boxes.conf.detach().cpu().numpy()))
-                raw_mask = prediction.masks.data[index].detach().cpu().numpy()
-                mask = cv2.resize(raw_mask, (iw, ih), interpolation=cv2.INTER_NEAREST) > 0.5
-                result = estimator.estimate(mask, dep, intr)
+                intr = intrinsics
+                result: dict[str, Any] | None = None
+                detection_method = "yolo"
+                yolo_confidence: float | None = None
+                selected_mask: np.ndarray | None = None
+                depth_candidate_result: dict[str, Any] | None = None
+
+                # Reject tiny/background YOLO masks before geometry.  This is
+                # deliberately stricter than the model confidence threshold:
+                # a 7x8 px shelf fragment is not a heel candidate.
+                if now - last_yolo_inference_at >= yolo_check_period_s:
+                    last_yolo_inference_at = now
+                    prediction = detector.predict(
+                        source=img, imgsz=640, conf=0.10,
+                        retina_masks=True, verbose=False, device="cpu",
+                    )[0]
+                    if prediction.masks is not None and prediction.boxes is not None:
+                        confidences = prediction.boxes.conf.detach().cpu().numpy()
+                        for index in np.argsort(confidences)[::-1]:
+                            raw_mask = prediction.masks.data[int(index)].detach().cpu().numpy()
+                            mask = cv2.resize(
+                                raw_mask, (iw, ih), interpolation=cv2.INTER_NEAREST
+                            ) > 0.5
+                            if int(np.count_nonzero(mask)) < 300:
+                                continue
+                            candidate = estimator.estimate(mask, dep, intr)
+                            if candidate.get("valid"):
+                                result = candidate
+                                selected_mask = mask
+                                yolo_confidence = float(confidences[int(index)])
+                                break
+
+                # Current-view fallback: select a coherent near-depth object,
+                # then use exactly the same horizontal endpoints and plane
+                # intersection as the normal geometry path.
+                depth_diag: dict[str, Any] = {}
+                if result is None and dep is not None and intr is not None:
+                    depth_mask, depth_diag = extract_depth_heel_candidate(dep)
+                    if depth_mask is not None:
+                        candidate = estimate_depth_guided_target_chord(
+                            depth_mask, dep, intr, estimator
+                        )
+                        depth_diag.update(
+                            {
+                                "depth_candidate_width_mm": candidate.get("width_mm"),
+                                "depth_candidate_valid": bool(candidate.get("valid")),
+                                "depth_candidate_message": candidate.get("message"),
+                            }
+                        )
+                        if candidate.get("valid"):
+                            result = candidate
+                            selected_mask = depth_mask
+                            detection_method = "depth_guided_fallback"
+                        else:
+                            depth_candidate_result = candidate
+
+                if result is None:
+                    if depth_candidate_result is not None:
+                        result = depth_candidate_result
+                        detection_method = "depth_guided_fallback"
+                        selected_mask = depth_mask
+                    else:
+                        raise RuntimeError(
+                            "视野内未识别到满足几何约束的足跟："
+                            + str(depth_diag.get("message", "YOLO 与深度候选均失败"))
+                        )
+
                 result.update({
                     "image_width": int(iw), "image_height": int(ih),
                     "heel_detected": True, "heel_outline_px": [],
@@ -427,6 +514,9 @@ class D435Monitor:
                     "clamp_contact_a_px": result.get("contact_left_px"),
                     "clamp_contact_b_px": result.get("contact_right_px"),
                     "heel_width_mm": result.get("width_mm"),
+                    "detection_method": detection_method,
+                    "yolo_confidence": yolo_confidence,
+                    **depth_diag,
                     # clamp_planner 期望的字段名
                     "heel_center_camera_mm": result.get("center_camera_mm"),
                     "clamp_contact_a_camera_mm": result.get("contact_left_camera_mm"),
@@ -449,22 +539,23 @@ class D435Monitor:
                     result["surface_to_upper_midpoint_gap_mm"] = float(
                         result.get("surface_to_upper_midpoint_gap_mm", 0.0)
                     )
-                if result.get("valid"):
-                    last_valid_result = dict(result)
-                    last_valid_at = now
-                elif (
-                    last_valid_result is not None
-                    and result.get("center_px") is not None
-                    and now - last_valid_at <= 3.0
-                ):
-                    # 单帧短暂无效时沿用最近有效夹持点，避免界面在 valid/rejected 间闪烁。
-                    held = dict(last_valid_result)
-                    held["measurement_status"] = "held_last_valid_result"
-                    held["message"] = "当前帧短暂无效，保持最近有效夹持点"
-                    result = held
-                overlay = estimator.draw_overlay(img, mask, result)
-                if not result.get("valid"):
-                    overlay = img.copy()
+                # A depth fallback is useful for the current-view display but
+                # must not be promoted to robot-motion grade without a later
+                # human checkpoint and multi-frame confirmation.
+                if detection_method == "depth_guided_fallback":
+                    result["motion_grade"] = False
+                    result["motion_allowed"] = False
+                    result["display_only"] = True
+                    result["message"] = (
+                        "深度引导足跟候选：已得到夹持点与宽度，等待人工确认"
+                        if result.get("valid")
+                        else "深度候选已找到，但夹持宽度/深度几何未通过"
+                    )
+                overlay = estimator.draw_overlay(
+                    img,
+                    selected_mask if selected_mask is not None else np.zeros((ih, iw), dtype=bool),
+                    result,
+                )
                 ok, encoded = cv2.imencode(".png", overlay)
                 if not ok:
                     raise ValueError("识别画面编码失败")
