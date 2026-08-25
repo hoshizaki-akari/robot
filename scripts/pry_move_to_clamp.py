@@ -64,7 +64,7 @@ def main() -> int:
     distance = float(np.linalg.norm(target[:3] - np.asarray(current[:3])))
     if distance > 320.0 or not 80.0 <= final_target[2] <= 700.0:
         raise RuntimeError(f"目标超出安全范围: distance={distance:.1f} final_z={final_target[2]:.1f}")
-    print(json.dumps({"current": current, "center_camera_mm": center_camera.tolist(), "center_base_mm": center_base.tolist(), "center_target": target.tolist(), "final_tool_y_minus_target": final_target.tolist(), "surface_gap_mm": args.surface_gap_mm, "pry_position_mm": args.pry_position_mm, "tool_y_minus_total_mm": total}, ensure_ascii=False))
+    print(json.dumps({"current": current, "center_camera_mm": center_camera.tolist(), "center_base_mm": center_base.tolist(), "center_target": target.tolist(), "final_tool_y_minus_target": final_target.tolist(), "surface_gap_mm": args.surface_gap_mm, "pry_position_mm": args.pry_position_mm, "tool_y_minus_total_mm": total, "pre_approach_tool_y_plus_retreat_mm": 10.0}, ensure_ascii=False))
     if args.dry_run:
         return 0
     from fairino import Robot
@@ -91,6 +91,16 @@ def main() -> int:
         robot.ProgramResume()
         move_wait(target, int(args.speed_mm_s), 180)
         print("已到达夹持中心")
+
+        # 撬拨专用安全顺序：到达夹持点后先沿 Tool Y+ 回退 10 mm，
+        # 再执行原有的 Tool Y- 靠近，不影响夹挤工作流。
+        tool_rotation = pose_to_matrix(target.tolist())[:3, :3]
+        retreat_mm = 10.0
+        retreat_target = target.copy()
+        retreat_target[:3] += tool_rotation[:, 1] * retreat_mm
+        move_wait(retreat_target, max(1, int(args.speed_mm_s * 0.75)), 60)
+        print(f"撬拨安全回退：Tool Y+ {retreat_mm:.1f} mm")
+
         move_wait(final_target, max(1, int(args.speed_mm_s * 0.75)), 120)
         print(f"已完成Tool Y-移动 {total:.1f} mm")
         if args.close_after:
