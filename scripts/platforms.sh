@@ -120,10 +120,9 @@ start_all() {
   ensure_usb_in_wsl "AG95" "0403:6001"
   ensure_usb_in_wsl "D435" "8086:0b07"
   start_unit "$CAMERA_UNIT" "$PROJECT/scripts/run_d435_camera.sh"
-  ensure_http_unit "$STATE_UNIT" "$PROJECT/scripts/run_state_service_real.sh"     "共同数据服务" "http://127.0.0.1:8765/health"
+  ensure_http_unit "$STATE_UNIT" "共同数据服务" "http://127.0.0.1:8765/health" "$PROJECT/scripts/run_state_service_real.sh"
   start_unit "$WATCHDOG_UNIT" "$PYTHON" "$PROJECT/scripts/watch_d435_camera.py"
-  start_unit "$GATEWAY_UNIT" "$PYTHON" "$PROJECT/platform_b/gateway.py"
-  wait_for_http_unit fr5-release-platform-b.service "Web 控制台" "http://127.0.0.1:8080/health" 15
+  ensure_http_unit "$GATEWAY_UNIT" "Web 控制台" "http://127.0.0.1:8080/health" "$PYTHON" "$PROJECT/platform_b/gateway.py"
   say ""
   say "发布版启动完成：http://127.0.0.1:8080/"
   say "状态检查：bash scripts/platforms.sh status"
@@ -171,6 +170,20 @@ wait_for_http_unit() {
   say "$name：未能通过服务运行和 HTTP 响应自检"
   journalctl --user -u "$unit" --no-pager -n 20 2>&1 || true
   return 1
+}
+
+
+ensure_http_unit() {
+  local unit="$1" name="$2" url="$3"
+  shift 3
+  if is_running "$unit" && ! curl --silent --fail --max-time 1 "$url" >/dev/null; then
+    say "$name：服务显示运行但健康检查失败，正在停止并重启"
+    systemctl --user kill "$unit" >/dev/null 2>&1 || true
+    systemctl --user stop --no-block "$unit" >/dev/null 2>&1 || true
+    sleep 1
+  fi
+  start_unit "$unit" "$@"
+  wait_for_http_unit "$unit" "$name" "$url" 20
 }
 
 stop_conflicting_stack() {
