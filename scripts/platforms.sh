@@ -221,8 +221,10 @@ ensure_usb_in_wsl() {
   done
   say "$name：附加失败，usbipd 原始信息："
   printf '%s\n' "$attach_output" | tail -n 8
-  say "请在管理员 PowerShell 执行：usbipd unbind --busid $busid"
-  say "重新插拔后再执行：usbipd bind --busid $busid"
+  say "请在管理员 PowerShell 执行（必须使用 --force）："
+  say "usbipd unbind --hardware-id $hardware_id"
+  say "重新插拔设备后执行：usbipd bind --force --hardware-id $hardware_id"
+  say "然后重新运行本脚本。"
   return 1
 }
 
