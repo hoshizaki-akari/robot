@@ -123,6 +123,12 @@
     .log-actions { display:flex; gap:8px; }
     .log-actions .button { flex:1; min-height:34px; font-size:12px; }
     .robot-status { margin-top:8px; font-size:11px; color:#3c5a63; min-height:14px; }
+    .traction-card { border-color:#8bbfbe; }
+    .traction-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px 10px; }
+    .traction-grid .metric-row { padding:4px 0; }
+    .traction-buttons { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-top:8px; }
+    .traction-buttons .button { min-height:32px; padding:0 5px; font-size:11px; }
+    .traction-history { max-height:76px; overflow:auto; margin-top:7px; padding-top:6px; border-top:1px solid #d7e4e4; color:var(--muted); font-size:10px; line-height:1.5; }
 
     /* ===================== 病例模态 ===================== */
     .modal { position:fixed; inset:0; z-index:100; display:grid; place-items:center; background:rgba(7,37,47,.42); padding:16px; }
@@ -269,6 +275,27 @@
           <div class="metric-row"><span>D435 色彩 / 深度</span><strong id="cameraFps">--</strong></div>
         </section>
 
+        <section class="card monitor-card traction-card">
+          <h2>固定模型恒力牵引</h2>
+          <div class="traction-grid">
+            <div class="metric-row"><span>ROS 状态</span><strong id="tractionState">未连接</strong></div>
+            <div class="metric-row"><span>实际轴向力</span><strong id="tractionActual">-- N</strong></div>
+            <div class="metric-row"><span>横向力</span><strong id="tractionLateral">-- N</strong></div>
+            <div class="metric-row"><span>轴向速度</span><strong id="tractionVelocity">-- mm/s</strong></div>
+          </div>
+          <div class="param" style="margin-top:6px"><label>目标牵引力 (1～20 N)</label><input id="tractionTarget" type="number" min="1" max="20" step="0.1" value="10"></div>
+          <div class="traction-buttons">
+            <button class="button secondary" id="tractionPrepareBtn" type="button">准备</button>
+            <button class="button secondary" id="tractionCalibrateBtn" type="button">方向标定</button>
+            <button class="button execute" id="tractionStartBtn" type="button">开始恒力</button>
+            <button class="button stop" id="tractionStopBtn" type="button">正常释放</button>
+            <button class="button danger" id="tractionEmergencyBtn" type="button">软件急停</button>
+            <button class="button warnbtn" id="tractionResetBtn" type="button">复位故障</button>
+          </div>
+          <div class="robot-status" id="tractionMessage">状态由 ROS2 traction_manager 发布；网页不计算力、不直接控制机器人。</div>
+          <div class="traction-history" id="tractionHistory">暂无 ROS2 牵引历史</div>
+        </section>
+
         <section class="card monitor-card">
           <h2>病例管理</h2>
           <div id="caseView"></div>
@@ -397,6 +424,7 @@
       const btn = $('loginBtn');
       if (logState.operator) { btn.textContent = '管理员：' + logState.operator + ' · 退出'; btn.classList.add('ok'); }
       else { btn.textContent = '管理员登录'; btn.classList.remove('ok'); }
+      if (typeof updateTractionButtons === 'function') updateTractionButtons();
     }
     function showLoginGate() {
       $('loginError').textContent=''; $('loginUser').value=''; $('loginPass').value='';
@@ -523,6 +551,7 @@
     function applySnapshot(snapshot) {
       if (!snapshot) return;
       model.snapshot=snapshot;
+      applyTractionSnapshot(snapshot.traction);
       const system=snapshot.system||{}, fr5=snapshot.fr5||{}, ag95=snapshot.ag95||{}, d435=snapshot.d435||{}, kwr=snapshot.kwr75d||{}, gateway=snapshot.gateway||{};
       const online=gateway.valid!==false&&system.valid!==false;
       setDot('systemDot',online); setDot('fr5Dot',!!fr5.valid); setDot('ag95Dot',!!ag95.valid); setDot('d435Dot',!!d435.valid); setDot('kwrDot',!!kwr.valid); setDot('topDot',online);
@@ -539,6 +568,96 @@
       if (model.vision.clamp) drawOverlay(vision);
       if (lastOnline!==null && lastOnline!==online) logEvent('告警', online?'设备恢复在线':'设备离线，请检查控制柜网络/电源/急停', 'alert');
       lastOnline=online;
+    }
+    const tractionMotionStates = new Set([2,3,4,6,7]);
+    let tractionSnapshot = { valid:false, state:0, state_name:'INITIALIZING', target_force_n:10, actual_force_n:0, lateral_force_n:0, velocity_cmd_mps:0 };
+    let tractionHistory = [];
+    function tractionStateLabel(state) {
+      return {0:'初始化',1:'就绪',2:'手动粗调',3:'预张紧',4:'方向标定',5:'方向已锁定',6:'恒力牵引',7:'正常释放',8:'已完成',9:'故障',10:'急停'}[state] || '未知';
+    }
+    function applyTractionSnapshot(value) {
+      if (!value) return;
+      tractionSnapshot = value;
+      const state = Number(value.state);
+      const valid = value.valid === true;
+      $('tractionState').textContent = valid ? tractionStateLabel(state) : 'ROS 未连接';
+      $('tractionActual').textContent = valid ? fmt(value.actual_force_n,2)+' N' : '-- N';
+      $('tractionLateral').textContent = valid ? fmt(value.lateral_force_n,2)+' N' : '-- N';
+      $('tractionVelocity').textContent = valid ? fmt(Number(value.velocity_cmd_mps)*1000,2)+' mm/s' : '-- mm/s';
+      if (valid && document.activeElement !== $('tractionTarget') && Number.isFinite(Number(value.target_force_n))) {
+        $('tractionTarget').value = Number(value.target_force_n).toFixed(1);
+      }
+      const fault = value.fault_code || value.stop_reason || value.message || '';
+      $('tractionMessage').textContent = valid ? (fault || ('状态：'+tractionStateLabel(state))) : '等待 ROS2 traction_manager/status；网页不计算力。';
+      $('tractionMessage').style.color = Number(state) >= 9 ? 'var(--danger)' : '';
+      if (valid && tractionMotionStates.has(state)) {
+        dataPoints.shift(); dataPoints.push(Math.max(0, Number(value.actual_force_n) || 0)); drawCurve();
+      }
+      updateTractionButtons();
+    }
+    function updateTractionButtons() {
+      const loggedIn = !!logState.operator;
+      const state = Number(tractionSnapshot.state);
+      const valid = tractionSnapshot.valid === true;
+      const moving = tractionMotionStates.has(state);
+      $('tractionTarget').disabled = !loggedIn || moving;
+      $('tractionPrepareBtn').disabled = !loggedIn || !valid || ![1,8].includes(state);
+      $('tractionCalibrateBtn').disabled = !loggedIn || !valid || state !== 2;
+      $('tractionStartBtn').disabled = !loggedIn || !valid || state !== 5;
+      $('tractionStopBtn').disabled = !loggedIn || !valid || state !== 6;
+      $('tractionEmergencyBtn').disabled = !loggedIn || !valid || state === 10;
+      $('tractionResetBtn').disabled = !loggedIn || !valid || ![9,10].includes(state);
+    }
+    async function tractionRequest(path, body) {
+      try {
+        const result = await getJson(path, {method:'POST', body: body ? JSON.stringify(body) : '{}'});
+        if (result.traction) applyTractionSnapshot(result.traction);
+        return result;
+      } catch (error) {
+        $('tractionMessage').textContent = error.message;
+        $('tractionMessage').style.color = 'var(--danger)';
+        toast(error.message);
+        return null;
+      }
+    }
+    async function setTractionTarget() {
+      const requested = Number($('tractionTarget').value);
+      if (!Number.isFinite(requested) || requested < 1 || requested > 20) {
+        $('tractionTarget').value = Number(tractionSnapshot.target_force_n || 10).toFixed(1);
+        return toast('目标牵引力必须在 1～20 N');
+      }
+      await tractionRequest('/api/traction/target', {target_force_n: requested});
+    }
+    function bindTractionControls() {
+      $('tractionPrepareBtn').addEventListener('click', () => tractionRequest('/api/traction/prepare'));
+      $('tractionCalibrateBtn').addEventListener('click', () => tractionRequest('/api/traction/calibrate-direction'));
+      $('tractionStartBtn').addEventListener('click', () => tractionRequest('/api/traction/start'));
+      $('tractionStopBtn').addEventListener('click', () => tractionRequest('/api/traction/stop'));
+      $('tractionEmergencyBtn').addEventListener('click', () => tractionRequest('/api/traction/emergency-stop'));
+      $('tractionResetBtn').addEventListener('click', () => tractionRequest('/api/traction/reset-fault'));
+      $('tractionTarget').addEventListener('change', setTractionTarget);
+      $('tractionTarget').addEventListener('keydown', event => {
+        if (event.key === 'Enter') { event.preventDefault(); event.target.blur(); }
+      });
+    }
+    function renderTractionHistory() {
+      const entries = tractionHistory.slice().reverse().slice(0,5);
+      $('tractionHistory').innerHTML = entries.length ? entries.map(item => {
+        const finalState = tractionStateLabel(Number(item.final_state));
+        return `<div>${escapeHtml(item.session_id || '--')} · ${fmt(item.target_force_n,1)}N · 平均 ${fmt(item.average_force_n,1)}N · ${finalState}</div>`;
+      }).join('') : '暂无 ROS2 牵引历史';
+    }
+    async function pollTraction() {
+      try {
+        const current = await getJson('/api/traction/status');
+        applyTractionSnapshot(current.traction || current);
+        const history = await getJson('/api/traction/history');
+        tractionHistory = Array.isArray(history.summaries) ? history.summaries : [];
+        renderTractionHistory();
+      } catch (error) {
+        tractionSnapshot.valid = false;
+        applyTractionSnapshot(tractionSnapshot);
+      }
     }
     function switchMode(branch) {
       model.active=branch; const clamp=branch==='clamp';
@@ -691,7 +810,10 @@
     renderCase();
     showLoginGate();
 
+    bindTractionControls();
     connectState(); fallbackState(); pollWorkflow(); setInterval(pollWorkflow,2500);
+    pollTraction(); setInterval(pollTraction,500);
+    setInterval(() => { if (logState.operator) getJson('/api/traction/heartbeat',{method:'POST',body:'{}'}).catch(()=>{}); }, 500);
   </script>
 </body>
 </html>

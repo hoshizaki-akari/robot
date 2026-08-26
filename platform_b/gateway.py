@@ -25,9 +25,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 try:
-    from .force_control import ConstantForceController
+    from .ros_traction_bridge import RosTractionBridge, RosTractionError
 except ImportError:
-    from force_control import ConstantForceController
+    from ros_traction_bridge import RosTractionBridge, RosTractionError
 
 try:
     from .robot_control import (
@@ -52,7 +52,7 @@ UPSTREAM_URL = os.environ.get(
     "FR5_STATE_URL", "http://127.0.0.1:8765/api/state"
 )
 ROOT = Path(__file__).resolve().parent
-traction = ConstantForceController()
+traction_bridge = RosTractionBridge()
 workflow_lock = threading.Lock()
 workflow_state: dict[str, Any] = {
     "active": False,
@@ -100,11 +100,9 @@ class UpstreamCache:
                     self._snapshot = snapshot
                     self._received_at = monotonic()
                     self._error = ""
-                traction.observe(snapshot)
             except Exception as error:
                 with self._lock:
                     self._error = str(error)
-                traction.fail("真实状态数据中断")
             await asyncio.sleep(0.2)
 
     async def start(self) -> None:
@@ -143,7 +141,7 @@ class UpstreamCache:
         if not gateway_valid and "system" in snapshot:
             snapshot["system"]["valid"] = False
             snapshot["system"]["message"] = snapshot["gateway"]["message"]
-        snapshot["traction"] = traction.status()
+        snapshot["traction"] = traction_bridge.status().get("traction", {})
         return snapshot
 
 
@@ -152,11 +150,13 @@ cache = UpstreamCache()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    traction_bridge.start()
     await cache.start()
     try:
         yield
     finally:
         await cache.close()
+        traction_bridge.stop()
         stop_pry_service()
 
 
@@ -574,34 +574,62 @@ def move_pry(
     return launch_workflow(command, "pry", "撬拨：移动到夹持点并执行撬拨")
 
 
-@app.post("/api/traction/start")
-def start_traction(request: TractionRequest) -> dict[str, Any]:
+def call_traction_service(name: str, target_force_n: float | None = None) -> dict[str, Any]:
     try:
-        traction.start(request.target_force_n)
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    return traction.status()
+        return traction_bridge.call(name, target_force_n)
+    except RosTractionError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/api/traction/status")
+def traction_status() -> dict[str, Any]:
+    return traction_bridge.status()
+
+
+@app.get("/api/traction/history")
+def traction_history() -> dict[str, Any]:
+    return traction_bridge.history()
+
+
+@app.post("/api/traction/prepare")
+def prepare_traction() -> dict[str, Any]:
+    return call_traction_service("prepare")
+
+
+@app.post("/api/traction/calibrate-direction")
+def calibrate_traction_direction() -> dict[str, Any]:
+    return call_traction_service("calibrate_direction")
+
+
+@app.post("/api/traction/start")
+def start_traction() -> dict[str, Any]:
+    return call_traction_service("start")
 
 
 @app.post("/api/traction/target")
 def set_traction_target(request: TractionRequest) -> dict[str, Any]:
-    try:
-        traction.set_target(request.target_force_n)
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    return traction.status()
+    return call_traction_service("set_target_force", request.target_force_n)
 
 
 @app.post("/api/traction/stop")
 def stop_traction() -> dict[str, Any]:
-    traction.stop()
-    return traction.status()
+    return call_traction_service("stop")
 
 
 @app.post("/api/traction/emergency-stop")
 def emergency_stop_traction() -> dict[str, Any]:
-    traction.stop("安全停止")
-    return traction.status()
+    return call_traction_service("emergency_stop")
+
+
+@app.post("/api/traction/reset-fault")
+def reset_traction_fault() -> dict[str, Any]:
+    return call_traction_service("reset_fault")
+
+
+@app.post("/api/traction/heartbeat")
+def traction_heartbeat() -> dict[str, Any]:
+    traction_bridge.heartbeat()
+    return {"success": True, **traction_bridge.status()}
 
 
 # ----------------------------- 网页直控真机 FR5 -----------------------------

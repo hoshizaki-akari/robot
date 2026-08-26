@@ -196,7 +196,7 @@
           </div>
           <div class="force-display-target">
             <div class="force-label-target">目标牵引力</div>
-            <div class="force-box-target"><input class="force-value-target" id="targetForceVal" type="number" min="0" max="10" step="0.1" value="10" inputmode="decimal" aria-label="目标牵引力"><span class="force-unit-target">N</span></div>
+            <div class="force-box-target"><input class="force-value-target" id="targetForceVal" type="number" min="1" max="20" step="0.1" value="10" inputmode="decimal" aria-label="目标牵引力"><span class="force-unit-target">N</span></div>
             <div class="actual-force">实时牵引力：<strong id="actualForceVal">0.0</strong> N</div>
           </div>
           <div class="round-btn-group">
@@ -207,9 +207,12 @@
       </div>
       <div class="card control-panel">
         <div class="control-grid">
-          <button class="action-btn start" id="startBtn">开始牵引并记录</button>
-          <button class="action-btn stop" id="stopBtn" disabled>结束牵引</button>
-          <button class="action-btn emergency" id="emergencyBtn">紧急停止</button>
+          <button class="action-btn start" id="prepareBtn">准备</button>
+          <button class="action-btn start" id="calibrateBtn" disabled>方向标定</button>
+          <button class="action-btn start" id="startBtn" disabled>开始恒力牵引</button>
+          <button class="action-btn stop" id="stopBtn" disabled>正常释放</button>
+          <button class="action-btn emergency" id="emergencyBtn" disabled>软件急停</button>
+          <button class="action-btn stop" id="resetBtn" disabled>复位故障</button>
         </div>
       </div>
     </section>
@@ -233,13 +236,13 @@
       <div class="modal-header"><h2>牵引记录</h2><button class="close-btn" data-close="recordsModal">×</button></div>
       <div class="modal-body">
         <div class="toolbar">
-          <div class="toolbar-left"><input id="recordSearch" placeholder="搜索编号或操作人员"><select id="recordStatusFilter"><option value="">全部状态</option><option value="已完成">已完成</option><option value="紧急终止">紧急终止</option></select></div>
-          <div class="toolbar-right"><button class="secondary-btn" id="exportBtn">导出 CSV</button><button class="danger-btn" id="clearRecordsBtn">清空记录</button></div>
+          <div class="toolbar-left"><input id="recordSearch" placeholder="搜索编号或操作人员"><select id="recordStatusFilter"><option value="">全部状态</option><option value="已完成">已完成</option><option value="异常终止">异常终止</option></select></div>
+          <div class="toolbar-right"><button class="secondary-btn" id="exportBtn">导出 CSV</button></div>
         </div>
         <div class="table-wrap">
           <table><thead><tr><th>记录编号</th><th>开始时间</th><th>结束时间</th><th>操作人员</th><th>角色</th><th>目标力(N)</th><th>平均力(N)</th><th>最大力(N)</th><th>状态</th></tr></thead><tbody id="recordsBody"></tbody></table>
         </div>
-        <div class="permission-note">管理员可查看、导出及清空全部记录；医生和操作员可查看与导出记录。</div>
+        <div class="permission-note">历史由 ROS2 traction_manager 持久化；页面只提供查看与导出，不提供删除。</div>
       </div>
     </div>
   </div>
@@ -248,10 +251,10 @@
     <div class="modal small">
       <div class="modal-header"><h2>牵引参数设置</h2><button class="close-btn" data-close="settingsModal">×</button></div>
       <div class="modal-body">
-        <div class="form-item"><label>默认目标牵引力（N）</label><input id="settingTarget" type="number" min="0" max="10" step="0.1"></div>
-        <div class="form-item"><label>软件安全上限（N）</label><input id="settingLimit" type="number" min="5" max="50" step="1"></div>
+        <div class="form-item"><label>默认目标牵引力（N）</label><input id="settingTarget" type="number" min="1" max="20" step="0.1"></div>
+        <div class="form-item"><label>固定安全上限（N）</label><input id="settingLimit" type="number" min="20" max="20" step="1" value="20" disabled></div>
         <button class="primary-btn" id="saveSettingsBtn">保存参数</button>
-        <div class="permission-note">仅管理员和医生可以修改参数；软件阈值不能替代硬件安全保护。</div>
+        <div class="permission-note">仅管理员和医生可以修改目标；25/30 N 超力、5 N 横向力等硬件安全阈值不可在网页放宽。</div>
       </div>
     </div>
   </div>
@@ -267,466 +270,11 @@
     }
   </script>
   <script type="module" src="/assets/robot_viewer.js?v=20260731-1"></script>
-  <script type="text/plain" id="legacyLogic">
-    const users = {
-      admin: { password: 'admin123', name: '系统管理员', role: '管理员' },
-      doctor: { password: 'doctor123', name: '值班医生', role: '医生' },
-      operator: { password: 'operator123', name: '设备操作员', role: '操作员' }
-    };
-    const permissions = {
-      '管理员': { settings: true, adjust: true, operate: true, records: true, clear: true },
-      '医生': { settings: true, adjust: true, operate: true, records: true, clear: false },
-      '操作员': { settings: false, adjust: true, operate: true, records: true, clear: false }
-    };
-    let sessionUser = null;
-    const storedTarget = Number(localStorage.getItem('tractionTarget'));
-    let currentForce = storedTarget > 0 ? storedTarget : 10;
-    let forceLimit = Number(localStorage.getItem('tractionLimit') || 30);
-    let actualForce = 0;
-    let activeRecord = null;
-    let recordSamples = [];
-    let timerHandle = null;
-    let records = JSON.parse(localStorage.getItem('tractionRecords') || '[]');
-    let stateSocket = null;
-    let reconnectHandle = null;
-    let lastStateAt = 0;
-    let dataOnline = false;
-    let latestWrench = null;
-    let forceBaseline = null;
-    let tareSamples = [];
-    let tareCollecting = false;
-    let latestSource = '';
-    let relativeForceVector = [0, 0, 0];
-    let tractionDirection = null;
-    let proposedMovement = [0, 0, 0];
-    let forceControlConfig = {
-      mode: 'preview_only',
-      send_robot_motion: false,
-      direction_capture_threshold_n: 3,
-      deadband_n: 0.5,
-      gain_mm_s_per_n: 0.05,
-      max_speed_mm_s: 0.5,
-      max_step_mm: 0.05,
-      max_force_n: 80,
-      increase_force_motion_sign: -1,
-      default_target_force_n: 10,
-      target_presets_n: [10, 20],
-    };
-
-    const $ = id => document.getElementById(id);
-    const toast = message => {
-      $('toast').textContent = message; $('toast').classList.add('show');
-      clearTimeout(toast.timer); toast.timer = setTimeout(() => $('toast').classList.remove('show'), 2200);
-    };
-    const formatTime = date => new Intl.DateTimeFormat('zh-CN', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false }).format(date).replaceAll('/', '-');
-
-    function login() {
-      const account = users[$('username').value.trim()];
-      if (!account || account.password !== $('password').value) {
-        $('loginError').textContent = '用户名或密码错误'; return;
-      }
-      sessionUser = { username: $('username').value.trim(), ...account };
-      sessionStorage.setItem('tractionSession', JSON.stringify(sessionUser));
-      $('loginError').textContent = ''; $('loginModal').classList.add('hidden');
-      applyPermissions(); toast('登录成功');
-    }
-
-    function applyPermissions() {
-      if (!sessionUser) return;
-      const p = permissions[sessionUser.role];
-      $('currentUser').textContent = sessionUser.name;
-      $('currentRole').textContent = sessionUser.role;
-      $('settingsBtn').disabled = !p.settings;
-      document.querySelectorAll('.force-adjust').forEach(btn => btn.disabled = !p.adjust || !!activeRecord);
-      document.querySelectorAll('.target-preset').forEach(btn => btn.disabled = !p.adjust || !!activeRecord);
-      $('startBtn').disabled = !p.operate || !!activeRecord || !dataOnline || !forceBaseline || !tractionDirection;
-      $('stopBtn').disabled = !p.operate || !activeRecord;
-      $('tareBtn').disabled = !p.operate || !!activeRecord || !dataOnline || tareCollecting;
-      $('recordsBtn').disabled = !p.records;
-      $('clearRecordsBtn').style.display = p.clear ? '' : 'none';
-    }
-
-    function logout() {
-      if (activeRecord && !confirm('牵引记录尚未结束，确定退出并将本次标记为紧急终止吗？')) return;
-      if (activeRecord) finishTraction('紧急终止');
-      sessionUser = null; sessionStorage.removeItem('tractionSession');
-      $('password').value = ''; $('loginModal').classList.remove('hidden');
-    }
-
-    function updateForceDisplay() {
-      $('targetForceVal').textContent = currentForce;
-      $('targetForceVal').style.color = currentForce <= 0 ? '#94a3b8' : currentForce >= forceLimit ? '#dc2626' : '#1e3a5f';
-      document.querySelectorAll('.target-preset').forEach(btn => {
-        btn.classList.toggle('selected', Number(btn.dataset.target) === currentForce);
-      });
-      localStorage.setItem('tractionTarget', currentForce);
-      updateForceJudge();
-    }
-
-    function showGuide(step) {
-      const ids = ['guideZero', 'guidePull', 'guideRead'];
-      ids.forEach((id, index) => {
-        $(id).classList.toggle('done', index < step);
-        $(id).classList.toggle('active', index === step);
-      });
-    }
-
-    function showForceResult(message, kind = '') {
-      $('forceJudge').textContent = message;
-      $('forceJudge').classList.remove('good', 'warn', 'danger');
-      if (kind) $('forceJudge').classList.add(kind);
-    }
-
-    function updateForceJudge() {
-      if (!forceBaseline) {
-        showGuide(0);
-        showForceResult('请先松手并设为零点');
-        $('forceControlDetail').textContent = '这里只计算，机械臂现在不会移动。';
-        return;
-      }
-      if (!tractionDirection) {
-        showGuide(1);
-        proposedMovement = [0, 0, 0];
-        showForceResult(`目标已设为 ${currentForce} N，请轻拉一下确定方向`);
-        $('forceControlDetail').textContent = `人手拉力只用于确定方向；超过 ${Number(forceControlConfig.direction_capture_threshold_n).toFixed(1)} N 后，平台会记住方向，目标大小仍是 ${currentForce} N。`;
-        if (window.updateForceVector) window.updateForceVector(relativeForceVector, proposedMovement);
-        return;
-      }
-
-      showGuide(2);
-      const difference = currentForce - actualForce;
-      const safeLimit = Math.min(forceLimit, Number(forceControlConfig.max_force_n));
-      let result = '现在正合适';
-      let resultKind = 'good';
-      proposedMovement = [0, 0, 0];
-      if (actualForce >= safeLimit) {
-        result = '拉力超过上限，请立即停止';
-        resultKind = 'danger';
-      } else if (Math.abs(difference) > Number(forceControlConfig.deadband_n)) {
-        const speed = Math.min(
-          Number(forceControlConfig.max_speed_mm_s),
-          Number(forceControlConfig.gain_mm_s_per_n) * Math.abs(difference),
-        );
-        const distance = Math.min(Number(forceControlConfig.max_step_mm), speed * 0.25);
-        const increaseSign = Number(forceControlConfig.increase_force_motion_sign);
-        const moveSign = difference > 0 ? increaseSign : -increaseSign;
-        proposedMovement = tractionDirection.map(value => value * moveSign * distance);
-        result = difference > 0
-          ? `拉力还不够，还差 ${Math.abs(difference).toFixed(2)} N`
-          : `拉力太大，多了 ${Math.abs(difference).toFixed(2)} N`;
-        resultKind = 'warn';
-      }
-      if (window.updateForceVector) window.updateForceVector(relativeForceVector, proposedMovement);
-      const move = proposedMovement.map(value => value.toFixed(3)).join(', ');
-      showForceResult(result, resultKind);
-      $('forceControlDetail').textContent = `目标是操作者设置的 ${currentForce} N。绿色箭头表示以后机械臂应移动的方向；当前只计算，不会让真机移动。详细计算：[${move}] mm。`;
-    }
-
-    function clearTare(message = '尚未置零') {
-      forceBaseline = null;
-      tareSamples = [];
-      tareCollecting = false;
-      actualForce = 0;
-      relativeForceVector = [0, 0, 0];
-      tractionDirection = null;
-      proposedMovement = [0, 0, 0];
-      $('tareStatus').textContent = message;
-      $('tareStatus').classList.remove('ready');
-      $('actualForceVal').textContent = '--';
-      $('forceVectorVal').textContent = 'Fx -- · Fy -- · Fz --';
-      dataPoints = Array(90).fill(0);
-      drawCurve();
-      if (window.updateForceVector) window.updateForceVector(relativeForceVector, proposedMovement);
-      updateForceJudge();
-      if (sessionUser) applyPermissions();
-    }
-
-    function startTare() {
-      if (!dataOnline || !latestWrench) return toast('真实力传感器数据不可用');
-      if (latestSource !== 'real') return toast('当前是电脑演示数据，不能用于真实牵引置零');
-      if (activeRecord) return toast('请先结束本次数据记录');
-      forceBaseline = null;
-      actualForce = 0;
-      relativeForceVector = [0, 0, 0];
-      tractionDirection = null;
-      proposedMovement = [0, 0, 0];
-      tareSamples = [];
-      tareCollecting = true;
-      $('actualForceVal').textContent = '--';
-      $('forceVectorVal').textContent = 'Fx -- · Fy -- · Fz --';
-      updateForceJudge();
-      $('tareStatus').textContent = '请不要碰夹爪，正在读取……';
-      $('tareStatus').classList.remove('ready');
-      if (sessionUser) applyPermissions();
-    }
-
-    function finishTare() {
-      const forceSpans = [0, 1, 2].map(axis => {
-        const values = tareSamples.map(sample => sample[axis]);
-        return Math.max(...values) - Math.min(...values);
-      });
-      const torqueSpans = [3, 4, 5].map(axis => {
-        const values = tareSamples.map(sample => sample[axis]);
-        return Math.max(...values) - Math.min(...values);
-      });
-      tareCollecting = false;
-      if (Math.max(...forceSpans) > 2 || Math.max(...torqueSpans) > 0.2) {
-        clearTare('数值不稳，请松手后重试');
-        return toast('置零失败：读取时受力变化太大');
-      }
-      forceBaseline = [0, 1, 2, 3, 4, 5].map(axis =>
-        tareSamples.reduce((sum, sample) => sum + sample[axis], 0) / tareSamples.length
-      );
-      dataPoints = Array(90).fill(0);
-      $('tareStatus').textContent = `已置零（原始 Fz ${forceBaseline[2].toFixed(2)} N）`;
-      $('tareStatus').classList.add('ready');
-      if (sessionUser) applyPermissions();
-      updateForceJudge();
-      toast('置零完成，现在显示本次相对受力');
-    }
-
-    function startTraction() {
-      if (!sessionUser || !permissions[sessionUser.role].operate) return;
-      if (!dataOnline) return toast('真实状态数据不可用，不能开始记录');
-      if (!forceBaseline) return toast('请先在夹爪不受外力时设为零点');
-      if (!tractionDirection) return toast('请先轻拉一次，让平台记住牵引方向');
-      if (currentForce <= 0) return toast('目标牵引力必须大于 0 N');
-      const now = new Date();
-      activeRecord = {
-        id: 'TR' + now.getFullYear() + String(now.getMonth()+1).padStart(2,'0') + String(now.getDate()).padStart(2,'0') + '-' + String(Date.now()).slice(-6),
-        start: formatTime(now), end: '', operator: sessionUser.name, role: sessionUser.role,
-        target: currentForce, average: 0, maximum: 0, status: '进行中'
-      };
-      recordSamples = [];
-      $('workStatus').textContent = '相对受力记录中'; $('workStatus').classList.add('running');
-      const startAt = Date.now();
-      timerHandle = setInterval(() => {
-        const seconds = Math.floor((Date.now() - startAt) / 1000);
-        $('recordTimer').textContent = `记录中 ${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;
-      }, 1000);
-      applyPermissions(); toast(`开始记录：目标 ${currentForce} N；人手拉力只用于确定方向`);
-    }
-
-    function finishTraction(status = '已完成') {
-      if (!activeRecord) return;
-      clearInterval(timerHandle);
-      activeRecord.end = formatTime(new Date());
-      activeRecord.status = status;
-      activeRecord.average = recordSamples.length ? (recordSamples.reduce((a,b)=>a+b,0) / recordSamples.length).toFixed(1) : '0.0';
-      activeRecord.maximum = recordSamples.length ? Math.max(...recordSamples).toFixed(1) : '0.0';
-      records.unshift(activeRecord);
-      localStorage.setItem('tractionRecords', JSON.stringify(records));
-      activeRecord = null; recordSamples = [];
-      $('recordTimer').textContent = '未开始记录';
-      $('workStatus').textContent = status === '已完成' ? '数据记录结束' : '记录异常终止';
-      $('workStatus').classList.remove('running', 'offline');
-      applyPermissions(); renderRecords(); toast(status === '已完成' ? '牵引记录已保存' : '已紧急停止并保存记录');
-    }
-
-    function renderRecords() {
-      const keyword = $('recordSearch').value.trim().toLowerCase();
-      const status = $('recordStatusFilter').value;
-      const list = records.filter(r => (!keyword || r.id.toLowerCase().includes(keyword) || r.operator.toLowerCase().includes(keyword)) && (!status || r.status === status));
-      $('recordsBody').innerHTML = list.length ? list.map(r => `<tr><td>${r.id}</td><td>${r.start}</td><td>${r.end}</td><td>${r.operator}</td><td>${r.role}</td><td>${r.target}</td><td>${r.average}</td><td>${r.maximum}</td><td>${r.status}</td></tr>`).join('') : '<tr><td colspan="9" class="empty">暂无符合条件的牵引记录</td></tr>';
-    }
-
-    function exportRecords() {
-      if (!records.length) return toast('暂无可导出的记录');
-      const rows = [['记录编号','开始时间','结束时间','操作人员','角色','目标力(N)','平均力(N)','最大力(N)','状态'], ...records.map(r => [r.id,r.start,r.end,r.operator,r.role,r.target,r.average,r.maximum,r.status])];
-      const csv = '\uFEFF' + rows.map(row => row.map(v => `"${String(v).replaceAll('"','""')}"`).join(',')).join('\r\n');
-      const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([csv], {type:'text/csv;charset=utf-8'}));
-      link.download = `牵引记录_${new Date().toISOString().slice(0,10)}.csv`; link.click(); URL.revokeObjectURL(link.href);
-    }
-
-    const canvas = $('forceCanvas'); const ctx = canvas.getContext('2d'); let dataPoints = Array(90).fill(0);
-    function resizeCanvas() { const rect = canvas.getBoundingClientRect(); canvas.width = Math.max(100, rect.width); canvas.height = Math.max(100, rect.height); drawCurve(); }
-    function drawCurve() {
-      const w=canvas.width, h=canvas.height; ctx.clearRect(0,0,w,h); ctx.fillStyle='#f8fafc'; ctx.fillRect(0,0,w,h);
-      ctx.strokeStyle='#e2e8f0'; ctx.lineWidth=1;
-      for(let i=1;i<5;i++){let y=h*i/5;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
-      for(let i=1;i<9;i++){let x=w*i/9;ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();}
-      ctx.strokeStyle='#3b82f6';ctx.lineWidth=3;ctx.beginPath();
-      const maxVal=Math.max(40,forceLimit+10), step=w/(dataPoints.length-1);
-      dataPoints.forEach((v,i)=>{const x=i*step,y=h-(v/maxVal)*h*.82-h*.08;i?ctx.lineTo(x,y):ctx.moveTo(x,y);});ctx.stroke();
-      ctx.lineTo(w,h);ctx.lineTo(0,h);ctx.closePath();const grad=ctx.createLinearGradient(0,0,0,h);grad.addColorStop(0,'rgba(59,130,246,.24)');grad.addColorStop(1,'rgba(59,130,246,.02)');ctx.fillStyle=grad;ctx.fill();
-      ctx.fillStyle='#64748b';ctx.font='12px sans-serif';ctx.fillText(`${maxVal} N`,6,15);ctx.fillText('0 N',6,h-7);ctx.fillText('时间 →',w-52,h-7);
-    }
-    function setDeviceChip(id, label, item, detail='') {
-      const valid = dataOnline && !!item?.valid && Number(item.age_ms || 0) <= 1500;
-      const element = $(id);
-      element.classList.toggle('valid', valid);
-      element.classList.toggle('invalid', !valid);
-      element.textContent = `${label} ${valid ? '正常' : '不可用'}${detail ? ' · ' + detail : ''}`;
-    }
-
-    function applyStateSnapshot(state) {
-      if (!state || !state.fr5 || !state.kwr75d || !state.ag95 || !state.d435) return;
-      lastStateAt = Date.now();
-      if (latestSource && latestSource !== state.source && forceBaseline) clearTare('数据来源改变，请重新置零');
-      latestSource = state.source;
-      const gatewayValid = state.gateway ? state.gateway.valid : true;
-      dataOnline = gatewayValid;
-      const fr5Valid = gatewayValid && state.fr5.valid && state.fr5.age_ms <= 1500;
-      const jointAngles = state.fr5.joint_position_deg;
-      if (Array.isArray(jointAngles) && jointAngles.length === 6) {
-        window.latestFR5Joints = jointAngles;
-        if (window.updateFR5Joints) window.updateFR5Joints(jointAngles);
-      }
-      $('armStatus').textContent = fr5Valid ? `${state.fr5.mode} · ${state.fr5.enabled ? '已使能' : '未使能'}` : 'FR5 数据不可用';
-      $('armStatus').classList.toggle('offline', !fr5Valid);
-      setDeviceChip('fr5Device', 'FR5', state.fr5, `${state.fr5.age_ms}ms`);
-      setDeviceChip('kwrDevice', 'KWR75D', state.kwr75d, `${state.kwr75d.age_ms}ms`);
-      setDeviceChip('ag95Device', 'AG95', state.ag95, state.ag95.position_raw ?? '--');
-      setDeviceChip('d435Device', 'D435', state.d435, `${Number(state.d435.color_fps || 0).toFixed(1)}fps`);
-      if (window.updateAG95) window.updateAG95(state.ag95.position_raw);
-
-      const wrench = state.kwr75d.wrench;
-      if (gatewayValid && state.kwr75d.valid && Array.isArray(wrench) && wrench.length === 6) {
-        latestWrench = wrench.map(Number);
-        $('rawForceVal').textContent = latestWrench[2].toFixed(2);
-        if (tareCollecting) {
-          tareSamples.push([...latestWrench]);
-          if (tareSamples.length >= 25) finishTare();
-        }
-        if (forceBaseline) {
-          relativeForceVector = [0, 1, 2].map(axis => latestWrench[axis] - forceBaseline[axis]);
-          actualForce = Math.hypot(...relativeForceVector);
-          $('forceVectorVal').textContent = `Fx ${relativeForceVector[0].toFixed(2)} · Fy ${relativeForceVector[1].toFixed(2)} · Fz ${relativeForceVector[2].toFixed(2)}`;
-          $('actualForceVal').textContent = actualForce.toFixed(2);
-          if (!tractionDirection && actualForce >= Number(forceControlConfig.direction_capture_threshold_n)) {
-            tractionDirection = relativeForceVector.map(value => value / actualForce);
-            toast('已经记住本次牵引方向');
-            if (sessionUser) applyPermissions();
-          }
-          dataPoints.shift(); dataPoints.push(actualForce);
-          if(activeRecord) recordSamples.push(actualForce);
-          updateForceJudge();
-        }
-        drawCurve();
-      } else {
-        latestWrench = null;
-        if (forceBaseline) clearTare('力传感器不可用，请重新置零');
-        $('actualForceVal').textContent = '--';
-        $('forceVectorVal').textContent = 'Fx -- · Fy -- · Fz --';
-        $('rawForceVal').textContent = '--';
-      }
-      if (!activeRecord) {
-        $('workStatus').textContent = gatewayValid ? '设备数据正常' : '设备数据中断';
-        $('workStatus').classList.toggle('offline', !gatewayValid);
-      }
-      if (sessionUser) applyPermissions();
-    }
-
-    function connectStateStream() {
-      clearTimeout(reconnectHandle);
-      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      stateSocket = new WebSocket(`${protocol}//${location.host}/ws`);
-      stateSocket.onmessage = event => {
-        try { applyStateSnapshot(JSON.parse(event.data)); }
-        catch (error) { console.error('状态数据解析失败', error); }
-      };
-      stateSocket.onclose = () => {
-        dataOnline = false;
-        clearTare('连接断开，请重新置零');
-        $('armStatus').textContent = '状态流已断开';
-        $('armStatus').classList.add('offline');
-        $('workStatus').textContent = '正在重新连接';
-        $('workStatus').classList.add('offline');
-        if (sessionUser) applyPermissions();
-        reconnectHandle = setTimeout(connectStateStream, 1000);
-      };
-      stateSocket.onerror = () => stateSocket.close();
-    }
-
-    setInterval(() => {
-      if (lastStateAt && Date.now() - lastStateAt > 1800) {
-        if (dataOnline) clearTare('数据中断，请重新置零');
-        dataOnline = false;
-        $('armStatus').textContent = '数据已过期';
-        $('armStatus').classList.add('offline');
-        $('actualForceVal').textContent = '--';
-        $('forceVectorVal').textContent = 'Fx -- · Fy -- · Fz --';
-        $('rawForceVal').textContent = '--';
-        document.querySelectorAll('.device-chip').forEach(element => {
-          element.classList.remove('valid'); element.classList.add('invalid');
-        });
-        if (sessionUser) applyPermissions();
-      }
-    }, 500);
-
-    document.querySelectorAll('.force-adjust').forEach(btn => btn.addEventListener('click', () => {
-      if (!sessionUser || !permissions[sessionUser.role].adjust) return toast('当前角色无权修改牵引参数');
-      currentForce = Math.max(1, Math.min(forceLimit, currentForce + Number(btn.dataset.step))); updateForceDisplay();
-    }));
-    function bindTargetPresetButtons() {
-      document.querySelectorAll('.target-preset').forEach(btn => {
-        btn.addEventListener('click', () => {
-          if (!sessionUser || !permissions[sessionUser.role].adjust) return toast('当前角色无权修改牵引参数');
-          if (activeRecord) return toast('请先结束当前记录');
-          const requested = Number(btn.dataset.target);
-          if (requested > forceLimit) return toast(`安全上限是 ${forceLimit} N，不能设为 ${requested} N`);
-          currentForce = requested;
-          updateForceDisplay();
-          toast(`牵引力已设为 ${currentForce} N；轻拉只用于确定方向`);
-        });
-      });
-    }
-    function renderTargetPresets() {
-      const values = Array.isArray(forceControlConfig.target_presets_n)
-        ? forceControlConfig.target_presets_n.map(Number).filter(value => Number.isFinite(value) && value > 0)
-        : [10, 20];
-      $('targetPresets').innerHTML = values.map(value =>
-        `<button class="target-preset" data-target="${value}">设为 ${value} N</button>`
-      ).join('');
-      bindTargetPresetButtons();
-      if (sessionUser) applyPermissions();
-    }
-    $('loginBtn').addEventListener('click', login);
-    $('password').addEventListener('keydown', e => { if(e.key === 'Enter') login(); });
-    $('logoutBtn').addEventListener('click', logout);
-    $('tareBtn').addEventListener('click', startTare);
-    $('startBtn').addEventListener('click', startTraction);
-    $('stopBtn').addEventListener('click', () => finishTraction('已完成'));
-    $('emergencyBtn').addEventListener('click', () => activeRecord ? finishTraction('紧急终止') : toast('当前只读阶段未发送硬件指令'));
-    $('recordsBtn').addEventListener('click', () => { renderRecords(); $('recordsModal').classList.remove('hidden'); });
-    $('settingsBtn').addEventListener('click', () => {
-      if (!sessionUser || !permissions[sessionUser.role].settings) return toast('当前角色无权修改参数');
-      $('settingTarget').value=currentForce; $('settingLimit').value=forceLimit; $('settingsModal').classList.remove('hidden');
-    });
-    $('saveSettingsBtn').addEventListener('click', () => {
-      const limit=Number($('settingLimit').value), target=Number($('settingTarget').value);
-      if(limit<5||limit>50||target<1||target>limit) return toast('请输入有效参数，目标力必须大于 0，且不能超过安全上限');
-      forceLimit=limit;currentForce=target;localStorage.setItem('tractionLimit',forceLimit);updateForceDisplay();$('settingsModal').classList.add('hidden');toast('参数已保存');
-    });
-    $('recordSearch').addEventListener('input', renderRecords); $('recordStatusFilter').addEventListener('change', renderRecords);
-    $('exportBtn').addEventListener('click', exportRecords);
-    $('clearRecordsBtn').addEventListener('click', () => { if(confirm('确定清空全部牵引记录吗？该操作不可恢复。')){records=[];localStorage.removeItem('tractionRecords');renderRecords();toast('记录已清空');} });
-    document.querySelectorAll('[data-close]').forEach(btn => btn.addEventListener('click', () => $(btn.dataset.close).classList.add('hidden')));
-    window.addEventListener('resize', resizeCanvas);
-
-    async function loadPlatformConfig() {
-      try {
-        const response = await fetch('/assets/config.json', { cache: 'no-store' });
-        if (!response.ok) throw new Error(`读取失败：${response.status}`);
-        const config = await response.json();
-        forceControlConfig = { ...forceControlConfig, ...(config.force_control || {}) };
-        if (!storedTarget || storedTarget <= 0) {
-          currentForce = Number(forceControlConfig.default_target_force_n) || 10;
-        }
-      } catch (error) {
-        console.error('平台配置读取失败，使用内置安全默认值', error);
-        toast('配置文件读取失败，已使用安全默认值');
-      }
-      currentForce = Math.max(1, Math.min(forceLimit, currentForce));
-      renderTargetPresets();
-      updateForceDisplay();
-    }
-
-    loadPlatformConfig();
-    renderRecords(); setTimeout(resizeCanvas, 0); connectStateStream();
-    const savedSession = sessionStorage.getItem('tractionSession');
-    if(savedSession){ sessionUser=JSON.parse(savedSession);$('loginModal').classList.add('hidden');applyPermissions(); }
+<script type="text/plain" id="legacyLogic">
+    Legacy traction logic is intentionally disabled. The active compatibility page
+    uses /api/traction/* and the ROS2 traction manager; it does not simulate force,
+    persist traction records in the browser, or issue robot SDK commands.
   </script>
-  <script src="/assets/platform_b.js?v=20260817-target-0-10"></script>
+  <script src="/assets/platform_b.js?v=20260826-ros-traction"></script>
 </body>
 </html>

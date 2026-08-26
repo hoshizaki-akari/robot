@@ -10,22 +10,20 @@ const permissions = {
 };
 
 let sessionUser = null;
-const TARGET_FORCE_MIN = 0;
-const TARGET_FORCE_MAX = 10;
-const savedTargetText = localStorage.getItem('tractionTarget');
-const savedTarget = savedTargetText === null ? NaN : Number(savedTargetText);
-let currentForce = Number.isFinite(savedTarget) ? Math.max(TARGET_FORCE_MIN, Math.min(TARGET_FORCE_MAX, savedTarget)) : 10;
-let forceLimit = Number(localStorage.getItem('tractionLimit') || 30);
+const TARGET_FORCE_MIN = 1;
+const TARGET_FORCE_MAX = 20;
+let currentForce = 10;
+const forceLimit = 20;
 let actualForce = 0;
 let activeRecord = null;
-let recordSamples = [];
 let timerHandle = null;
-let records = JSON.parse(localStorage.getItem('tractionRecords') || '[]');
+let records = [];
 let stateSocket = null;
 let reconnectHandle = null;
 let lastStateAt = 0;
 let dataOnline = false;
 let directionLocked = false;
+let tractionState = 0;
 
 const $ = id => document.getElementById(id);
 const toast = message => {
@@ -74,10 +72,13 @@ function applyPermissions() {
     button.disabled = !permission.adjust || !!activeRecord;
   });
   $('targetForceVal').disabled = !permission.adjust || !!activeRecord;
-  $('startBtn').disabled = !permission.operate || !!activeRecord || !dataOnline;
-  $('stopBtn').disabled = !permission.operate || !activeRecord;
+  $('startBtn').disabled = !permission.operate || tractionState !== 5 || !dataOnline;
+  $('stopBtn').disabled = !permission.operate || tractionState !== 6;
+  if ($('prepareBtn')) $('prepareBtn').disabled = !permission.operate || !dataOnline || ![1, 8].includes(tractionState);
+  if ($('calibrateBtn')) $('calibrateBtn').disabled = !permission.operate || !dataOnline || tractionState !== 2;
+  if ($('emergencyBtn')) $('emergencyBtn').disabled = !permission.operate || !dataOnline || tractionState === 10;
+  if ($('resetBtn')) $('resetBtn').disabled = !permission.operate || !dataOnline || ![9, 10].includes(tractionState);
   $('recordsBtn').disabled = !permission.records;
-  $('clearRecordsBtn').style.display = permission.clear ? '' : 'none';
 }
 
 function logout() {
@@ -92,7 +93,6 @@ function logout() {
 function updateForceDisplay() {
   $('targetForceVal').value = Number(currentForce.toFixed(1));
   $('targetForceVal').style.color = currentForce >= forceLimit ? '#dc2626' : '#1e3a5f';
-  localStorage.setItem('tractionTarget', currentForce);
 }
 
 async function changeTarget(nextTarget) {
@@ -103,7 +103,7 @@ async function changeTarget(nextTarget) {
   const numericTarget = Number(nextTarget);
   if (!Number.isFinite(numericTarget) || numericTarget < TARGET_FORCE_MIN || numericTarget > TARGET_FORCE_MAX) {
     updateForceDisplay();
-    return toast('目标牵引力请输入 0～10 N');
+    return toast('目标牵引力请输入 1～20 N');
   }
   currentForce = Math.round(numericTarget * 10) / 10;
   updateForceDisplay();
@@ -116,29 +116,15 @@ async function changeTarget(nextTarget) {
 
 async function startTraction() {
   if (!sessionUser || !permissions[sessionUser.role].operate) return;
-  if (!dataOnline) return toast('真实设备数据不可用');
+  if (!dataOnline) return toast('ROS2 牵引管理器不可用');
   try {
-    await postJson('/api/traction/start', { target_force_n: currentForce });
+    if (tractionState !== 5) return toast('请先完成方向标定并锁定方向');
+    await postJson('/api/traction/start');
   } catch (error) {
     return toast(error.message);
   }
 
-  const now = new Date();
-  activeRecord = {
-    id: 'TR' + now.getFullYear()
-      + String(now.getMonth() + 1).padStart(2, '0')
-      + String(now.getDate()).padStart(2, '0')
-      + '-' + String(Date.now()).slice(-6),
-    start: formatTime(now),
-    end: '',
-    operator: sessionUser.name,
-    role: sessionUser.role,
-    target: currentForce,
-    average: 0,
-    maximum: 0,
-    status: '进行中'
-  };
-  recordSamples = [];
+  activeRecord = { startedAt: Date.now() };
   $('workStatus').textContent = '请轻拉确定方向';
   $('workStatus').classList.add('running');
   const startAt = Date.now();
@@ -154,34 +140,21 @@ async function startTraction() {
 function saveFinishedRecord(status) {
   if (!activeRecord) return;
   clearInterval(timerHandle);
-  activeRecord.end = formatTime(new Date());
-  activeRecord.status = status;
-  activeRecord.average = recordSamples.length
-    ? (recordSamples.reduce((sum, value) => sum + value, 0) / recordSamples.length).toFixed(1)
-    : '0.0';
-  activeRecord.maximum = recordSamples.length
-    ? Math.max(...recordSamples).toFixed(1)
-    : '0.0';
-  records.unshift(activeRecord);
-  localStorage.setItem('tractionRecords', JSON.stringify(records));
   activeRecord = null;
-  recordSamples = [];
-  directionLocked = false;
-  actualForce = 0;
-  $('actualForceVal').textContent = '0.0';
   $('recordTimer').textContent = '未开始记录';
-  $('workStatus').textContent = status === '已完成' ? '设备就绪' : '安全停止';
+  $('workStatus').textContent = status === '已完成' ? '等待 ROS2 完成释放' : '软件急停已请求';
   $('workStatus').classList.remove('running');
   applyPermissions();
   renderRecords();
+  refreshHistory();
 }
 
 async function finishTraction(status = '已完成') {
-  if (!activeRecord) return;
+  if (tractionState !== 6) return toast('当前不在恒力牵引状态');
   try {
     await postJson('/api/traction/stop');
   } catch (error) {
-    toast(error.message);
+    return toast(error.message);
   }
   saveFinishedRecord(status);
   toast(status === '已完成' ? '牵引记录已保存' : '牵引已停止并保存记录');
@@ -191,7 +164,7 @@ async function emergencyStop() {
   try {
     await postJson('/api/traction/emergency-stop');
   } catch (error) {
-    toast(error.message);
+    return toast(`${error.message}；请立即使用实体急停`);
   }
   if (activeRecord) saveFinishedRecord('紧急终止');
   $('workStatus').textContent = '安全停止';
@@ -211,8 +184,35 @@ function renderRecords() {
     : '<tr><td colspan="9" class="empty">暂无符合条件的牵引记录</td></tr>';
 }
 
+function builtinTimeText(value) {
+  if (!value || !Number.isFinite(Number(value.sec))) return '--';
+  return formatTime(new Date((Number(value.sec) * 1000) + Number(value.nanosec || 0) / 1e6));
+}
+
+async function refreshHistory() {
+  try {
+    const response = await fetch('/api/traction/history', { cache: 'no-store' });
+    if (!response.ok) return;
+    const history = await response.json();
+    records = (history.summaries || []).map(summary => ({
+      id: summary.session_id || '--',
+      start: builtinTimeText(summary.start_time),
+      end: builtinTimeText(summary.end_time),
+      operator: '--',
+      role: 'ROS2',
+      target: Number(summary.target_force_n || 0).toFixed(1),
+      average: Number(summary.average_force_n || 0).toFixed(1),
+      maximum: Number(summary.max_force_n || 0).toFixed(1),
+      status: Number(summary.final_state) === 8 ? '已完成' : '异常终止'
+    }));
+    renderRecords();
+  } catch (_) {
+    // The page remains usable; the next poll retries without fabricating data.
+  }
+}
+
 function exportRecords() {
-  if (!records.length) return toast('暂无可导出的记录');
+  if (!records.length) return toast('暂无 ROS2 牵引历史');
   const rows = [
     ['记录编号', '开始时间', '结束时间', '操作人员', '角色', '目标力(N)', '平均力(N)', '最大力(N)', '状态'],
     ...records.map(record => [
@@ -291,11 +291,9 @@ function drawCurve() {
 
 function handleState(state) {
   lastStateAt = Date.now();
-  dataOnline = Boolean(
-    state.gateway && state.gateway.valid
-    && state.fr5 && state.fr5.valid
-    && state.kwr75d && state.kwr75d.valid
-  );
+  const traction = state.traction || {};
+  tractionState = Number(traction.state || 0);
+  dataOnline = traction.valid === true;
   $('armStatus').textContent = dataOnline ? '通信正常' : '通信中断';
   $('armStatus').classList.toggle('offline', !dataOnline);
   const joints = state.fr5 && state.fr5.joint_position_deg;
@@ -307,25 +305,23 @@ function handleState(state) {
     window.updateAG95(state.ag95.position_raw);
   }
 
-  const traction = state.traction || {};
-  directionLocked = Boolean(traction.direction_locked);
-  actualForce = Number(traction.measured_force_n || 0);
+  directionLocked = [5, 6, 7].includes(tractionState);
+  actualForce = Number(traction.actual_force_n || 0);
   $('actualForceVal').textContent = actualForce.toFixed(1);
 
   if (activeRecord) {
-    $('workStatus').textContent = traction.message || '牵引进行中';
+    $('workStatus').textContent = traction.fault_code || traction.stop_reason || `ROS2 状态：${tractionState}`;
     $('workStatus').classList.add('running');
-    if (directionLocked) recordSamples.push(actualForce);
   } else if (!dataOnline) {
-    $('workStatus').textContent = '设备未就绪';
+    $('workStatus').textContent = 'ROS2 牵引管理器不可用';
     $('workStatus').classList.remove('running');
   } else {
-    $('workStatus').textContent = '设备就绪';
+    $('workStatus').textContent = traction.state_name || '设备就绪';
     $('workStatus').classList.remove('running');
   }
 
   dataPoints.shift();
-  dataPoints.push(activeRecord && directionLocked ? actualForce : 0);
+  dataPoints.push(directionLocked ? actualForce : 0);
   drawCurve();
   if (sessionUser) applyPermissions();
 }
@@ -391,16 +387,14 @@ $('settingsBtn').addEventListener('click', () => {
   }
   $('settingTarget').value = currentForce;
   $('settingLimit').value = forceLimit;
+  $('settingLimit').disabled = true;
   $('settingsModal').classList.remove('hidden');
 });
 $('saveSettingsBtn').addEventListener('click', async () => {
-  const limit = Number($('settingLimit').value);
   const target = Number($('settingTarget').value);
-  if (limit < 5 || limit > 50 || target < TARGET_FORCE_MIN || target > TARGET_FORCE_MAX) {
-    return toast('请输入有效参数，目标牵引力必须在 0～10 N');
+  if (target < TARGET_FORCE_MIN || target > TARGET_FORCE_MAX) {
+    return toast('目标牵引力必须在 1～20 N；硬件安全阈值不可在网页放宽');
   }
-  forceLimit = limit;
-  localStorage.setItem('tractionLimit', forceLimit);
   await changeTarget(target);
   $('settingsModal').classList.add('hidden');
   toast('参数已保存');
@@ -408,14 +402,6 @@ $('saveSettingsBtn').addEventListener('click', async () => {
 $('recordSearch').addEventListener('input', renderRecords);
 $('recordStatusFilter').addEventListener('change', renderRecords);
 $('exportBtn').addEventListener('click', exportRecords);
-$('clearRecordsBtn').addEventListener('click', () => {
-  if (confirm('确定清空全部牵引记录吗？该操作不可恢复。')) {
-    records = [];
-    localStorage.removeItem('tractionRecords');
-    renderRecords();
-    toast('记录已清空');
-  }
-});
 document.querySelectorAll('[data-close]').forEach(button => {
   button.addEventListener('click', () => $(button.dataset.close).classList.add('hidden'));
 });
@@ -423,8 +409,30 @@ window.addEventListener('resize', resizeCanvas);
 
 updateForceDisplay();
 renderRecords();
+refreshHistory();
+setInterval(refreshHistory, 2000);
 setTimeout(resizeCanvas, 0);
 connectStateStream();
+const callTraction = async path => {
+  try {
+    const result = await postJson(path);
+    if (result.traction) {
+      tractionState = Number(result.traction.state || 0);
+      dataOnline = result.traction.valid === true;
+      applyPermissions();
+    }
+    return result;
+  } catch (error) {
+    toast(error.message);
+    return null;
+  }
+};
+if ($('prepareBtn')) $('prepareBtn').addEventListener('click', () => callTraction('/api/traction/prepare'));
+if ($('calibrateBtn')) {
+  $('calibrateBtn').addEventListener('click', () => callTraction('/api/traction/calibrate-direction'));
+}
+if ($('resetBtn')) $('resetBtn').addEventListener('click', () => callTraction('/api/traction/reset-fault'));
+setInterval(() => { fetch('/api/traction/heartbeat', {method: 'POST', body: '{}'}).catch(() => {}); }, 500);
 const savedSession = sessionStorage.getItem('tractionSession');
 if (savedSession) {
   sessionUser = JSON.parse(savedSession);
