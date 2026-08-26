@@ -434,41 +434,67 @@ def capture_clamp_plan_route() -> dict[str, Any]:
 
 @app.post("/api/workflow/pry/vision/start")
 def start_pry_vision() -> dict[str, Any]:
-    try:
-        ensure_pry_service()
-        result = _pry_service_request("/start", method="POST")
-        return {"branch": "pry", "running": True, "algorithm": "platform_a.PryBuckleVisionWorker (isolated service)", "message": "撬拨独立视觉已启动", "result": result}
-    except Exception as error:
-        raise HTTPException(status_code=503, detail=f"撬拨视觉启动失败：{error}") from error
+    # 撬拨必须和夹挤使用同一份 D435 视觉结果。此前这里会启动一个只接受
+    # YOLO 掩膜的独立进程，因而会在夹挤的深度引导回退已经有效时误报“未识别”。
+    # 关闭可能遗留的旧子服务，避免它继续占用相机订阅或误导诊断。
+    stop_pry_service()
+    plan = pry_plan()
+    return {
+        "branch": "pry",
+        "running": True,
+        "algorithm": "shared state_service.D435Monitor (same result as clamp)",
+        "message": plan.get("message") if plan.get("valid") else "撬拨已接入夹挤共用视觉；等待有效足跟结果",
+        "vision_source": "shared_clamp_vision",
+    }
 
 
 @app.post("/api/workflow/pry/vision/stop")
 def stop_pry_vision_route() -> dict[str, Any]:
-    try:
-        result = _pry_service_request("/stop", method="POST")
-    except Exception:
-        result = {"running": False}
-    return {"branch": "pry", "running": False, "message": "撬拨视觉已停止", "result": result}
+    stop_pry_service()
+    return {"branch": "pry", "running": False, "message": "撬拨视觉预览已停止"}
 
 
 @app.get("/api/workflow/pry/plan")
 def pry_plan() -> dict[str, Any]:
+    """Return the same live D435 result used by the clamp workflow.
+
+    A pry move still receives a fresh camera-to-base transform at the current
+    flange pose, but the 2D target, width and surface gap are computed by the
+    exact same monitor/estimator as the clamp page.
+    """
     try:
-        ensure_pry_service()
-        return _pry_service_request("/plan")
+        plan = upstream_json("/api/platform-a/clamp/plan")
     except Exception as error:
-        return {"valid": False, "motion_allowed": False, "message": f"撬拨视觉不可用：{error}"}
+        return {
+            "valid": False,
+            "motion_allowed": False,
+            "message": f"撬拨共用视觉不可用：{error}",
+            "vision_source": "shared_clamp_vision",
+        }
+
+    result = copy.deepcopy(plan)
+    result["branch"] = "pry"
+    result["vision_source"] = "shared_clamp_vision"
+    result["algorithm"] = "state_service.D435Monitor (same as clamp)"
+    if result.get("valid"):
+        result["message"] = "已复用夹挤视觉的夹持点、宽度和表面间距；可执行撬拨规划"
+    else:
+        detail = result.get("message") or "当前没有有效足跟结果"
+        result["message"] = f"撬拨共用视觉暂不可用：{detail}"
+    return result
 
 
 @app.get("/api/workflow/pry/preview.png")
 def pry_preview() -> Response:
     try:
-        with urlopen(f"{PRY_SERVICE_URL}/preview", timeout=3.0) as response:
-            frame = response.read()
-            media_type = response.headers.get_content_type()
-            return Response(frame, media_type=media_type, headers={"Cache-Control": "no-store"})
+        frame = upstream_bytes("/api/platform-a/clamp/preview.png")
+        return Response(
+            frame,
+            media_type="image/png",
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+        )
     except Exception as error:
-        raise HTTPException(status_code=503, detail=f"撬拨视觉尚未产生画面：{error}") from error
+        raise HTTPException(status_code=503, detail=f"撬拨共用视觉尚未产生画面：{error}") from error
 
 
 @app.get("/api/workflow/status")
