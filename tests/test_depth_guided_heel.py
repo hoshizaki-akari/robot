@@ -81,6 +81,25 @@ class DepthGuidedHeelTests(unittest.TestCase):
         self.assertAlmostEqual(float(point[1]), -13.333333, places=5)
         self.assertAlmostEqual(float(point[2]), 500.0, places=5)
 
+    def test_depth_fallback_center_uses_upper_heel_not_lower_right_extension(self):
+        depth = np.full((240, 424), 800.0, dtype=np.float32)
+        depth[70:130, 180:214] = 500.0
+        depth[130:235, 180:260] = 500.0
+        mask, _ = extract_depth_heel_candidate(depth)
+        self.assertIsNotNone(mask)
+
+        result = estimate_depth_guided_target_chord(
+            mask,
+            depth,
+            CameraIntrinsics(fx=300.0, fy=300.0, cx=212.0, cy=120.0),
+        )
+
+        self.assertTrue(result["valid"])
+        self.assertLessEqual(result["center_px"][0], 200)
+        self.assertLess(
+            result["upper_midpoint_px"][1], result["center_px"][1]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

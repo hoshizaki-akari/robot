@@ -10,6 +10,10 @@ from .handeye_calibration import pose_to_matrix
 
 
 CALIBRATION_FILE = Path(__file__).resolve().parent / "config" / "handeye_calibration.json"
+# The visible heel surface is not the gripper center.  D435Monitor applies
+# this same fixed tool-Z bias before a motion plan is allowed; the planner
+# must preserve it when it derives the frozen center from the two contacts.
+GRIPPER_BIAS_MM = 35.0
 
 
 def _transform_point(base_t_camera: np.ndarray, point_mm: list[float]) -> list[float]:
@@ -81,14 +85,24 @@ def build_clamp_plan(vision: dict[str, Any], fr5: dict[str, Any]) -> dict[str, A
             camera_b = result.get("clamp_contact_b_camera_mm")
             if camera_a and camera_b:
                 # D435Monitor 对左右接触点分别做了多帧稳定；夹持中心必须由
-                # 这对稳定点派生，不能混用单帧 heel_center_camera_mm。
-                result["clamp_contact_center_camera_mm"] = [
+                # 这对稳定点派生，不能混用单帧 heel_center_camera_mm。这里
+                # 得到的是足跟表面中心，随后沿相机 Z 方向补回夹爪中心偏移。
+                surface_center_camera = [
                     round((float(a) + float(b)) / 2.0, 2)
                     for a, b in zip(camera_a, camera_b)
                 ]
-            result["clamp_contact_center_base_mm"] = [
-                round((float(a) + float(b)) / 2.0, 2) for a, b in zip(point_a, point_b)
-            ]
+                result["clamp_contact_surface_center_camera_mm"] = surface_center_camera
+                result["clamp_contact_surface_center_base_mm"] = _transform_point(
+                    base_t_camera, surface_center_camera
+                )
+                result["clamp_contact_center_camera_mm"] = [
+                    surface_center_camera[0],
+                    surface_center_camera[1],
+                    round(surface_center_camera[2] + GRIPPER_BIAS_MM, 2),
+                ]
+                result["clamp_contact_center_base_mm"] = _transform_point(
+                    base_t_camera, result["clamp_contact_center_camera_mm"]
+                )
             axis = np.asarray(point_b, dtype=np.float64) - np.asarray(point_a, dtype=np.float64)
             normal = np.asarray(result["heel_plane_normal_base"], dtype=np.float64)
             axis = axis - float(np.dot(axis, normal)) * normal

@@ -132,7 +132,7 @@ def estimate_depth_guided_target_chord(
 
     A depth component can contain the full foot, whose middle row is much
     wider than the intended clamp section.  Use a fixed heel-relative row and
-    a symmetric chord around the component median, matching the round heel
+    a symmetric chord around the upper heel band, matching the round heel
     location learned by the trained detector.  This prevents the contacts
     from jumping between unrelated rows when a depth hole or a nearby
     background object changes by one frame.
@@ -151,11 +151,16 @@ def estimate_depth_guided_target_chord(
     top_y = int(np.min(ys))
     bottom_y = int(np.max(ys))
     component_height = max(1, bottom_y - top_y)
-    # The full depth component contains the foot below the heel.  The actual
-    # round heel in the current view is around one third of the component
-    # height, not at its top edge.  Use the component median x and a fixed
-    # relative y so the fallback agrees with the trained YOLO target.
-    center_x = int(round(float(np.median(xs))))
+    # The full depth component contains the foot below the heel and can also
+    # contain a connected shelf/support on the right.  Its global median x is
+    # therefore biased to the right (the current scene reports x=187 while
+    # the round upper heel is around x=170).  Estimate the center from the
+    # upper heel band, before the lower foot widens and joins that object.
+    upper_band_limit = top_y + int(round(component_height * 0.30))
+    upper_xs = xs[ys <= upper_band_limit]
+    if upper_xs.size < 80:
+        upper_xs = xs
+    center_x = int(round(float(np.median(upper_xs))))
     y = top_y + int(round(component_height * 0.32))
     point_center = geometry._ray_plane((center_x, y), plane, intrinsics)
     if point_center is None:
@@ -183,7 +188,10 @@ def estimate_depth_guided_target_chord(
     point_center = geometry._ray_plane(center_pixel, plane, intrinsics)
     if point_center is None:
         return base
-    top_pixel = geometry.upper_midpoint(mask, center_pixel[0])
+    # The global component top may belong to the adjacent orange support.
+    # Use the top of the selected circular target instead, so the surface gap
+    # is measured from the heel target rather than from that distractor.
+    top_pixel = (center_pixel[0], max(top_y, y - half_px))
     point_top = geometry._ray_plane(top_pixel, plane, intrinsics)
     if point_top is None:
         return base
@@ -194,9 +202,11 @@ def estimate_depth_guided_target_chord(
             "center_px": [center_pixel[0], center_pixel[1]],
             "contact_left_px": [center_x - half_px, y],
             "contact_right_px": [center_x + half_px, y],
+            "upper_midpoint_px": [top_pixel[0], top_pixel[1]],
             "center_camera_mm": [round(float(v), 3) for v in point_center],
             "contact_left_camera_mm": [round(float(v), 3) for v in point_left],
             "contact_right_camera_mm": [round(float(v), 3) for v in point_right],
+            "upper_midpoint_camera_mm": [round(float(v), 3) for v in point_top],
             "width_mm": round(width, 2),
             "valid": bool(geometry.expected_min_mm <= width <= geometry.expected_max_mm),
             "target_width_range_mm": [target_min_mm, target_max_mm],
@@ -279,9 +289,13 @@ def refine_target_chord_at_center(
     _, half_px, point_left, point_right, width = min(
         candidates, key=lambda item: item[0]
     )
-    top_pixel = result.get("upper_midpoint_px") or geometry.upper_midpoint(
-        mask, center_x
-    )
+    target_radius = int(result.get("target_circle_radius_px", 0) or 0)
+    if target_radius > 0:
+        top_pixel = (center_x, max(0, center_y - target_radius))
+    else:
+        top_pixel = result.get("upper_midpoint_px") or geometry.upper_midpoint(
+            mask, center_x
+        )
     point_top = geometry._ray_plane(tuple(top_pixel), plane, intrinsics)
     if point_top is None:
         return result
@@ -290,9 +304,11 @@ def refine_target_chord_at_center(
         {
             "contact_left_px": [center_x - half_px, center_y],
             "contact_right_px": [center_x + half_px, center_y],
+            "upper_midpoint_px": [top_pixel[0], top_pixel[1]],
             "contact_left_camera_mm": [round(float(v), 3) for v in point_left],
             "contact_right_camera_mm": [round(float(v), 3) for v in point_right],
             "center_camera_mm": [round(float(v), 3) for v in point_center],
+            "upper_midpoint_camera_mm": [round(float(v), 3) for v in point_top],
             "width_mm": round(width, 2),
             "valid": bool(geometry.expected_min_mm <= width <= geometry.expected_max_mm),
             "target_width_range_mm": [target_min_mm, target_max_mm],
