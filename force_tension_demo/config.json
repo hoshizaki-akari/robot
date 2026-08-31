@@ -1,0 +1,27 @@
+{
+  "sensor_model": "KWR75D",
+  "display_frame": "base_link",
+  "wrench_topics": [
+    "/force_torque_sensor_broadcaster/wrench",
+    "/wrench",
+    "/force_sensor/wrench",
+    "/ft_sensor/wrench",
+    "/frcobot/force"
+  ],
+  "joint_state_topic": "/joint_states",
+  "tool_frame": "wrist3_link",
+  "state_service_url": "http://127.0.0.1:8765/api/state",
+  "robot_ip": "192.168.58.2",
+  "baseline_duration_s": 2.0,
+  "slack_threshold_n": 0.5,
+  "tension_threshold_n": 1.0,
+  "warning_force_n": 10.0,
+  "motion_joint_speed_deg_s": 0.15,
+  "max_orientation_change_deg": 1.0,
+  "settle_after_motion_s": 0.4,
+  "tension_confirm_s": 0.2,
+  "slack_confirm_s": 0.5,
+  "data_stale_s": 0.8,
+  "filter_cutoff_hz": 5.0,
+  "increase_direction_sign": -1
+}

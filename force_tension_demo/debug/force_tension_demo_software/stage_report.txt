@@ -1,0 +1,79 @@
+===== DEMO 01 KWR75D 绳带松紧检测 =====
+
+date:
+2026-08-31
+
+scope:
+独立 HTML Demo；不修改 platform_b/090105.html；不发送机械臂运动、力控、夹爪或校零命令
+
+hardware:
+sensor = KWR75D
+sensor_active = true
+source = Fairino SDK read-only / FT_GetForceTorqueRCS
+frame = base_link
+sample_rate_hz = 19.9
+max_data_age_ms = 26
+
+baseline:
+method = stationary slack-band median, 2.0 s
+baseline_force_n = [-19.9062, -11.1016, 19.9063]
+flange_orientation = fixed during this milestone
+orientation_change_limit_deg = 1.0
+baseline_orientation_deg = [-89.0601, 2.2286, -148.1212]
+max_static_orientation_change_deg = 0.0007
+baseline_to_confirmed_slack_s = 2.926
+
+slack_verification:
+duration_s = 10.29
+samples = 51
+slack_samples = 51
+other_state_samples = 0
+relative_force_min_n = 0.0003
+relative_force_max_n = 0.3869
+relative_force_average_n = 0.1208
+moving_samples = 0
+direction_hidden_while_slack = true
+
+extended_slack_noise:
+post_baseline_samples = 1988
+resultant_mean_n = 0.1609
+resultant_p95_n = 0.3502
+resultant_p99_n = 0.4270
+resultant_max_n = 0.4841
+samples_above_0.5_n = 0
+samples_above_1.0_n = 0
+
+classification:
+slack_threshold_n = 0.5
+tension_threshold_n = 1.0
+warning_force_n = 10.0
+motion_gate_joint_speed_deg_s = 0.15
+settle_after_motion_s = 0.4
+hysteresis = enabled
+
+automatic_checks:
+python_tests = 28/28 passed
+python_total_coverage = 72%
+classifier_coverage = 93%
+api_coverage = 91%
+ruff_check = passed
+javascript_syntax = passed
+desktop_browser_layout = passed
+mobile_browser_layout = passed
+browser_console_errors = 0
+
+runtime_record:
+debug/sessions/session_20260831_115728/force_samples.csv
+
+not_yet_physically_verified:
+manual X/Y/Z translation while the band changes from slack to tension
+tension detection and release-to-slack on the real band
+measured force direction sign in base_link
+estimated force-increase motion direction sign
+greater-than-10-N warning on hardware (do not intentionally exceed 10 N just to test it)
+
+status:
+WAITING_CP_FORCE_TENSION_DIRECTION
+
+checkpoint:
+用户保持法兰朝向不变，通过示教器沿 base_link 单轴小步平移；确认停稳后页面从“移动中”变为“张紧”，并核对受力方向。先控制在约 1–3 N，确认后松回并检查恢复“松动”。

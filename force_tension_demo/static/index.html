@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KWR75D 绳带松紧检测</title>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">FORCE SENSOR · DEMO 01</p>
+        <h1>KWR75D 绳带松紧检测</h1>
+        <p class="subtitle">只读真实设备 · 坐标系 <code>base_link</code> · 不发送机械臂运动</p>
+      </div>
+      <div class="connection" id="connectionBadge"><span class="pulse"></span><span id="connectionText">正在连接</span></div>
+    </header>
+
+    <div class="warning hidden" id="warningBanner" role="alert">
+      <strong>超过测试警戒力</strong><span id="warningText">请停止继续拉紧</span>
+    </div>
+
+    <main class="dashboard">
+      <section class="state-panel panel" id="statePanel">
+        <div class="section-label">当前判定</div>
+        <div class="state-orb" id="stateOrb"><span id="stateIcon">…</span></div>
+        <h2 id="stateTitle">等待数据</h2>
+        <p id="stateExplanation">正在寻找 KWR75D 真实力数据</p>
+        <div class="force-main"><span id="forceValue">0.00</span><small>N</small></div>
+        <div class="meter"><div id="forceMeter"></div><i class="threshold tension"></i><i class="threshold warning-mark"></i></div>
+        <div class="meter-labels"><span>0 N</span><span>张紧 1 N</span><span>警戒 10 N</span></div>
+        <div class="progress-wrap hidden" id="baselineProgressWrap">
+          <div class="progress"><span id="baselineProgress"></span></div>
+          <small id="baselineProgressText">采集基线</small>
+        </div>
+        <div class="actions">
+          <button class="primary" id="baselineButton">设为松绳基线</button>
+          <button class="secondary" id="clearBaselineButton">清除基线</button>
+        </div>
+      </section>
+
+      <section class="panel vectors-panel">
+        <div class="panel-heading">
+          <div><span class="section-label">实时受力</span><h3>三轴分量与方向</h3></div>
+          <span class="tag" id="stabilityTag">等待数据</span>
+        </div>
+        <div class="axis-values">
+          <div><span class="axis x">X</span><strong id="fxValue">0.00</strong><small>N</small></div>
+          <div><span class="axis y">Y</span><strong id="fyValue">0.00</strong><small>N</small></div>
+          <div><span class="axis z">Z</span><strong id="fzValue">0.00</strong><small>N</small></div>
+        </div>
+        <div class="vector-layout">
+          <canvas id="vectorCanvas" aria-label="base_link 三维受力方向图"></canvas>
+          <div class="directions">
+            <div class="direction-card measured">
+              <span>传感器测得受力方向</span>
+              <strong id="forceAxis">--</strong>
+              <code id="forceDirection">[--, --, --]</code>
+            </div>
+            <div class="direction-card increase">
+              <span>估算增力运动方向</span>
+              <strong id="increaseAxis">--</strong>
+              <code id="increaseDirection">[--, --, --]</code>
+            </div>
+            <button class="text-button" id="reverseButton">方向不对？反转增力方向</button>
+            <p class="fine-print">默认按“机械臂远离固定点会增加张力”估算。第一次必须用已知轴向小力确认符号。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel chart-panel">
+        <div class="panel-heading">
+          <div><span class="section-label">最近 30 秒</span><h3>牵引力变化曲线</h3></div>
+          <div class="legend"><i></i>基线后合力</div>
+        </div>
+        <canvas id="forceChart" aria-label="牵引力时间曲线"></canvas>
+      </section>
+
+      <section class="panel status-panel">
+        <div class="panel-heading"><div><span class="section-label">数据链路</span><h3>设备与判定依据</h3></div></div>
+        <dl class="status-grid">
+          <div><dt>真实数据来源</dt><dd id="sourceValue">等待发现</dd></div>
+          <div><dt>坐标系</dt><dd id="frameValue">base_link</dd></div>
+          <div><dt>更新频率 / 延迟</dt><dd id="rateValue">-- Hz / -- ms</dd></div>
+          <div><dt>机械臂运动检测</dt><dd id="motionValue">等待数据</dd></div>
+          <div><dt>法兰朝向保持</dt><dd id="orientationValue">等待基线</dd></div>
+          <div><dt>松绳基线</dt><dd id="baselineValue">未设置</dd></div>
+          <div><dt>判定阈值</dt><dd id="thresholdValue">≤0.5 N 松动 · ≥1.0 N 张紧</dd></div>
+        </dl>
+        <div class="diagnostic" id="diagnosticText">程序会自动寻找 ROS 2、已有真机数据服务或法奥只读连接。</div>
+        <a class="download" href="/api/export/latest" download>下载本次真实数据 CSV</a>
+      </section>
+    </main>
+
+    <footer>
+      <span>页面仅作假脚/物体试验，不用于人体。</span>
+      <span>固定物可能被提起；10 N 报警不会替代物理急停或人工停止。</span>
+    </footer>
+  </div>
+  <div class="toast" id="toast" role="status"></div>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

@@ -11,6 +11,7 @@ log/
 
 # Local runtime and machine-specific case records
 platform_a/data/
+force_tension_demo/debug/sessions/
 *.log
 
 # Local editor / OS metadata
