@@ -1,0 +1,4 @@
+/**:
+  ros__parameters:
+    sensor_name: tcp_force_torque_sensor
+    frame_id: base_link

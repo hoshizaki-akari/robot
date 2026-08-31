@@ -1,0 +1,32 @@
+std_msgs/Header header
+
+uint8 INITIALIZING=0
+uint8 READY=1
+uint8 MANUAL_SETUP=2
+uint8 PRETENSION=3
+uint8 CALIBRATING=4
+uint8 DIRECTION_LOCKED=5
+uint8 TRACTION=6
+uint8 RELEASING=7
+uint8 COMPLETED=8
+uint8 FAULT=9
+uint8 EMERGENCY_STOP=10
+
+uint8 state
+bool ready
+float64 target_force_n
+float64 actual_force_n
+float64 lateral_force_n
+float64 fx
+float64 fy
+float64 fz
+bool force_direction_valid
+geometry_msgs/Vector3 measured_force_direction_base
+geometry_msgs/Vector3 increase_direction_base
+geometry_msgs/Vector3 locked_direction_base
+geometry_msgs/Point ee_position_base
+float64 axis_displacement_m
+float64 velocity_cmd_mps
+string fault_code
+string stop_reason
+string message

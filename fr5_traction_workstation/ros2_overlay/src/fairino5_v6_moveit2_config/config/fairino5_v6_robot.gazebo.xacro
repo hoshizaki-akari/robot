@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <!-- Gazebo-specific link properties -->
+    <gazebo reference="base_link">
+        <material>Gazebo/Grey</material>
+    </gazebo>
+    <gazebo reference="shoulder_link">
+        <material>Gazebo/Grey</material>
+    </gazebo>
+    <gazebo reference="upperarm_link">
+        <material>Gazebo/Grey</material>
+    </gazebo>
+    <gazebo reference="forearm_link">
+        <material>Gazebo/Grey</material>
+    </gazebo>
+    <gazebo reference="wrist1_link">
+        <material>Gazebo/Grey</material>
+    </gazebo>
+    <gazebo reference="wrist2_link">
+        <material>Gazebo/Grey</material>
+    </gazebo>
+    <gazebo reference="wrist3_link">
+        <material>Gazebo/Grey</material>
+    </gazebo>
+
+    <!-- Gazebo-specific plugins -->
+    <gazebo>
+        <!-- Gazebo ROS 2 Control Plugin -->
+        <plugin filename="libgazebo_ros2_control.so" name="gazebo_ros2_control">
+            <parameters>$(find fairino5_v6_moveit2_config)/config/admittance_controller.yaml</parameters>
+        </plugin>
+    </gazebo>
+
+    <gazebo reference="wrist3_link"> <!-- 或者您的力传感器实际安装的连杆 -->
+        <!-- Gazebo Force Torque Sensor Plugin -->
+        <sensor name="tcp_force_torque_sensor" type="force_torque">
+            <always_on>true</always_on>
+            <update_rate>100.0</update_rate>
+            <force_torque>
+                <frame>sensor_frame</frame> <!-- 传感器数据发布的坐标系 -->
+                <measure_direction>child_to_parent</measure_direction>
+            </force_torque>
+        </sensor>
+    </gazebo>
+
+</robot>

@@ -1,0 +1,9 @@
+<library path="fr_controllers">
+    <class name="cartesian_velocity_controller/CartesianVelocityController"
+           type="cartesian_velocity_controller::CartesianVelocityController"
+           base_class_type="controller_interface::ControllerInterface">
+      <description>
+        A controller that takes Cartesian velocity commands and sends position commands to the joints.
+      </description>
+    </class>
+  </library>

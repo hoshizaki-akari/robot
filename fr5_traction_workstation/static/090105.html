@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>骨伤牵引机器人工作站</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --navy: #1e3a5f;
+      --blue: #3b82f6;
+      --green: #16a34a;
+      --red: #dc2626;
+      --muted: #64748b;
+      --line: #e2e8f0;
+    }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+      background: #eef2f7; color: #1f2937;
+    }
+    button, input, select { font-family: inherit; }
+    button:disabled { opacity: .42; cursor: not-allowed !important; }
+
+    .top-bar {
+      height: 68px; padding: 0 24px; background: var(--navy); color: #fff;
+      display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+      box-shadow: 0 3px 12px rgba(15, 23, 42, .18);
+    }
+    .top-left, .top-right { display: flex; align-items: center; gap: 10px; }
+    .top-right { justify-content: flex-end; }
+    .top-bar h1 { font-size: 22px; font-weight: 600; letter-spacing: 3px; }
+    .nav-btn {
+      border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.12);
+      color: #fff; padding: 8px 16px; border-radius: 7px; font-size: 15px;
+      cursor: pointer; transition: .18s;
+    }
+    .nav-btn:hover { background: rgba(255,255,255,.24); }
+    .user-chip {
+      display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+      border-radius: 8px; background: rgba(255,255,255,.1); font-size: 14px;
+    }
+    .role-tag { padding: 2px 7px; border-radius: 10px; background: #dbeafe; color: #1d4ed8; font-size: 12px; }
+
+    .main-container { height: calc(100% - 68px); display: flex; gap: 18px; padding: 18px; }
+    .left-area, .right-area { width: 50%; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+    .card {
+      background: #fff; border-radius: 14px; box-shadow: 0 4px 16px rgba(0,0,0,.08);
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .card-title {
+      min-height: 50px; padding: 13px 18px; border-bottom: 2px solid #e8ecf1;
+      color: var(--navy); font-size: 18px; font-weight: 600;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .status { display: inline-flex; align-items: center; gap: 6px; color: var(--green); font-size: 13px; font-weight: 500; }
+    .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+    .status.running { color: #f59e0b; }
+    .status.offline { color: var(--red); }
+
+    .arm-panel { flex: 1.15; background: #323232; }
+    .arm-img-wrap { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
+    .arm-img-wrap img { width: 100%; height: 100%; object-fit: contain; }
+    #robotViewer { width: 100%; height: 100%; min-height: 260px; }
+    #robotViewer canvas { display: block; width: 100%; height: 100%; }
+    .image-fallback { color: #cbd5e1; text-align: center; line-height: 1.8; }
+    .image-fallback strong { display: block; color: #fff; font-size: 26px; }
+
+    .curve-panel { flex: 1; padding: 0 14px 14px; min-height: 220px; }
+    .curve-panel .card-title { margin: 0 -14px 10px; }
+    #forceCanvas { flex: 1; width: 100%; min-height: 0; border-radius: 10px; background: #f8fafc; border: 1px solid var(--line); }
+
+    .force-panel { flex: 1; padding-bottom: 16px; }
+    .force-content { flex: 1; display: grid; grid-template-columns: 135px 1fr 135px; align-items: center; gap: 18px; padding: 12px 22px; }
+    .round-btn-group { display: flex; flex-direction: column; gap: 20px; align-items: center; }
+    .round-btn {
+      width: 110px; height: 110px; border-radius: 50%; border: 4px solid #d1d5db;
+      background: #f8fafc; font-size: 27px; font-weight: 700; cursor: pointer; transition: .15s;
+    }
+    .round-btn:active:not(:disabled) { transform: scale(.95); }
+    .round-btn.minus { color: var(--red); border-color: #fca5a5; }
+    .round-btn.plus { color: var(--green); border-color: #86efac; }
+    .force-display-target { text-align: center; }
+    .force-label-target { font-size: 24px; color: var(--muted); margin-bottom: 8px; }
+    .force-box-target {
+      height: 150px; border: 3px solid var(--blue); border-radius: 12px;
+      display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 16px rgba(59,130,246,.15);
+    }
+    .force-value-target {
+      width: 150px; border: 0; outline: 0; background: transparent; text-align: right;
+      font: inherit; font-size: 70px; font-weight: 800; color: var(--navy);
+      appearance: textfield; -moz-appearance: textfield;
+    }
+    .force-value-target::-webkit-inner-spin-button,
+    .force-value-target::-webkit-outer-spin-button { appearance: none; margin: 0; }
+    .force-unit-target { font-size: 48px; font-weight: 600; color: var(--blue); margin-left: 5px; }
+    .actual-force { margin-top: 10px; color: var(--muted); font-size: 15px; }
+    .actual-force strong { color: var(--navy); font-size: 22px; }
+    .force-vector-card {
+      margin-top: 14px; padding: 12px 14px; border: 1px solid #dbe5ef;
+      border-radius: 10px; background: #f8fafc; text-align: left;
+    }
+    .vector-card-title {
+      color: var(--navy); font-size: 14px; font-weight: 700;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .vector-card-title code { color: var(--blue); font-size: 12px; font-weight: 600; }
+    .vector-components {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+      margin-top: 10px;
+    }
+    .vector-components div {
+      display: grid; grid-template-columns: auto 1fr auto; align-items: baseline;
+      gap: 4px; padding: 7px 8px; border-radius: 7px; background: #fff;
+    }
+    .vector-components span { color: var(--muted); font-size: 12px; }
+    .vector-components strong { color: var(--navy); font-size: 17px; text-align: right; }
+    .vector-components small { color: var(--muted); font-size: 11px; }
+    .vector-direction {
+      display: grid; grid-template-columns: 72px 1fr; gap: 8px; align-items: center;
+      margin-top: 8px; color: var(--muted); font-size: 12px;
+    }
+    .vector-direction code {
+      color: var(--navy); font-size: 12px; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+    .vector-message { min-height: 18px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+    .tension-state { margin-top: 8px; font-weight: 700; color: #64748b; }
+    .tension-state.tight { color: #15803d; }
+
+    .control-panel { flex: 0 0 122px; padding: 14px 18px; }
+    .control-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; height: 100%; }
+    .action-btn { border: 0; border-radius: 9px; color: #fff; font-size: 17px; font-weight: 600; cursor: pointer; }
+    .action-btn.start { background: var(--green); }
+    .action-btn.stop { background: #f59e0b; }
+    .action-btn.emergency { background: var(--red); }
+
+    .modal-mask {
+      position: fixed; inset: 0; z-index: 20; background: rgba(15,23,42,.55);
+      display: flex; align-items: center; justify-content: center; padding: 24px;
+    }
+    .modal-mask.hidden { display: none; }
+    .modal {
+      width: min(100%, 980px); max-height: 88vh; background: #fff; border-radius: 15px;
+      box-shadow: 0 22px 60px rgba(0,0,0,.25); overflow: hidden; display: flex; flex-direction: column;
+    }
+    .modal.small { width: 430px; }
+    .modal-header { padding: 17px 22px; background: var(--navy); color: #fff; display: flex; justify-content: space-between; align-items: center; }
+    .modal-header h2 { font-size: 20px; }
+    .close-btn { border: 0; background: transparent; color: #fff; font-size: 26px; cursor: pointer; }
+    .modal-body { padding: 22px; overflow: auto; }
+    .form-item { margin-bottom: 17px; }
+    .form-item label { display: block; color: #475569; font-size: 14px; margin-bottom: 7px; }
+    .form-item input, .form-item select {
+      width: 100%; padding: 11px 12px; border: 1px solid #cbd5e1; border-radius: 7px; font-size: 15px; outline: none;
+    }
+    .form-item input:focus, .form-item select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
+    .primary-btn, .secondary-btn, .danger-btn {
+      border: 0; padding: 10px 18px; border-radius: 7px; font-size: 15px; cursor: pointer;
+    }
+    .primary-btn { background: var(--blue); color: #fff; }
+    .secondary-btn { background: #e2e8f0; color: #334155; }
+    .danger-btn { background: #fee2e2; color: #b91c1c; }
+    .login-btn { width: 100%; padding: 12px; }
+    .login-tip { margin-top: 15px; padding: 11px; border-radius: 7px; background: #f1f5f9; color: #64748b; font-size: 13px; line-height: 1.7; }
+    .error-tip { min-height: 20px; color: var(--red); font-size: 13px; margin-bottom: 8px; }
+    .toolbar { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .toolbar-left, .toolbar-right { display: flex; gap: 9px; }
+    .toolbar input, .toolbar select { padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 7px; }
+    .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 9px; }
+    table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 14px; }
+    th, td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: center; }
+    th { position: sticky; top: 0; background: #f1f5f9; color: #334155; }
+    tbody tr:hover { background: #f8fafc; }
+    .empty { padding: 32px; text-align: center; color: #94a3b8; }
+    .permission-note { font-size: 13px; color: #64748b; margin-top: 8px; }
+    .toast {
+      position: fixed; z-index: 50; left: 50%; bottom: 28px; transform: translateX(-50%);
+      padding: 11px 22px; border-radius: 8px; background: #0f172a; color: #fff; opacity: 0;
+      pointer-events: none; transition: .2s;
+    }
+    .toast.show { opacity: 1; }
+
+    @media (max-width: 1050px) {
+      .top-bar { grid-template-columns: auto 1fr auto; padding: 0 12px; }
+      .top-bar h1 { font-size: 18px; text-align: center; }
+      .user-chip span:first-child { display: none; }
+      .force-content { grid-template-columns: 95px 1fr 95px; gap: 8px; padding: 10px; }
+      .round-btn { width: 82px; height: 82px; font-size: 21px; }
+      .force-vector-card { margin-top: 10px; padding: 9px 10px; }
+      .vector-components strong { font-size: 15px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="top-bar">
+    <div class="top-left">
+      <button class="nav-btn" id="settingsBtn">参数设置</button>
+      <button class="nav-btn" id="recordsBtn">牵引记录</button>
+    </div>
+    <h1>骨伤牵引机器人工作站</h1>
+    <div class="top-right">
+      <div class="user-chip"><span id="currentUser">未登录</span><span class="role-tag" id="currentRole">访客</span></div>
+      <button class="nav-btn" id="logoutBtn">退出登录</button>
+    </div>
+  </header>
+
+  <main class="main-container">
+    <section class="left-area">
+      <div class="card arm-panel">
+        <div class="card-title"><span>机械臂状态</span><span class="status" id="armStatus">通信正常</span></div>
+        <div class="arm-img-wrap">
+          <div id="robotViewer" aria-label="FR5机械臂实时姿态"></div>
+        </div>
+      </div>
+      <div class="card curve-panel">
+        <div class="card-title"><span>牵引力曲线</span><span id="recordTimer">未开始记录</span></div>
+        <canvas id="forceCanvas"></canvas>
+      </div>
+    </section>
+
+    <section class="right-area">
+      <div class="card force-panel">
+        <div class="card-title"><span>牵引力调节</span><span class="status" id="workStatus">设备就绪</span></div>
+        <div class="force-content">
+          <div class="round-btn-group">
+            <button class="round-btn minus force-adjust" data-step="-5">−5N</button>
+            <button class="round-btn minus force-adjust" data-step="-10">−10N</button>
+          </div>
+          <div class="force-display-target">
+            <div class="force-label-target">目标牵引力</div>
+            <div class="force-box-target"><input class="force-value-target" id="targetForceVal" type="number" min="1" max="30" step="0.1" value="10" inputmode="decimal" aria-label="目标牵引力"><span class="force-unit-target">N</span></div>
+            <div class="actual-force">实时轴向张力：<strong id="actualForceVal">0.0</strong> N</div>
+            <div class="force-vector-card" aria-label="base_link三轴力向量">
+              <div class="vector-card-title">实时力向量 <code>base_link</code></div>
+              <div class="vector-components">
+                <div><span>Fx</span><strong id="forceFx">--</strong><small>N</small></div>
+                <div><span>Fy</span><strong id="forceFy">--</strong><small>N</small></div>
+                <div><span>Fz</span><strong id="forceFz">--</strong><small>N</small></div>
+              </div>
+              <div class="vector-direction"><span>受力方向</span><code id="forceDirection">--</code></div>
+              <div class="vector-direction"><span>增力方向</span><code id="increaseDirection">--</code></div>
+              <div class="tension-state" id="tensionState">松弛：尚未感知到有效张力</div>
+              <div class="vector-message" id="forceVectorMessage">等待真实力数据</div>
+            </div>
+          </div>
+          <div class="round-btn-group">
+            <button class="round-btn plus force-adjust" data-step="5">+5N</button>
+            <button class="round-btn plus force-adjust" data-step="10">+10N</button>
+          </div>
+        </div>
+      </div>
+      <div class="card control-panel">
+        <div class="control-grid">
+          <button class="action-btn start" id="prepareBtn">松绳校零并准备</button>
+          <button class="action-btn start" id="calibrateBtn" disabled>确认并锁定方向</button>
+          <button class="action-btn start" id="startBtn" disabled>开始恒力牵引</button>
+          <button class="action-btn stop" id="stopBtn" disabled>正常释放</button>
+          <button class="action-btn emergency" id="emergencyBtn" disabled>软件急停</button>
+          <button class="action-btn stop" id="resetBtn" disabled>复位故障</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="modal-mask" id="loginModal">
+    <div class="modal small">
+      <div class="modal-header"><h2>系统登录</h2></div>
+      <div class="modal-body">
+        <div class="form-item"><label for="username">用户名</label><input id="username" autocomplete="username" placeholder="请输入用户名"></div>
+        <div class="form-item"><label for="password">密码</label><input id="password" type="password" autocomplete="current-password" placeholder="请输入密码"></div>
+        <div class="error-tip" id="loginError"></div>
+        <button class="primary-btn login-btn" id="loginBtn">登录系统</button>
+        <div class="login-tip">演示账号：管理员 admin/admin123；医生 doctor/doctor123；操作员 operator/operator123。</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask hidden" id="recordsModal">
+    <div class="modal">
+      <div class="modal-header"><h2>牵引记录</h2><button class="close-btn" data-close="recordsModal">×</button></div>
+      <div class="modal-body">
+        <div class="toolbar">
+          <div class="toolbar-left"><input id="recordSearch" placeholder="搜索编号或操作人员"><select id="recordStatusFilter"><option value="">全部状态</option><option value="已完成">已完成</option><option value="异常终止">异常终止</option></select></div>
+          <div class="toolbar-right"><button class="secondary-btn" id="exportBtn">导出 CSV</button></div>
+        </div>
+        <div class="table-wrap">
+          <table><thead><tr><th>记录编号</th><th>开始时间</th><th>结束时间</th><th>操作人员</th><th>角色</th><th>目标力(N)</th><th>平均力(N)</th><th>最大力(N)</th><th>状态</th></tr></thead><tbody id="recordsBody"></tbody></table>
+        </div>
+        <div class="permission-note">历史由 ROS2 traction_manager 持久化；页面只提供查看与导出，不提供删除。</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask hidden" id="settingsModal">
+    <div class="modal small">
+      <div class="modal-header"><h2>牵引参数设置</h2><button class="close-btn" data-close="settingsModal">×</button></div>
+      <div class="modal-body">
+        <div class="form-item"><label>默认目标牵引力（N）</label><input id="settingTarget" type="number" min="1" max="30" step="0.1"></div>
+        <div class="form-item"><label>固定安全上限（N）</label><input id="settingLimit" type="number" min="30" max="30" step="1" value="30" disabled></div>
+        <button class="primary-btn" id="saveSettingsBtn">保存参数</button>
+        <div class="permission-note">仅管理员和医生可以修改目标；25/30 N 超力、5 N 横向力等硬件安全阈值不可在网页放宽。</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "/assets/vendor/three.module.js",
+        "three/addons/": "/assets/vendor/"
+      }
+    }
+  </script>
+  <script type="module" src="/assets/robot_viewer.js?v=20260831-fr5-real"></script>
+<script type="text/plain" id="legacyLogic">
+    Legacy traction logic is intentionally disabled. The active compatibility page
+    uses /api/traction/* and the ROS2 traction manager; it does not simulate force,
+    persist traction records in the browser, or issue robot SDK commands.
+  </script>
+  <script src="/assets/090105.js?v=20260831-fr5-real"></script>
+</body>
+</html>

@@ -12,6 +12,8 @@ log/
 # Local runtime and machine-specific case records
 platform_a/data/
 force_tension_demo/debug/sessions/
+fr5_traction_workstation/debug/
+fr5_traction_workstation/.ruff_cache/
 *.log
 
 # Local editor / OS metadata

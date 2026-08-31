@@ -1,0 +1,25 @@
+===== FR5 TRACTION INTEGRATION =====
+
+date = 2026-08-31
+robot = FR5
+force_sensor = KWR75D
+force_frame = base_link
+
+verified:
+- Fairino SDK connected to 192.168.58.2
+- live joint_states: j1..j6
+- force_torque_sensor_broadcaster: active
+- cartesian_velocity_controller: inactive (safe handoff state)
+- traction_manager/controller: running
+- workstation UI: live FR5 model and base_link force vector verified
+
+current_state:
+MANUAL_SETUP
+
+status:
+WAITING_CHECKPOINT_MANUAL_TENSION
+
+checkpoint:
+Use the official Fairino teach pendant for XYZ translation only, keep flange
+orientation fixed, tension the slack belt, stop, then confirm direction in the
+workstation UI. Do not start traction before direction lock.

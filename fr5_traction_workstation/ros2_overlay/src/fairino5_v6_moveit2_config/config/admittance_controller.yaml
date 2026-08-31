@@ -1,0 +1,49 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 125  # Hz, 控制管理器的更新频率
+
+    # 定义我们的笛卡尔速度控制器
+    cartesian_velocity_controller:
+      type: cartesian_velocity_controller/CartesianVelocityController # 必须与您代码中PLUGINLIB_EXPORT_CLASS的名称一致
+
+    # 定义一个关节状态广播器，它会发布 /joint_states 话题
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    
+    force_torque_sensor_broadcaster:
+      type: force_torque_sensor_broadcaster/ForceTorqueSensorBroadcaster
+
+# 为我们的笛卡尔速度控制器设置参数
+cartesian_velocity_controller:
+  ros__parameters:
+    # 1. 定义控制器控制的关节
+    # !!非常重要!! 这里的名称和顺序必须与您机器人URDF中的关节完全一致
+    joints:
+      - j1
+      - j2
+      - j3
+      - j4
+      - j5
+      - j6
+
+    # 2. 定义运动学链的根连杆和末端连杆
+    # 这两个名称也必须与URDF中的<link>名称一致
+    root_frame: "base_link"
+    tip_frame: "wrist3_link" 
+    # 3. 定义末端状态的发布频率 (给AdmittanceNode使用)
+    publish_rate: 125.0 # Hz, 建议与controller_manager的update_rate保持一致或稍低
+    command_timeout_s: 0.10
+    ik_damping: 0.05
+    max_ik_failures: 3
+    joint_min_positions: [-3.0543, -4.6251, -2.8274, -4.6251, -3.0543, -3.0543]
+    joint_max_positions: [3.0543, 1.4835, 2.8274, 1.4835, 3.0543, 3.0543]
+    joint_max_velocities: [3.15, 3.15, 3.15, 3.2, 3.2, 3.2]
+    joint_max_accelerations: [0.7, 0.7, 0.7, 0.7, 0.7, 0.7]
+
+# --- force_torque_sensor_broadcaster 的参数 ---
+force_torque_sensor_broadcaster:
+  ros__parameters:
+    # a. 传感器名称，必须与您URDF中<sensor>标签的'name'属性完全一致
+    sensor_name: "tcp_force_torque_sensor"
+    # c. 传感器数据所在的坐标系名称，必须与URDF中<sensor>的<frame>标签一致
+    frame_id: "base_link"

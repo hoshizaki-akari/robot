@@ -1,0 +1,15 @@
+{
+  "title": "骨伤牵引机器人工作站",
+  "robot_model": "FR5",
+  "force_sensor": "KWR75D",
+  "force_frame": "base_link",
+  "target_force_min_n": 1.0,
+  "target_force_max_n": 30.0,
+  "validated_target_max_n": 15.0,
+  "soft_overforce_n": 25.0,
+  "hard_overforce_n": 30.0,
+  "lateral_force_limit_n": 5.0,
+  "max_axis_travel_m": 0.05,
+  "max_speed_mps": 0.005,
+  "ui_heartbeat_timeout_s": 2.0
+}

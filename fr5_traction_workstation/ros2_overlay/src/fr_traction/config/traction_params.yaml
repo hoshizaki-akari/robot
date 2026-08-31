@@ -1,0 +1,62 @@
+traction_controller:
+  ros__parameters:
+    control_rate_hz: 100.0
+    force_filter_cutoff_hz: 5.0
+    integral_gain_s_inv: 0.25
+    integral_limit_n: 3.0
+    virtual_mass: 10.0
+    virtual_damping: 80.0
+    force_deadband_n: 0.5
+    traction_max_speed_mps: 0.005
+    traction_max_acc_mps2: 0.02
+    pretension_speed_mps: 0.002
+    wrench_timeout_s: 0.10
+    command_timeout_s: 0.10
+    wrench_topic: /controller_manager/wrench
+    command_topic: /traction/command
+    cartesian_command_topic: /controller_manager/command_cart_vel
+    velocity_command_topic: /traction/controller_velocity_cmd
+
+traction_manager:
+  ros__parameters:
+    control_rate_hz: 100.0
+    status_rate_hz: 20.0
+    force_filter_cutoff_hz: 5.0
+    target_ramp_nps: 1.0
+    pretension_detect_n: 1.0
+    pretension_target_n: 3.0
+    pretension_speed_mps: 0.002
+    pretension_timeout_s: 10.0
+    pretension_max_travel_m: 0.020
+    calibration_window_s: 1.0
+    calibration_min_samples: 80
+    calibration_max_angle_p95_deg: 15.0
+    target_force_min_n: 1.0
+    target_force_max_n: 30.0
+    validated_target_max_n: 15.0
+    force_tolerance_n: 1.0
+    force_deadband_n: 0.5
+    release_rate_nps: 1.0
+    release_done_force_n: 1.0
+    release_timeout_s: 30.0
+    overforce_limit_n: 25.0
+    hard_overforce_limit_n: 30.0
+    lateral_force_limit_n: 5.0
+    wrench_timeout_s: 0.10
+    ee_state_timeout_s: 0.20
+    joint_state_topic: /joint_states
+    controller_health_timeout_s: 0.20
+    ui_heartbeat_timeout_s: 2.0
+    require_ui_heartbeat: false
+    # ros2_control's Humble controller manager gives its composed controller
+    # nodes the process node name.  The broadcaster/controller private topics
+    # therefore resolve below /controller_manager in this real-hardware stack.
+    wrench_topic: /controller_manager/wrench
+    ee_state_topic: /controller_manager/ee_state
+    command_topic: /traction/command
+    controller_health_topic: /traction_controller/healthy
+    velocity_command_topic: /traction/controller_velocity_cmd
+    ui_heartbeat_topic: /traction/ui_heartbeat
+    data_directory: debug/traction_sessions
+    expected_wrench_frame: base_link
+    controller_manager_switch_service: /controller_manager/switch_controller

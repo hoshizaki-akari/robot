@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="fairino5_v6_robot">
+    <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
+    <xacro:arg name="robot_ip" default="192.168.58.2" />
+    <xacro:arg name="zero_sensor_on_activate" default="true" />
+
+    <!-- Import fairino5_v6_robot urdf file -->
+    <xacro:include filename="$(find fairino_description)/urdf/fairino5_v6.urdf" />
+
+    <!-- Import control_xacro -->
+    <xacro:include filename="fairino5_v6_robot.ros2_control.xacro" />
+
+    <!-- <xacro:include filename="fairino5_v6_robot.gazebo.xacro" /> -->
+
+    <xacro:fairino5_v6_robot_ros2_control
+      name="FairinoSystem"
+      initial_positions_file="$(arg initial_positions_file)"
+      robot_ip="$(arg robot_ip)"
+      zero_sensor_on_activate="$(arg zero_sensor_on_activate)"/>
+    
+    <!-- Import gripper_xacro -->
+    
+    <!-- 1) 允许开关夹爪（方便你先验证不影响机械臂） -->
+    <xacro:arg name="use_ag_gripper" default="false"/>
+
+    <!-- 2) 引入夹爪描述（把下面路径替换成你在 B1 找到的那个 xacro/urdf 文件） -->
+    <xacro:if value="$(arg use_ag_gripper)">
+      <xacro:include filename="$(find dh_ag95_description)/urdf/dh_ag95_macro.xacro" />
+      <xacro:include filename="$(find dh_gripper_driver)/urdf/dh_ag95.ros2_control.xacro" />
+      
+      <!-- 3) 挂载：wrist3_link -> 夹爪 base link（把 child link 改成你 B1 查到的 base link） -->
+      <xacro:dh_ag95_gripper prefix="" parent="wrist3_link">
+        <origin xyz="0 0 0.1" rpy="0 0 0" />
+      </xacro:dh_ag95_gripper>
+      
+      <xacro:dh_ag95_gripper_ros2_control 
+            name="dh_ag95_gripper" 
+            prefix="" 
+            com_port="/dev/ttyUSB0" 
+            use_mock_hardware="false"
+            mock_sensor_commands="false" />        
+    </xacro:if>
+
+</robot>
