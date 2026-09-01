@@ -305,6 +305,13 @@ function handleState(state) {
   lastStateAt = Date.now();
   const traction = state.traction || {};
   tractionState = Number(traction.state || 0);
+  const rosTargetForce = Number(traction.target_force_n);
+  if (!activeRecord && document.activeElement !== $('targetForceVal') &&
+      Number.isFinite(rosTargetForce) &&
+      rosTargetForce >= TARGET_FORCE_MIN && rosTargetForce <= TARGET_FORCE_MAX) {
+    currentForce = Math.round(rosTargetForce * 10) / 10;
+    updateForceDisplay();
+  }
   if (tractionState === 6) beginLocalRecord();
   if (pendingStart && [9, 10].includes(tractionState)) {
     pendingStart = false;
