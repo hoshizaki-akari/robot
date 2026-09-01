@@ -11,6 +11,9 @@ software:
 - tool Y- bounded tension search: max 30 mm, stable target about 1.5 N
 - target range 1..30 N; real validation range 1..15 N
 - zero-pose and low-speed return services added
+- startup scripts fixed for ROS2 environment setup and launch argument syntax
+- prepare/zero controls remain available in READY, MANUAL_SETUP, and COMPLETED;
+  stale force baselines can be replaced by pressing the slack-zero prepare button
 
 offline_tests:
 - C++: 5/5 passed
@@ -26,7 +29,7 @@ real_validation:
   bounded stop completed
 
 current_state = MANUAL_SETUP
-current_motion = stopped; returned to stored zero
+current_motion = stopped; no automatic robot motion performed during this fix
 status = WAITING_PHYSICAL_CHECKPOINT
 
 checkpoint:

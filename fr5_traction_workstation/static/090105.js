@@ -76,11 +76,11 @@ function applyPermissions() {
   $('targetForceVal').disabled = !permission.adjust || !!activeRecord;
   $('startBtn').disabled = !permission.operate || tractionState !== 5 || !dataOnline || pendingStart;
   $('stopBtn').disabled = !permission.operate || tractionState !== 6;
-  if ($('prepareBtn')) $('prepareBtn').disabled = !permission.operate || !dataOnline || ![1, 8].includes(tractionState);
+  if ($('prepareBtn')) $('prepareBtn').disabled = !permission.operate || !dataOnline || ![1, 2, 8].includes(tractionState);
   if ($('calibrateBtn')) $('calibrateBtn').disabled = !permission.operate || !dataOnline || tractionState !== 2;
   if ($('emergencyBtn')) $('emergencyBtn').disabled = !permission.operate || !dataOnline || tractionState === 10;
   if ($('resetBtn')) $('resetBtn').disabled = !permission.operate || !dataOnline || ![9, 10].includes(tractionState);
-  const zeroOperationDisabled = !permission.operate || !dataOnline || ![1, 8].includes(tractionState);
+  const zeroOperationDisabled = !permission.operate || !dataOnline || ![1, 2, 8].includes(tractionState);
   if ($('setZeroBtn')) $('setZeroBtn').disabled = zeroOperationDisabled;
   if ($('returnZeroBtn')) $('returnZeroBtn').disabled = zeroOperationDisabled;
   $('recordsBtn').disabled = !permission.records;

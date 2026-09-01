@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
@@ -10,6 +10,7 @@ if [[ ! -f "$ROS_WS/install/setup.bash" ]]; then
   exit 2
 fi
 source "$ROS_WS/install/setup.bash"
+set -u
 source /home/zhj/projects/fr5_platform_ws/.venv/bin/activate
 WORKSTATION_PORT="${WORKSTATION_PORT:-8081}"
 exec python -m uvicorn app:app --host 127.0.0.1 --port "$WORKSTATION_PORT"

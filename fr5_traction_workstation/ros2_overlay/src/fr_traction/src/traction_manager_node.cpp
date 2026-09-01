@@ -358,13 +358,25 @@ private:
   void handle_prepare(const std_srvs::srv::Trigger::Response::SharedPtr response)
   {
     const auto state = state_machine_.state();
-    if (state != TractionState::READY && state != TractionState::COMPLETED) {
+    if (state != TractionState::READY && state != TractionState::COMPLETED &&
+      state != TractionState::MANUAL_SETUP) {
       response->success = false;
-      response->message = state_and_allowed("prepare from READY or COMPLETED");
+      response->message = state_and_allowed("prepare from READY, MANUAL_SETUP or COMPLETED");
       return;
     }
     std::string reason;
-    if (!readiness_check(reason)) {
+    // This service is explicitly the operator's way to replace a stale
+    // baseline after loosening the band. The previous baseline may therefore
+    // report a large force even though the current physical state is slack;
+    // requiring the old baseline check here would make the recovery button
+    // permanently unavailable. The operator confirms that the band is slack
+    // by pressing this button; the running traction safety checks remain
+    // unchanged.
+    const bool live_inputs = live_controller() && live_hardware() && live_wrench() && live_joint();
+    if (!live_inputs || !finite(raw_wrench_)) {
+      reason = "LIVE_INPUTS_NOT_READY";
+    }
+    if (!reason.empty()) {
       response->success = false;
       response->message = "Prepare rejected: " + reason + ".";
       return;
@@ -382,9 +394,18 @@ private:
       latest_wrench_ = {};
       filtered_wrench_ = {};
     }
+    // A second prepare from MANUAL_SETUP starts a clean record instead of
+    // appending samples collected with the previous baseline. Keep the old
+    // record in history with an explicit reason so it remains auditable.
+    if (state == TractionState::MANUAL_SETUP && session_active_) {
+      stop_reason_ = "PREPARE_RESTARTED_AFTER_BASELINE_RESET";
+      finalize_session();
+    }
     reset_session_state();
     begin_session();
-    transition(TractionState::MANUAL_SETUP);
+    if (state != TractionState::MANUAL_SETUP) {
+      transition(TractionState::MANUAL_SETUP);
+    }
     response->success = true;
     response->message =
       "Prepared. Use the teach pendant for coarse setup, then call calibrate_direction.";

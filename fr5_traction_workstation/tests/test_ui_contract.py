@@ -15,6 +15,7 @@ class UiContractTest(unittest.TestCase):
         self.assertIn("低速回零", page)
         self.assertIn("/api/traction/set-zero", script)
         self.assertIn("/api/traction/return-zero", script)
+        self.assertIn("![1, 2, 8]", script)
         self.assertIn("/ws", script)
         self.assertNotIn("Math.random()", script)
         self.assertNotIn("actualForce +=", script)
