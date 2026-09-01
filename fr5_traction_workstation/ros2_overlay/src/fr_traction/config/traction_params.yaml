@@ -6,7 +6,7 @@ traction_controller:
     integral_limit_n: 3.0
     virtual_mass: 10.0
     virtual_damping: 80.0
-    force_deadband_n: 0.5
+    force_deadband_n: 0.15
     traction_max_speed_mps: 0.005
     traction_max_acc_mps2: 0.02
     pretension_speed_mps: 0.002
@@ -24,7 +24,10 @@ traction_manager:
     control_rate_hz: 100.0
     status_rate_hz: 20.0
     force_filter_cutoff_hz: 5.0
-    target_ramp_nps: 1.0
+    # Fast through the large force error, slow down during the final 1 N.
+    target_ramp_fast_nps: 3.0
+    target_ramp_slow_nps: 0.5
+    target_ramp_slow_window_n: 1.0
     pretension_detect_n: 1.0
     pretension_target_n: 3.0
     calibration_min_force_n: 0.5
@@ -40,10 +43,11 @@ traction_manager:
     target_force_max_n: 20.0
     validated_target_max_n: 20.0
     force_tolerance_n: 1.0
-    force_deadband_n: 0.5
-    release_rate_nps: 1.0
-    release_done_force_n: 1.0
-    release_timeout_s: 30.0
+    # A 0.15 N deadband prevents the former 0.5 N shortfall while remaining
+    # wider than the normal sensor noise after filtering.
+    force_deadband_n: 0.15
+    # This timeout covers a bounded 80 mm low-speed return at 2 mm/s.
+    release_timeout_s: 60.0
     lateral_force_limit_n: 5.0
     # The axial force is regulated to the selected target; it is not a
     # separate fault condition. Travel and lateral-force guards remain.

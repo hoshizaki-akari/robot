@@ -45,7 +45,12 @@ public:
     control_rate_hz_ = declare_parameter("control_rate_hz", 100.0);
     status_rate_hz_ = declare_parameter("status_rate_hz", 20.0);
     force_filter_cutoff_hz_ = declare_parameter("force_filter_cutoff_hz", 5.0);
-    target_ramp_nps_ = declare_parameter("target_ramp_nps", 1.0);
+    // Use a two-stage command ramp: move quickly through the large error, then
+    // slow down inside the final window so the compliant rope is not hit with
+    // a uniform force step all the way to the target.
+    target_ramp_fast_nps_ = declare_parameter("target_ramp_fast_nps", 3.0);
+    target_ramp_slow_nps_ = declare_parameter("target_ramp_slow_nps", 0.5);
+    target_ramp_slow_window_n_ = declare_parameter("target_ramp_slow_window_n", 1.0);
     pretension_detect_n_ = declare_parameter("pretension_detect_n", 1.0);
     pretension_target_n_ = declare_parameter("pretension_target_n", 3.0);
     calibration_min_force_n_ = declare_parameter("calibration_min_force_n", 0.5);
@@ -59,10 +64,10 @@ public:
     target_force_max_n_ = declare_parameter("target_force_max_n", 20.0);
     validated_target_max_n_ = declare_parameter("validated_target_max_n", 20.0);
     force_tolerance_n_ = declare_parameter("force_tolerance_n", 1.0);
-    force_deadband_n_ = declare_parameter("force_deadband_n", 0.5);
-    release_rate_nps_ = declare_parameter("release_rate_nps", 1.0);
-    release_done_force_n_ = declare_parameter("release_done_force_n", 1.0);
-    release_timeout_s_ = declare_parameter("release_timeout_s", 30.0);
+    force_deadband_n_ = declare_parameter("force_deadband_n", 0.15);
+    // The timeout now covers the direct, low-speed position return. It is not
+    // a force-unloading timeout because RELEASING no longer runs force control.
+    release_timeout_s_ = declare_parameter("release_timeout_s", 60.0);
     lateral_force_limit_n_ = declare_parameter("lateral_force_limit_n", 5.0);
     axial_travel_limit_m_ = declare_parameter("axial_travel_limit_m", 0.050);
     wrench_timeout_s_ = declare_parameter("wrench_timeout_s", 0.10);
@@ -225,10 +230,11 @@ private:
       target_force_max_n_ >= target_force_min_n_ &&
       std::isfinite(validated_target_max_n_) && validated_target_max_n_ >= target_force_min_n_ &&
       validated_target_max_n_ <= target_force_max_n_ &&
-      std::isfinite(target_ramp_nps_) && target_ramp_nps_ > 0.0 &&
+      std::isfinite(target_ramp_fast_nps_) && target_ramp_fast_nps_ > 0.0 &&
+      std::isfinite(target_ramp_slow_nps_) && target_ramp_slow_nps_ > 0.0 &&
+      target_ramp_fast_nps_ >= target_ramp_slow_nps_ &&
+      std::isfinite(target_ramp_slow_window_n_) && target_ramp_slow_window_n_ > 0.0 &&
       std::isfinite(force_tolerance_n_) &&
-      force_tolerance_n_ > 0.0 && std::isfinite(release_rate_nps_) && release_rate_nps_ > 0.0 &&
-      std::isfinite(release_done_force_n_) && release_done_force_n_ > 0.0 &&
       std::isfinite(release_timeout_s_) && release_timeout_s_ > 0.0 &&
       std::isfinite(lateral_force_limit_n_) && lateral_force_limit_n_ > 0.0 &&
       std::isfinite(axial_travel_limit_m_) && axial_travel_limit_m_ > 0.0 &&
@@ -532,9 +538,12 @@ private:
     pretraction_return_call_pending_ = false;
     pretraction_return_requested_ = false;
     pretraction_return_failed_ = false;
-    current_command_target_n_ = target_force_n_;
+    // The logged control target is zero from the first release sample onward:
+    // this makes it explicit that the force controller is no longer driving
+    // the return motion.
+    current_command_target_n_ = 0.0;
     response->success = true;
-    response->message = "牵引已停止，正在卸力并返回牵引前位置。";
+    response->message = "牵引已停止，已退出力控，正在返回牵引起始位置。";
   }
 
   void handle_emergency(const std_srvs::srv::Trigger::Response::SharedPtr response)
@@ -929,8 +938,23 @@ private:
       enter_fault("PRETRACTION_RETURN_FAILED", pretraction_return_failure_reason_);
       return;
     }
+    // Ending a run is position-driven. The force controller must be disabled
+    // before asking the direct FR5 driver to return to the pose captured at
+    // controller activation. Do not publish a RELEASING force command here:
+    // that old behavior could keep the arm regulating force while waiting for
+    // the measured force to fall below a threshold, causing RELEASE_TIMEOUT.
+    publish_disabled();
+    if (!controller_stop_requested_) {
+      request_controller_stop();
+      controller_stop_requested_ = true;
+      controller_stop_requested_at_ = current_time;
+    }
+    if (!pretraction_return_requested_ &&
+      (current_time - controller_stop_requested_at_).seconds() >= 0.15)
+    {
+      request_pretraction_return();
+    }
     if (pretraction_return_requested_) {
-      publish_disabled();
       const double return_distance = norm(latest_ee_position_ - session_start_position_);
       if (return_distance <= pretraction_return_tolerance_m_ && latest_joint_speed_norm_ < 0.02) {
         stop_reason_ = "NORMAL_RELEASE_COMPLETED";
@@ -943,29 +967,19 @@ private:
         transition(TractionState::DIRECTION_LOCKED);
         return;
       }
-      if (elapsed > release_timeout_s_) {
-        enter_fault("PRETRACTION_RETURN_TIMEOUT", "PRETRACTION_RETURN_TIMEOUT");
-      }
-      return;
-    }
-    current_command_target_n_ = std::max(0.0, target_force_n_ - release_rate_nps_ * elapsed);
-    publish_command(msg::TractionCommand::RELEASING, locked_direction_, current_command_target_n_);
-    const auto metrics = current_metrics();
-    if (metrics.actual_force_n < release_done_force_n_) {
-      publish_disabled();
-      if (!controller_stop_requested_) {
-        request_controller_stop();
-        controller_stop_requested_ = true;
-        controller_stop_requested_at_ = current_time;
-      }
-      if ((current_time - controller_stop_requested_at_).seconds() >= 0.15) {
-        request_pretraction_return();
-      }
-      return;
     }
     if (elapsed > release_timeout_s_) {
-      enter_fault("RELEASE_TIMEOUT", "RELEASE_TIMEOUT");
+      enter_fault("PRETRACTION_RETURN_TIMEOUT", "PRETRACTION_RETURN_TIMEOUT");
     }
+  }
+
+  double ramped_command_target(double dt_s) const
+  {
+    const double remaining = std::max(0.0, target_force_n_ - current_command_target_n_);
+    if (remaining <= 0.0) {return target_force_n_;}
+    const double rate = remaining <= target_ramp_slow_window_n_ ?
+      target_ramp_slow_nps_ : target_ramp_fast_nps_;
+    return std::min(target_force_n_, current_command_target_n_ + rate * dt_s);
   }
 
   void control_tick()
@@ -1013,8 +1027,7 @@ private:
           publish_disabled();
           break;
         }
-        current_command_target_n_ = std::min(
-          target_force_n_, current_command_target_n_ + target_ramp_nps_ * dt_s);
+        current_command_target_n_ = ramped_command_target(dt_s);
         publish_command(
           msg::TractionCommand::TRACTION, locked_direction_, current_command_target_n_);
         break;
@@ -1205,7 +1218,7 @@ private:
       case TractionState::CALIBRATING: status.message = "正在采集张紧方向，请保持法兰静止"; break;
       case TractionState::DIRECTION_LOCKED: status.message = "方向已锁定；可以设置目标力并开始牵引"; break;
       case TractionState::TRACTION: status.message = "恒力牵引中，系统沿锁定方向实时补偿"; break;
-      case TractionState::RELEASING: status.message = "正在平滑卸力"; break;
+      case TractionState::RELEASING: status.message = "已停止力控，正在返回牵引起始位置"; break;
       case TractionState::COMPLETED: status.message = "牵引完成"; break;
       case TractionState::FAULT: status.message = "设备故障；确认安全后重新初始校准"; break;
       case TractionState::EMERGENCY_STOP: status.message = "已急停；确认安全后重新初始校准"; break;
@@ -1228,13 +1241,13 @@ private:
   double calibration_max_angle_p95_deg_ = 15.0;
   double target_force_min_n_ = 1.0;
   double target_force_max_n_ = 20.0;
-  double target_ramp_nps_ = 1.0;
+  double target_ramp_fast_nps_ = 3.0;
+  double target_ramp_slow_nps_ = 0.5;
+  double target_ramp_slow_window_n_ = 1.0;
   double validated_target_max_n_ = 20.0;
   double force_tolerance_n_ = 1.0;
-  double force_deadband_n_ = 0.5;
-  double release_rate_nps_ = 1.0;
-  double release_done_force_n_ = 1.0;
-  double release_timeout_s_ = 30.0;
+  double force_deadband_n_ = 0.15;
+  double release_timeout_s_ = 60.0;
   double lateral_force_limit_n_ = 5.0;
   double axial_travel_limit_m_ = 0.050;
   double wrench_timeout_s_ = 0.10;

@@ -23,7 +23,7 @@ public:
   TractionControllerNode()
   : Node("traction_controller"),
     force_filter_(5.0),
-    core_(10.0, 80.0, 0.5, 0.005, 0.02)
+    core_(10.0, 80.0, 0.15, 0.005, 0.02)
   {
     control_rate_hz_ = declare_parameter("control_rate_hz", 100.0);
     force_filter_cutoff_hz_ = declare_parameter("force_filter_cutoff_hz", 5.0);
@@ -31,7 +31,7 @@ public:
     integral_limit_n_ = declare_parameter("integral_limit_n", 3.0);
     virtual_mass_ = declare_parameter("virtual_mass", 10.0);
     virtual_damping_ = declare_parameter("virtual_damping", 80.0);
-    force_deadband_n_ = declare_parameter("force_deadband_n", 0.5);
+    force_deadband_n_ = declare_parameter("force_deadband_n", 0.15);
     max_speed_mps_ = declare_parameter("traction_max_speed_mps", 0.005);
     max_acceleration_mps2_ = declare_parameter("traction_max_acc_mps2", 0.02);
     pretension_speed_mps_ = declare_parameter("pretension_speed_mps", 0.002);
@@ -215,7 +215,7 @@ private:
   double integral_limit_n_ = 3.0;
   double virtual_mass_ = 10.0;
   double virtual_damping_ = 80.0;
-  double force_deadband_n_ = 0.5;
+  double force_deadband_n_ = 0.15;
   double max_speed_mps_ = 0.005;
   double max_acceleration_mps2_ = 0.02;
   double pretension_speed_mps_ = 0.002;
