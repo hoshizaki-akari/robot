@@ -11,8 +11,8 @@ const permissions = {
 
 let sessionUser = null;
 const TARGET_FORCE_MIN = 1;
-const TARGET_FORCE_MAX = 30;
-const VALIDATED_TARGET_MAX = 15;
+const TARGET_FORCE_MAX = 20;
+const VALIDATED_TARGET_MAX = 20;
 let currentForce = 10;
 const forceLimit = 25;
 let actualForce = 0;
@@ -108,7 +108,7 @@ async function changeTarget(nextTarget) {
   const numericTarget = Number(nextTarget);
   if (!Number.isFinite(numericTarget) || numericTarget < TARGET_FORCE_MIN || numericTarget > TARGET_FORCE_MAX) {
     updateForceDisplay();
-    return toast('目标牵引力请输入 1～30 N');
+    return toast('目标牵引力请输入 1～20 N');
   }
   const previousForce = currentForce;
   currentForce = Math.round(numericTarget * 10) / 10;
@@ -434,7 +434,7 @@ $('settingsBtn').addEventListener('click', () => {
 $('saveSettingsBtn').addEventListener('click', async () => {
   const target = Number($('settingTarget').value);
   if (target < TARGET_FORCE_MIN || target > TARGET_FORCE_MAX) {
-    return toast('目标牵引力必须在 1～30 N；当前实机验收上限为 15 N');
+    return toast('目标牵引力必须在 1～20 N');
   }
   if (await changeTarget(target)) {
     $('settingsModal').classList.add('hidden');

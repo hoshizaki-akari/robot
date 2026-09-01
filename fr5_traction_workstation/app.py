@@ -39,7 +39,7 @@ app.mount("/assets", StaticFiles(directory=STATIC), name="assets")
 
 
 class TargetRequest(BaseModel):
-    target_force_n: float = Field(ge=1.0, le=30.0)
+    target_force_n: float = Field(ge=1.0, le=20.0)
 
 
 @app.get("/")

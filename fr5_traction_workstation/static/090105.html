@@ -229,7 +229,7 @@
           </div>
           <div class="force-display-target">
             <div class="force-label-target">目标牵引力</div>
-            <div class="force-box-target"><input class="force-value-target" id="targetForceVal" type="number" min="1" max="30" step="0.1" value="10" inputmode="decimal" aria-label="目标牵引力"><span class="force-unit-target">N</span></div>
+            <div class="force-box-target"><input class="force-value-target" id="targetForceVal" type="number" min="1" max="20" step="0.1" value="10" inputmode="decimal" aria-label="目标牵引力"><span class="force-unit-target">N</span></div>
             <div class="actual-force">实时轴向张力：<strong id="actualForceVal">0.0</strong> N</div>
             <div class="force-vector-card" aria-label="base_link三轴力向量">
               <div class="vector-card-title">实时力向量 <code>base_link</code></div>
@@ -298,7 +298,7 @@
     <div class="modal small">
       <div class="modal-header"><h2>牵引参数设置</h2><button class="close-btn" data-close="settingsModal">×</button></div>
       <div class="modal-body">
-        <div class="form-item"><label>默认目标牵引力（N）</label><input id="settingTarget" type="number" min="1" max="30" step="0.1"></div>
+        <div class="form-item"><label>默认目标牵引力（N）</label><input id="settingTarget" type="number" min="1" max="20" step="0.1"></div>
         <div class="form-item"><label>固定安全上限（N）</label><input id="settingLimit" type="number" min="30" max="30" step="1" value="30" disabled></div>
         <button class="primary-btn" id="saveSettingsBtn">保存参数</button>
         <div class="permission-note">仅管理员和医生可以修改目标；25/30 N 超力、5 N 横向力等硬件安全阈值不可在网页放宽。</div>

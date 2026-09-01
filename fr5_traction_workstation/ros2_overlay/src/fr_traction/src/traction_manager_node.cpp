@@ -56,8 +56,8 @@ public:
     calibration_min_samples_ = declare_parameter("calibration_min_samples", 80);
     calibration_max_angle_p95_deg_ = declare_parameter("calibration_max_angle_p95_deg", 15.0);
     target_force_min_n_ = declare_parameter("target_force_min_n", 1.0);
-    target_force_max_n_ = declare_parameter("target_force_max_n", 30.0);
-    validated_target_max_n_ = declare_parameter("validated_target_max_n", 15.0);
+    target_force_max_n_ = declare_parameter("target_force_max_n", 20.0);
+    validated_target_max_n_ = declare_parameter("validated_target_max_n", 20.0);
     force_tolerance_n_ = declare_parameter("force_tolerance_n", 1.0);
     force_deadband_n_ = declare_parameter("force_deadband_n", 0.5);
     release_rate_nps_ = declare_parameter("release_rate_nps", 1.0);
@@ -467,7 +467,7 @@ private:
     }
     if (!target_in_range(target_force_n_)) {
       response->success = false;
-      response->message = "Start rejected: target must be between 1 N and 30 N.";
+      response->message = "Start rejected: target must be between 1 N and 20 N.";
       return;
     }
     if (!target_force_configured_) {
@@ -561,7 +561,7 @@ private:
   {
     if (!target_in_range(request->target_force_n)) {
       response->success = false;
-      response->message = "Target rejected: target_force_n must be in [1.0, 30.0] N.";
+      response->message = "Target rejected: target_force_n must be in [1.0, 20.0] N.";
       return;
     }
     const auto state = state_machine_.state();
@@ -1126,9 +1126,9 @@ private:
   int calibration_min_samples_ = 80;
   double calibration_max_angle_p95_deg_ = 15.0;
   double target_force_min_n_ = 1.0;
-  double target_force_max_n_ = 30.0;
+  double target_force_max_n_ = 20.0;
   double target_ramp_nps_ = 1.0;
-  double validated_target_max_n_ = 15.0;
+  double validated_target_max_n_ = 20.0;
   double force_tolerance_n_ = 1.0;
   double force_deadband_n_ = 0.5;
   double release_rate_nps_ = 1.0;

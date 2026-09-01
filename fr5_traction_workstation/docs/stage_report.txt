@@ -9,7 +9,7 @@ software:
 - direct single-owner Fairino SDK driver, 25 Hz feedback and motion path
 - baseline-corrected wrench: /traction/corrected_wrench
 - tool Y- bounded tension search: max 30 mm, stable target about 1.5 N
-- target range 1..30 N; real validation range 1..15 N
+- target and startup range 1..20 N; 20 N still needs a real test
 - zero-pose and low-speed return services added
 - startup scripts fixed for ROS2 environment setup and launch argument syntax
 - prepare/zero controls remain available in READY, MANUAL_SETUP, and COMPLETED;
@@ -36,7 +36,7 @@ real_validation:
 
 ui_button_validation:
 - target buttons -5N, -10N, +5N, +10N: clicked with 1.2 s response checks;
-  UI and ROS target values stayed synchronized and clamped to 1..30 N
+  UI and ROS target values stayed synchronized and clamped to 1..20 N
 - prepare: clicked at slack zero; READY -> MANUAL_SETUP
 - direction lock: real Tool Y- bounded search followed by UI click;
   MANUAL_SETUP -> DIRECTION_LOCKED and vectors appeared on the page
@@ -53,7 +53,7 @@ ui_button_validation:
 
 current_state = READY
 current_motion = stopped at confirmed slack zero z ~= 0.486 m; force ~= 0 N
-status = 5N_REAL_PASS; 10N_REAL_NOT_PASS_AXIAL_LIMIT
+status = SOFTWARE_VALIDATED_TARGET_MAX_20N; 5N_REAL_PASS; 10N_REAL_NOT_PASS_AXIAL_LIMIT
 
 checkpoint:
 5 N has passed. For any further 10 N test, a human must first confirm the physical

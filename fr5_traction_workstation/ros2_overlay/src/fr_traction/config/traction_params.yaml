@@ -38,8 +38,8 @@ traction_manager:
     calibration_min_samples: 40
     calibration_max_angle_p95_deg: 15.0
     target_force_min_n: 1.0
-    target_force_max_n: 30.0
-    validated_target_max_n: 15.0
+    target_force_max_n: 20.0
+    validated_target_max_n: 20.0
     force_tolerance_n: 1.0
     force_deadband_n: 0.5
     release_rate_nps: 1.0
