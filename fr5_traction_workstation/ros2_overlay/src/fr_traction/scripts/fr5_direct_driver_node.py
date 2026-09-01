@@ -73,7 +73,10 @@ class Fr5DirectDriver(Node):
         self._base_servo_sign = float(
             self.declare_parameter("base_servo_sign", -1.0).value
         )
-        if not math.isfinite(self._base_servo_sign) or abs(abs(self._base_servo_sign) - 1.0) > 1e-9:
+        if (
+            not math.isfinite(self._base_servo_sign)
+            or abs(abs(self._base_servo_sign) - 1.0) > 1e-9
+        ):
             raise ValueError("base_servo_sign must be either -1.0 or 1.0")
         self._return_speed_mm_s = float(
             self.declare_parameter("return_speed_mm_s", 2.0).value
@@ -119,6 +122,22 @@ class Fr5DirectDriver(Node):
         self.create_service(Trigger, "/traction/return_zero_pose", self._on_return_zero)
         self.create_service(
             Trigger,
+            "/traction/return_pretraction_pose",
+            self._on_return_pretraction,
+        )
+        calibration_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(
+            Bool,
+            "/traction/slack_calibration",
+            self._on_slack_calibration,
+            calibration_qos,
+        )
+        self.create_service(
+            Trigger,
             "/traction/auto_tension_tool_z_minus",
             self._on_auto_tension,
         )
@@ -141,6 +160,7 @@ class Fr5DirectDriver(Node):
         self._return_started_at = 0.0
         self._return_duration_s = 0.0
         self._return_start_pose = None
+        self._return_target_pose = None
         self._auto_tension_active = False
         self._auto_tension_baseline = None
         self._auto_tension_start_pose = None
@@ -153,6 +173,8 @@ class Fr5DirectDriver(Node):
         self._latest_wrench = None
         self._zero_pose = None
         self._zero_joints = None
+        self._pretraction_pose = None
+        self._pretraction_joints = None
         self._healthy = True
         self._hardware_fault_latched = False
         self._last_tick = time.monotonic()
@@ -196,6 +218,7 @@ class Fr5DirectDriver(Node):
             code = self._robot.ServoMoveEnd()
             self._servo_enabled = False
             self._return_active = False
+            self._return_target_pose = None
             self._auto_tension_active = False
             if code != 0:
                 response.ok = False
@@ -206,6 +229,10 @@ class Fr5DirectDriver(Node):
                 response.ok = False
                 return response
             self._servo_enabled = True
+            # This is the exact pose before the Cartesian force loop takes
+            # control. It is intentionally separate from the slack zero.
+            self._pretraction_pose = list(self._latest_pose)
+            self._pretraction_joints = list(self._latest_joints)
             self._last_motion_at = time.monotonic()
             self._last_command_at = time.monotonic()
         response.ok = True
@@ -227,31 +254,63 @@ class Fr5DirectDriver(Node):
         response.message = "Current slack pose stored as zero."
         return response
 
-    def _on_return_zero(self, _request, response):
+    def _on_slack_calibration(self, message):
+        if not message.data:
+            return
         if (
-            self._zero_pose is None
-            or self._latest_pose is None
-            or self._servo_enabled
+            self._servo_enabled
             or self._hardware_fault_latched
+            or self._latest_pose is None
+            or self._latest_joints is None
         ):
+            self.get_logger().warning(
+                "Slack calibration ignored because FR5 motion or feedback is active."
+            )
+            return
+        self._zero_pose = list(self._latest_pose)
+        self._zero_joints = list(self._latest_joints)
+        self.get_logger().info("Slack calibration pose stored as the only return-zero pose.")
+
+    def _on_return_zero(self, _request, response):
+        return self._start_return_to_pose(
+            response,
+            self._zero_pose,
+            "stored slack zero",
+            float(self.get_parameter("return_max_distance_mm").value),
+        )
+
+    def _on_return_pretraction(self, _request, response):
+        return self._start_return_to_pose(
+            response,
+            self._pretraction_pose,
+            "pre-traction pose",
+            float(self.get_parameter("return_max_distance_mm").value),
+        )
+
+    def _start_return_to_pose(self, response, target_pose, label, max_distance_mm):
+        if target_pose is None:
             response.success = False
-            response.message = "Return rejected: zero is unset or servo motion is busy."
+            response.message = f"Return rejected: {label} is not stored."
+            return response
+        if self._servo_enabled:
+            response.success = False
+            response.message = "Return rejected: servo motion is busy."
+            return response
+        if self._latest_pose is None or self._hardware_fault_latched:
+            response.success = False
+            response.message = "Return rejected: FR5 feedback is unavailable."
             return response
         distance_mm = math.sqrt(
-            sum((self._zero_pose[i] - self._latest_pose[i]) ** 2 for i in range(3))
+            sum((target_pose[i] - self._latest_pose[i]) ** 2 for i in range(3))
         )
-        return_max_distance_mm = float(
-            self.get_parameter("return_max_distance_mm").value
-        )
-        if not math.isfinite(return_max_distance_mm) or return_max_distance_mm <= 0.0:
+        if not math.isfinite(max_distance_mm) or max_distance_mm <= 0.0:
             response.success = False
             response.message = "Return rejected: return_max_distance_mm is invalid."
             return response
-        if distance_mm > return_max_distance_mm:
+        if distance_mm > max_distance_mm:
             response.success = False
             response.message = (
-                "Return rejected: zero is more than "
-                f"{return_max_distance_mm:.0f} mm away."
+                f"Return rejected: {label} is more than {max_distance_mm:.0f} mm away."
             )
             return response
         code = self._robot.ServoMoveStart()
@@ -264,9 +323,10 @@ class Fr5DirectDriver(Node):
         self._return_active = True
         self._return_started_at = time.monotonic()
         self._return_start_pose = list(self._latest_pose)
+        self._return_target_pose = list(target_pose)
         self._return_duration_s = max(0.5, distance_mm / self._return_speed_mm_s)
         response.success = True
-        response.message = "Low-speed return to the stored slack zero has started."
+        response.message = f"Low-speed return to the {label} has started."
         return response
 
     def _on_auto_tension(self, _request, response):
@@ -431,14 +491,15 @@ class Fr5DirectDriver(Node):
         if self._return_active:
             alpha = min(1.0, (now - self._return_started_at) / self._return_duration_s)
             target = [
-                start + alpha * (zero - start)
-                for start, zero in zip(self._return_start_pose, self._zero_pose)
+                start + alpha * (target - start)
+                for start, target in zip(self._return_start_pose, self._return_target_pose)
             ]
             code = self._servo_cart(0, target)
             if alpha >= 1.0:
                 self._robot.ServoMoveEnd()
                 self._servo_enabled = False
                 self._return_active = False
+                self._return_target_pose = None
             if code != 0:
                 raise RuntimeError(f"ServoCart return-zero failed: {code}")
             return
@@ -504,6 +565,7 @@ class Fr5DirectDriver(Node):
                 self._robot.ServoMoveEnd()
             self._servo_enabled = False
             self._return_active = False
+            self._return_target_pose = None
             self._auto_tension_active = False
             self._hardware_fault_latched = True
             self._publish_health(False)

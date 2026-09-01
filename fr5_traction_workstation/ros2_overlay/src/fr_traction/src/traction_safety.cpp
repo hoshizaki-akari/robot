@@ -18,7 +18,6 @@ void SafetyMonitor::set_limits(const SafetyLimits & limits)
 
 void SafetyMonitor::reset()
 {
-  overforce_started_s_ = -1.0;
   lateral_started_s_ = -1.0;
 }
 
@@ -47,21 +46,6 @@ SafetyFault SafetyMonitor::update(
   {
     return SafetyFault::WRENCH_INVALID;
   }
-  if (norm(sample.raw_wrench) >= limits_.hard_overforce_n) {
-    return SafetyFault::HARD_OVERFORCE;
-  }
-
-  if (sample.metrics.actual_force_n >= limits_.overforce_n) {
-    if (overforce_started_s_ < 0.0) {
-      overforce_started_s_ = now_s;
-    }
-    if (now_s - overforce_started_s_ >= limits_.overforce_duration_s) {
-      return SafetyFault::OVERFORCE;
-    }
-  } else {
-    overforce_started_s_ = -1.0;
-  }
-
   if (sample.metrics.lateral_force_n >= limits_.lateral_force_n) {
     if (lateral_started_s_ < 0.0) {
       lateral_started_s_ = now_s;

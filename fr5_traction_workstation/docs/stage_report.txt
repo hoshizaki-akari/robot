@@ -10,16 +10,18 @@ software:
 - baseline-corrected wrench: /traction/corrected_wrench
 - tool Y- bounded tension search: max 30 mm, stable target about 1.5 N
 - target and startup range 1..20 N; 20 N still needs a real test
-- zero-pose and low-speed return services added
+- initial calibration now stores the slack baseline and the only return-zero pose
+- the direct driver separately stores the pre-traction pose when Cartesian traction starts;
+  normal end unloads force and returns there automatically
 - startup scripts fixed for ROS2 environment setup and launch argument syntax
-- prepare/zero controls remain available in READY, MANUAL_SETUP, and COMPLETED;
-  stale force baselines can be replaced by pressing the slack-zero prepare button
+- initial calibration is available in stopped/fault-recovery states and replaces a stale
+  baseline only when the operator confirms the band is slack
 - live Tool Y- test showed the deployed base command sign was reversed; configured
   base_servo_sign = 1.0 before validation
 - feedback/motion RPC rate and stale-data windows were adjusted for the real FR5;
   controller timing now uses a steady clock and pauses safely on long scheduling gaps
-- return-zero reads the current return distance parameter; temporary Tool Y+ recovery
-  service was removed from the formal driver interface
+- return-zero reads the current return distance parameter; the separate set-zero UI action
+  has been removed
 
 offline_tests:
 - C++: 5/5 passed
@@ -38,6 +40,10 @@ real_validation:
   26.30 N; OVERFORCE stopped motion
 
 latest_fault_fix:
+- axial force no longer produces OVERFORCE or HARD_OVERFORCE; force above target is
+  sent through the same signed controller error so the arm can counter an external pull
+- normal end now waits for force release and pre-traction position return before completing
+- every new run sends the current UI target immediately before start
 - deadband now brakes velocity and clears integral immediately
 - force-error sign reversal drops stale velocity before correcting direction
 - stale feedback now pauses motion at 0.25 s and faults only if it persists to 0.8 s
@@ -46,7 +52,7 @@ latest_fault_fix:
 - recorded-force replay: old controller still increased force at 25.75 N; fixed
   controller stopped increasing before 15 N
 
-ui_button_validation:
+ui_button_validation_previous:
 - target buttons -5N, -10N, +5N, +10N: clicked with 1.2 s response checks;
   UI and ROS target values stayed synchronized and clamped to 1..20 N
 - prepare: clicked at slack zero; READY -> MANUAL_SETUP
@@ -54,8 +60,8 @@ ui_button_validation:
   MANUAL_SETUP -> DIRECTION_LOCKED and vectors appeared on the page
 - start: UI click entered TRACTION and started the 1 N record;
   session_1788236839724
-- normal release: UI click reached COMPLETED and saved the record
-- software emergency stop: UI click reached EMERGENCY_STOP; reset returned to READY
+- normal release: previous UI click reached COMPLETED and saved the record
+- software emergency stop: previous UI click reached EMERGENCY_STOP; reset returned to READY
 - set zero and low-speed return: both UI clicks succeeded; final pose returned to
   z ~= 0.486 m with force below 0.3 N
 - records, CSV export, and modal close: all succeeded; browser error/warn log empty
@@ -65,9 +71,10 @@ ui_button_validation:
 
 current_state = MANUAL_SETUP
 current_motion = stopped near z ~= 0.536 m; target = 15 N; corrected force ~= 0.7 N
-status = SOFTWARE_FIXED; BUILT_AND_OFFLINE_TESTED; WAITING_SLACK_CONFIRMATION_FOR_RESTART
+status = STATE_FLOW_UPDATED; BUILT_AND_OFFLINE_TESTED; WAITING_SLACK_CONFIRMATION_FOR_RESTART
 
 checkpoint:
 Before restarting the ROS stack, the operator must confirm that the traction band is
 physically slack. Restarting at a tensioned pose would incorrectly capture tension as
-the new zero. After confirmation, restart and perform staged 5 N then 15 N real tests.
+the new zero. After confirmation, restart and perform staged 5 N then 10 N/15 N real tests,
+including normal end and automatic return to the pre-traction pose.

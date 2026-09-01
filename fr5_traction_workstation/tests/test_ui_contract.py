@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 
@@ -11,17 +12,21 @@ class UiContractTest(unittest.TestCase):
         self.assertIn("robotViewer", page)
         self.assertIn("forceCanvas", page)
         self.assertIn("/api/traction", script)
-        self.assertIn("设置零点", page)
         self.assertIn("回零", page)
-        self.assertIn("校零", page)
-        self.assertIn("定方向", page)
+        self.assertIn("初始校准", page)
+        self.assertIn("方向确定", page)
         self.assertIn("开始牵引", page)
+        self.assertIn("结束牵引", page)
+        self.assertIn("急停", page)
+        self.assertEqual(len(re.findall(r'class="action-btn', page)), 6)
         self.assertIn("<th>原因</th>", page)
         self.assertNotIn("尚未感知到有效张力", page)
-        self.assertIn("PREPARE_RESTARTED_AFTER_BASELINE_RESET", script)
-        self.assertIn("/api/traction/set-zero", script)
         self.assertIn("/api/traction/return-zero", script)
-        self.assertIn("![1, 2, 8]", script)
+        self.assertNotIn("设置零点", page)
+        self.assertNotIn("setZeroBtn", script)
+        self.assertNotIn("resetBtn", page)
+        self.assertIn("Always send the value currently shown", script)
+        self.assertIn("finishRequested", script)
         self.assertIn("/ws", script)
         self.assertNotIn("Math.random()", script)
         self.assertNotIn("actualForce +=", script)

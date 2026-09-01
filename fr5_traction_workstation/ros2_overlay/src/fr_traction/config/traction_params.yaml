@@ -44,11 +44,9 @@ traction_manager:
     release_rate_nps: 1.0
     release_done_force_n: 1.0
     release_timeout_s: 30.0
-    overforce_limit_n: 25.0
-    hard_overforce_limit_n: 30.0
     lateral_force_limit_n: 5.0
-    # 50 mm was insufficient for the measured 10 N rope stiffness. Keep the
-    # travel stop explicit and configurable; hard/soft force limits remain.
+    # The axial force is regulated to the selected target; it is not a
+    # separate fault condition. Travel and lateral-force guards remain.
     axial_travel_limit_m: 0.080
     # Two-stage stale-data handling: motion is disabled after 0.25 s, while a
     # persistent 0.8 s gap still latches the normal safety fault.
@@ -69,6 +67,9 @@ traction_manager:
     velocity_command_topic: /traction/controller_velocity_cmd
     corrected_wrench_topic: /traction/corrected_wrench
     ui_heartbeat_topic: /traction/ui_heartbeat
+    slack_calibration_topic: /traction/slack_calibration
+    pretraction_return_service: /traction/return_pretraction_pose
+    pretraction_return_tolerance_m: 0.0015
     data_directory: debug/traction_sessions
     expected_wrench_frame: base_link
     controller_manager_switch_service: /controller_manager/switch_controller

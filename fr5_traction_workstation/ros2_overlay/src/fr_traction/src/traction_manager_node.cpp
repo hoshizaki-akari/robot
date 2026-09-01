@@ -63,8 +63,6 @@ public:
     release_rate_nps_ = declare_parameter("release_rate_nps", 1.0);
     release_done_force_n_ = declare_parameter("release_done_force_n", 1.0);
     release_timeout_s_ = declare_parameter("release_timeout_s", 30.0);
-    overforce_limit_n_ = declare_parameter("overforce_limit_n", 25.0);
-    hard_overforce_limit_n_ = declare_parameter("hard_overforce_limit_n", 30.0);
     lateral_force_limit_n_ = declare_parameter("lateral_force_limit_n", 5.0);
     axial_travel_limit_m_ = declare_parameter("axial_travel_limit_m", 0.050);
     wrench_timeout_s_ = declare_parameter("wrench_timeout_s", 0.10);
@@ -89,6 +87,12 @@ public:
       "corrected_wrench_topic", std::string("/traction/corrected_wrench"));
     ui_heartbeat_topic_ = declare_parameter(
       "ui_heartbeat_topic", std::string("/traction/ui_heartbeat"));
+    slack_calibration_topic_ = declare_parameter(
+      "slack_calibration_topic", std::string("/traction/slack_calibration"));
+    pretraction_return_service_name_ = declare_parameter(
+      "pretraction_return_service", std::string("/traction/return_pretraction_pose"));
+    pretraction_return_tolerance_m_ = declare_parameter(
+      "pretraction_return_tolerance_m", 0.0015);
     expected_wrench_frame_ = declare_parameter("expected_wrench_frame", std::string("base_link"));
     data_directory_ = declare_parameter("data_directory", std::string("debug/traction_sessions"));
     switch_service_name_ = declare_parameter(
@@ -96,8 +100,6 @@ public:
 
     validate_parameters();
     SafetyLimits safety_limits;
-    safety_limits.overforce_n = overforce_limit_n_;
-    safety_limits.hard_overforce_n = hard_overforce_limit_n_;
     safety_limits.lateral_force_n = lateral_force_limit_n_;
     safety_limits.axial_travel_m = axial_travel_limit_m_;
     safety_monitor_.set_limits(safety_limits);
@@ -112,8 +114,12 @@ public:
       corrected_wrench_topic_, rclcpp::SensorDataQoS());
     history_publisher_ = create_publisher<msg::TractionHistory>(
       "/traction/history", rclcpp::QoS(1).reliable().transient_local());
+    slack_calibration_publisher_ = create_publisher<std_msgs::msg::Bool>(
+      slack_calibration_topic_, rclcpp::QoS(1).reliable().transient_local());
     switch_client_ = create_client<controller_manager_msgs::srv::SwitchController>(
       switch_service_name_);
+    pretraction_return_client_ = create_client<std_srvs::srv::Trigger>(
+      pretraction_return_service_name_);
 
     wrench_subscription_ = create_subscription<geometry_msgs::msg::WrenchStamped>(
       wrench_topic_, rclcpp::SensorDataQoS(),
@@ -224,8 +230,6 @@ private:
       force_tolerance_n_ > 0.0 && std::isfinite(release_rate_nps_) && release_rate_nps_ > 0.0 &&
       std::isfinite(release_done_force_n_) && release_done_force_n_ > 0.0 &&
       std::isfinite(release_timeout_s_) && release_timeout_s_ > 0.0 &&
-      std::isfinite(overforce_limit_n_) && overforce_limit_n_ > 0.0 &&
-      std::isfinite(hard_overforce_limit_n_) && hard_overforce_limit_n_ > overforce_limit_n_ &&
       std::isfinite(lateral_force_limit_n_) && lateral_force_limit_n_ > 0.0 &&
       std::isfinite(axial_travel_limit_m_) && axial_travel_limit_m_ > 0.0 &&
       std::isfinite(wrench_timeout_s_) && wrench_timeout_s_ > 0.0 &&
@@ -234,7 +238,8 @@ private:
       motion_pause_timeout_s_ <= wrench_timeout_s_ &&
       motion_pause_timeout_s_ <= ee_state_timeout_s_ &&
       std::isfinite(ui_heartbeat_timeout_s_) && ui_heartbeat_timeout_s_ > 0.0 &&
-      std::isfinite(controller_health_timeout_s_) && controller_health_timeout_s_ > 0.0;
+      std::isfinite(controller_health_timeout_s_) && controller_health_timeout_s_ > 0.0 &&
+      std::isfinite(pretraction_return_tolerance_m_) && pretraction_return_tolerance_m_ > 0.0;
     if (!valid) {
       throw std::runtime_error("invalid traction manager safety or timing parameter");
     }
@@ -342,7 +347,6 @@ private:
       reason = wrench_frame_valid_ ? "WRENCH_NOT_FRESH" : "WRENCH_FRAME_INVALID"; return false;
     }
     if (!live_joint()) {reason = "JOINT_STATE_NOT_FRESH"; return false;}
-    if (norm(latest_wrench_) > 0.5) {reason = "BASELINE_FORCE_OVER_0_5N"; return false;}
     if (!finite(latest_wrench_)) {
       reason = "NONFINITE_INPUT"; return false;
     }
@@ -372,9 +376,11 @@ private:
   {
     const auto state = state_machine_.state();
     if (state != TractionState::READY && state != TractionState::COMPLETED &&
-      state != TractionState::MANUAL_SETUP) {
+      state != TractionState::MANUAL_SETUP && state != TractionState::DIRECTION_LOCKED &&
+      state != TractionState::FAULT && state != TractionState::EMERGENCY_STOP)
+    {
       response->success = false;
-      response->message = state_and_allowed("prepare from READY, MANUAL_SETUP or COMPLETED");
+      response->message = state_and_allowed("initial calibration while traction is stopped");
       return;
     }
     std::string reason;
@@ -394,9 +400,11 @@ private:
       response->message = "Prepare rejected: " + reason + ".";
       return;
     }
-    if (state == TractionState::COMPLETED && !transition(TractionState::READY)) {
+    if ((state == TractionState::COMPLETED || state == TractionState::FAULT ||
+      state == TractionState::EMERGENCY_STOP) && !transition(TractionState::READY))
+    {
       response->success = false;
-      response->message = "Prepare rejected because COMPLETED could not return to READY.";
+      response->message = "Initial calibration could not reset the stopped state.";
       return;
     }
     if (wrench_baseline_valid_) {
@@ -407,6 +415,9 @@ private:
       latest_wrench_ = {};
       filtered_wrench_ = {};
     }
+    std_msgs::msg::Bool slack_calibration;
+    slack_calibration.data = true;
+    slack_calibration_publisher_->publish(slack_calibration);
     // A second prepare from MANUAL_SETUP starts a clean record instead of
     // appending samples collected with the previous baseline. Keep the old
     // record in history with an explicit reason so it remains auditable.
@@ -421,7 +432,7 @@ private:
     }
     response->success = true;
     response->message =
-      "Prepared. Use the teach pendant for coarse setup, then call calibrate_direction.";
+      "Initial calibration completed. Move the FR5 by teach pendant, then confirm direction.";
   }
 
   void handle_calibrate(const std_srvs::srv::Trigger::Response::SharedPtr response)
@@ -517,9 +528,13 @@ private:
     }
     transition(TractionState::RELEASING);
     release_started_at_ = now();
+    controller_stop_requested_ = false;
+    pretraction_return_call_pending_ = false;
+    pretraction_return_requested_ = false;
+    pretraction_return_failed_ = false;
     current_command_target_n_ = target_force_n_;
     response->success = true;
-    response->message = "Normal release started; wait for COMPLETED.";
+    response->message = "牵引已停止，正在卸力并返回牵引前位置。";
   }
 
   void handle_emergency(const std_srvs::srv::Trigger::Response::SharedPtr response)
@@ -612,6 +627,11 @@ private:
     force_filter_.reset();
     controller_start_pending_ = false;
     controller_activation_confirming_ = false;
+    controller_stop_requested_ = false;
+    pretraction_return_call_pending_ = false;
+    pretraction_return_requested_ = false;
+    pretraction_return_failed_ = false;
+    pretraction_return_failure_reason_.clear();
     target_force_configured_ = false;
     velocity_command_mps_ = 0.0;
     stop_reason_.clear();
@@ -817,10 +837,6 @@ private:
       transition(TractionState::CALIBRATING);
       return;
     }
-    if (metrics.actual_force_n >= 5.0) {
-      enter_fault("PRETENSION_FORCE_LIMIT", "PRETENSION_FORCE_LIMIT");
-      return;
-    }
     if (!pretension_started_at_ ||
       (current_time - *pretension_started_at_).seconds() > pretension_timeout_s_)
     {
@@ -863,6 +879,42 @@ private:
       result.retained_fraction * 100.0, result.angle_p95_deg);
   }
 
+  void request_pretraction_return()
+  {
+    if (pretraction_return_call_pending_ || pretraction_return_requested_) {return;}
+    if (!pretraction_return_client_ || !pretraction_return_client_->service_is_ready()) {
+      return;
+    }
+    pretraction_return_call_pending_ = true;
+    auto request = std::make_shared<std_srvs::srv::Trigger::Request>();
+    pretraction_return_client_->async_send_request(
+      request,
+      [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
+        pretraction_return_call_pending_ = false;
+        try {
+          const auto result = future.get();
+          if (result->success) {
+            pretraction_return_requested_ = true;
+            return;
+          }
+          // The direct driver may still be finishing ServoMoveEnd. Retry a
+          // transient busy response; an absent pre-traction pose is a real
+          // fault because the arm cannot safely know where to return.
+          if (result->message.find("busy") != std::string::npos ||
+          result->message.find("Busy") != std::string::npos)
+          {
+            return;
+          }
+          pretraction_return_failed_ = true;
+          pretraction_return_failure_reason_ = result->message;
+        } catch (const std::exception & error) {
+          pretraction_return_call_pending_ = false;
+          pretraction_return_failed_ = true;
+          pretraction_return_failure_reason_ = error.what();
+        }
+      });
+  }
+
   void handle_releasing(const rclcpp::Time & current_time)
   {
     if (!release_started_at_) {
@@ -873,15 +925,42 @@ private:
       return;
     }
     const double elapsed = (current_time - *release_started_at_).seconds();
+    if (pretraction_return_failed_) {
+      enter_fault("PRETRACTION_RETURN_FAILED", pretraction_return_failure_reason_);
+      return;
+    }
+    if (pretraction_return_requested_) {
+      publish_disabled();
+      const double return_distance = norm(latest_ee_position_ - session_start_position_);
+      if (return_distance <= pretraction_return_tolerance_m_ && latest_joint_speed_norm_ < 0.02) {
+        stop_reason_ = "NORMAL_RELEASE_COMPLETED";
+        transition(TractionState::COMPLETED);
+        finalize_session();
+        // COMPLETED is retained in history, while the live state returns to
+        // the stopped/direction-locked group so the next run can reuse the
+        // confirmed direction and read a fresh target from the UI.
+        target_force_configured_ = false;
+        transition(TractionState::DIRECTION_LOCKED);
+        return;
+      }
+      if (elapsed > release_timeout_s_) {
+        enter_fault("PRETRACTION_RETURN_TIMEOUT", "PRETRACTION_RETURN_TIMEOUT");
+      }
+      return;
+    }
     current_command_target_n_ = std::max(0.0, target_force_n_ - release_rate_nps_ * elapsed);
     publish_command(msg::TractionCommand::RELEASING, locked_direction_, current_command_target_n_);
     const auto metrics = current_metrics();
     if (metrics.actual_force_n < release_done_force_n_) {
       publish_disabled();
-      request_controller_stop();
-      stop_reason_ = "NORMAL_RELEASE_COMPLETED";
-      transition(TractionState::COMPLETED);
-      finalize_session();
+      if (!controller_stop_requested_) {
+        request_controller_stop();
+        controller_stop_requested_ = true;
+        controller_stop_requested_at_ = current_time;
+      }
+      if ((current_time - controller_stop_requested_at_).seconds() >= 0.15) {
+        request_pretraction_return();
+      }
       return;
     }
     if (elapsed > release_timeout_s_) {
@@ -1121,15 +1200,15 @@ private:
     status.stop_reason = stop_reason_;
     switch (state_machine_.state()) {
       case TractionState::INITIALIZING: status.message = "正在连接 FR5、力传感器和牵引控制器"; break;
-      case TractionState::READY: status.message = "设备已就绪；请点击准备并用示教器手动张紧"; break;
+      case TractionState::READY: status.message = "设备已就绪；牵引带松弛时点击初始校准"; break;
       case TractionState::MANUAL_SETUP: status.message = "请用法奥示教器移动，张紧后保持法兰静止"; break;
       case TractionState::CALIBRATING: status.message = "正在采集张紧方向，请保持法兰静止"; break;
       case TractionState::DIRECTION_LOCKED: status.message = "方向已锁定；可以设置目标力并开始牵引"; break;
       case TractionState::TRACTION: status.message = "恒力牵引中，系统沿锁定方向实时补偿"; break;
       case TractionState::RELEASING: status.message = "正在平滑卸力"; break;
       case TractionState::COMPLETED: status.message = "牵引完成"; break;
-      case TractionState::FAULT: status.message = "系统故障：请处理故障后复位"; break;
-      case TractionState::EMERGENCY_STOP: status.message = "软件急停已锁定；必要时使用实体急停"; break;
+      case TractionState::FAULT: status.message = "设备故障；确认安全后重新初始校准"; break;
+      case TractionState::EMERGENCY_STOP: status.message = "已急停；确认安全后重新初始校准"; break;
       case TractionState::PRETENSION: status.message = "正在自动预张紧"; break;
     }
     status_publisher_->publish(status);
@@ -1156,8 +1235,6 @@ private:
   double release_rate_nps_ = 1.0;
   double release_done_force_n_ = 1.0;
   double release_timeout_s_ = 30.0;
-  double overforce_limit_n_ = 25.0;
-  double hard_overforce_limit_n_ = 30.0;
   double lateral_force_limit_n_ = 5.0;
   double axial_travel_limit_m_ = 0.050;
   double wrench_timeout_s_ = 0.10;
@@ -1175,9 +1252,12 @@ private:
   std::string velocity_command_topic_;
   std::string corrected_wrench_topic_;
   std::string ui_heartbeat_topic_;
+  std::string slack_calibration_topic_;
   std::string expected_wrench_frame_;
   std::string data_directory_;
   std::string switch_service_name_;
+  std::string pretraction_return_service_name_;
+  double pretraction_return_tolerance_m_ = 0.0015;
 
   StateMachine state_machine_;
   FirstOrderLowPass force_filter_;
@@ -1239,6 +1319,7 @@ private:
   rclcpp::Publisher<msg::TractionStatus>::SharedPtr status_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::WrenchStamped>::SharedPtr corrected_wrench_publisher_;
   rclcpp::Publisher<msg::TractionHistory>::SharedPtr history_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr slack_calibration_publisher_;
   rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr wrench_subscription_;
   rclcpp::Subscription<fairino_msgs::msg::PoseTwist>::SharedPtr ee_state_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscription_;
@@ -1254,6 +1335,7 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_fault_service_;
   rclcpp::Service<srv::SetTargetForce>::SharedPtr target_force_service_;
   rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedPtr switch_client_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr pretraction_return_client_;
   rclcpp::TimerBase::SharedPtr control_timer_;
   rclcpp::TimerBase::SharedPtr status_timer_;
   Vec3 latest_joint_velocity_;
@@ -1261,7 +1343,13 @@ private:
   bool joint_state_valid_ = false;
   bool controller_start_pending_ = false;
   bool controller_activation_confirming_ = false;
+  bool controller_stop_requested_ = false;
+  bool pretraction_return_call_pending_ = false;
+  bool pretraction_return_requested_ = false;
+  bool pretraction_return_failed_ = false;
+  std::string pretraction_return_failure_reason_;
   rclcpp::Time controller_activation_started_at_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time controller_stop_requested_at_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_joint_state_at_{0, 0, RCL_ROS_TIME};
 };
 

@@ -73,7 +73,9 @@ def generate_launch_description():
             # controller to move in the measured increasing-force direction.
             "base_servo_sign": 1.0,
             "return_speed_mm_s": 2.0,
-            "return_max_distance_mm": 35.0,
+            # Both the slack-zero return and the automatic post-traction
+            # return stay within the manager's 80 mm axial travel envelope.
+            "return_max_distance_mm": 80.0,
             "tension_search_max_mm": 30.0,
             "auto_set_zero_on_start": True,
             "use_sim_time": use_sim_time,

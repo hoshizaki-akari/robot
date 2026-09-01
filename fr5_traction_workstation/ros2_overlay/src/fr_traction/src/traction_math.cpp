@@ -152,7 +152,7 @@ double OneDimensionalAdmittance::update(double target_force_n, double actual_for
   // A compliant rope can change force much faster than the velocity ramp can
   // decelerate. Carrying the old velocity through the force deadband caused
   // the real FR5 to repeatedly cross a 15 N target and eventually overshoot
-  // the 25 N software limit. Hold immediately once the target band is reached.
+  // the old force fault. Hold immediately once the target band is reached.
   if (std::abs(error) <= deadband_n_) {
     integral_state_n_s_ = 0.0;
     velocity_mps_ = 0.0;

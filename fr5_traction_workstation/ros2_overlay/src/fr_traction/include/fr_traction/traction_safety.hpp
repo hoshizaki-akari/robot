@@ -24,11 +24,8 @@ enum class SafetyFault : unsigned char
 
 struct SafetyLimits
 {
-  double overforce_n = 25.0;
-  double hard_overforce_n = 30.0;
   double lateral_force_n = 5.0;
   double axial_travel_m = 0.050;
-  double overforce_duration_s = 0.050;
   double lateral_duration_s = 0.200;
 };
 
@@ -56,7 +53,6 @@ public:
 
 private:
   SafetyLimits limits_;
-  double overforce_started_s_ = -1.0;
   double lateral_started_s_ = -1.0;
 };
 

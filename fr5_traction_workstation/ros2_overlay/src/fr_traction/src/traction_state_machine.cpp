@@ -52,10 +52,12 @@ bool can_transition(TractionState from, TractionState to)
       return to == TractionState::PRETENSION || to == TractionState::CALIBRATING;
     case TractionState::PRETENSION: return to == TractionState::CALIBRATING;
     case TractionState::CALIBRATING: return to == TractionState::DIRECTION_LOCKED;
-    case TractionState::DIRECTION_LOCKED: return to == TractionState::TRACTION;
+    case TractionState::DIRECTION_LOCKED:
+      return to == TractionState::TRACTION || to == TractionState::MANUAL_SETUP;
     case TractionState::TRACTION: return to == TractionState::RELEASING;
     case TractionState::RELEASING: return to == TractionState::COMPLETED;
-    case TractionState::COMPLETED: return to == TractionState::READY;
+    case TractionState::COMPLETED:
+      return to == TractionState::READY || to == TractionState::DIRECTION_LOCKED;
     case TractionState::FAULT:
     case TractionState::EMERGENCY_STOP: return false;
   }

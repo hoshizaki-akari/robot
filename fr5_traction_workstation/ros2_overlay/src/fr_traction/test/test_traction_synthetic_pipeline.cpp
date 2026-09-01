@@ -43,7 +43,7 @@ TEST(TractionSyntheticPipeline, SafetyFaultsStopTheSamePipeline)
   sample.ee_fresh = true;
   sample.controller_healthy = true;
   sample.raw_wrench = {0.0, 0.0, -30.0};
-  sample.metrics.actual_force_n = 10.0;
+  sample.metrics.actual_force_n = 30.0;
   EXPECT_EQ(
-    monitor.update(sample, 0.0, false), fr_traction::SafetyFault::HARD_OVERFORCE);
+    monitor.update(sample, 0.0, false), fr_traction::SafetyFault::NONE);
 }

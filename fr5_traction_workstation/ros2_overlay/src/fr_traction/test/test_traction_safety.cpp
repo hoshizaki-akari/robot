@@ -41,18 +41,17 @@ TEST(TractionSafety, RejectsInvalidStaleAndUnhealthyInputs)
   EXPECT_EQ(monitor.update(sample, 0.0, false), fr_traction::SafetyFault::ROS2_CONTROL_ERROR);
 }
 
-TEST(TractionSafety, HardLimitsAreImmediateAndTimedLimitsLatch)
+TEST(TractionSafety, AxialForceDoesNotLatchAnOverforceFault)
 {
   fr_traction::SafetyMonitor monitor;
   auto sample = nominal_sample();
   sample.raw_wrench = {0.0, 0.0, -30.0};
-  EXPECT_EQ(monitor.update(sample, 0.0, false), fr_traction::SafetyFault::HARD_OVERFORCE);
+  sample.metrics.actual_force_n = 30.0;
+  EXPECT_EQ(monitor.update(sample, 0.0, false), fr_traction::SafetyFault::NONE);
 
-  sample = nominal_sample();
-  sample.metrics.actual_force_n = 25.0;
+  sample.raw_wrench = {0.0, 0.0, -100.0};
+  sample.metrics.actual_force_n = 100.0;
   EXPECT_EQ(monitor.update(sample, 1.0, false), fr_traction::SafetyFault::NONE);
-  EXPECT_EQ(monitor.update(sample, 1.049, false), fr_traction::SafetyFault::NONE);
-  EXPECT_EQ(monitor.update(sample, 1.050, false), fr_traction::SafetyFault::OVERFORCE);
 
   monitor.reset();
   sample = nominal_sample();

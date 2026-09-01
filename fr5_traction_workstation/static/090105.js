@@ -13,7 +13,6 @@ let sessionUser = null;
 const TARGET_FORCE_MIN = 1;
 const TARGET_FORCE_MAX = 20;
 let currentForce = 10;
-const forceLimit = 25;
 let actualForce = 0;
 let activeRecord = null;
 let timerHandle = null;
@@ -25,25 +24,28 @@ let dataOnline = false;
 let directionLocked = false;
 let tractionState = 0;
 let pendingStart = false;
+let finishRequested = false;
+let slackZeroAvailable = false;
 
 const TRACTION_STATE_LABELS = {
   0: '连接中',
-  1: '设备就绪',
-  2: '等待张紧',
-  3: '自动张紧中',
-  4: '确认方向中',
-  5: '方向已确定',
+  1: '未初始化',
+  2: '未初始化',
+  3: '未初始化',
+  4: '未初始化',
+  5: '牵引停止',
   6: '牵引中',
   7: '正在结束',
-  8: '已完成',
+  8: '牵引停止',
   9: '故障',
   10: '已急停'
 };
 const ACTION_SUCCESS_MESSAGES = {
-  '/api/traction/prepare': '已校准',
+  '/api/traction/prepare': '初始校准完成',
   '/api/traction/calibrate-direction': '方向已确定',
-  '/api/traction/reset-fault': '已复位',
-  '/api/traction/set-zero': '零点已设置',
+  '/api/traction/start': '开始牵引',
+  '/api/traction/stop': '正在结束牵引',
+  '/api/traction/emergency-stop': '已急停',
   '/api/traction/return-zero': '正在回零'
 };
 const REASON_LABELS = {
@@ -52,9 +54,6 @@ const REASON_LABELS = {
   EE_STATE_TIMEOUT: '位置数据超时',
   ROS2_CONTROL_ERROR: '运动控制异常',
   CALIBRATION_TOO_FEW_SAMPLES: '方向数据不足',
-  OVER_FORCE: '张力过大',
-  OVERFORCE: '张力过大',
-  HARD_OVERFORCE: '张力严重过大',
   LATERAL_FORCE_LIMIT: '横向力过大',
   LATERAL_FORCE: '横向力过大',
   UI_HEARTBEAT_TIMEOUT: '页面连接中断',
@@ -118,19 +117,17 @@ function applyPermissions() {
   $('currentUser').textContent = sessionUser.name;
   $('currentRole').textContent = sessionUser.role;
   $('settingsBtn').disabled = !permission.settings;
+  const motionActive = [6, 7].includes(tractionState) || pendingStart;
   document.querySelectorAll('.force-adjust').forEach(button => {
-    button.disabled = !permission.adjust || !!activeRecord;
+    button.disabled = !permission.adjust || motionActive;
   });
-  $('targetForceVal').disabled = !permission.adjust || !!activeRecord;
+  $('targetForceVal').disabled = !permission.adjust || motionActive;
   $('startBtn').disabled = !permission.operate || tractionState !== 5 || !dataOnline || pendingStart;
-  $('stopBtn').disabled = !permission.operate || tractionState !== 6;
-  if ($('prepareBtn')) $('prepareBtn').disabled = !permission.operate || !dataOnline || ![1, 2, 8].includes(tractionState);
+  $('stopBtn').disabled = !permission.operate || tractionState !== 6 || !dataOnline;
+  if ($('prepareBtn')) $('prepareBtn').disabled = !permission.operate || !dataOnline || ![1, 2, 5, 8, 9, 10].includes(tractionState);
   if ($('calibrateBtn')) $('calibrateBtn').disabled = !permission.operate || !dataOnline || tractionState !== 2;
   if ($('emergencyBtn')) $('emergencyBtn').disabled = !permission.operate || !dataOnline || tractionState === 10;
-  if ($('resetBtn')) $('resetBtn').disabled = !permission.operate || !dataOnline || ![9, 10].includes(tractionState);
-  const zeroOperationDisabled = !permission.operate || !dataOnline || ![1, 2, 8].includes(tractionState);
-  if ($('setZeroBtn')) $('setZeroBtn').disabled = zeroOperationDisabled;
-  if ($('returnZeroBtn')) $('returnZeroBtn').disabled = zeroOperationDisabled;
+  if ($('returnZeroBtn')) $('returnZeroBtn').disabled = !permission.operate || !dataOnline || motionActive || !slackZeroAvailable || ![2, 5, 8].includes(tractionState);
   $('recordsBtn').disabled = !permission.records;
 }
 
@@ -145,7 +142,7 @@ function logout() {
 
 function updateForceDisplay() {
   $('targetForceVal').value = Number(currentForce.toFixed(1));
-  $('targetForceVal').style.color = currentForce >= forceLimit ? '#dc2626' : '#1e3a5f';
+  $('targetForceVal').style.color = '#1e3a5f';
 }
 
 async function changeTarget(nextTarget) {
@@ -176,14 +173,27 @@ async function startTraction() {
   if (!sessionUser || !permissions[sessionUser.role].operate) return;
   if (pendingStart) return toast('正在等待控制器接管');
   if (!dataOnline) return toast('设备未连接');
+  const requestedTarget = Number($('targetForceVal').value);
+  if (!Number.isFinite(requestedTarget) || requestedTarget < TARGET_FORCE_MIN || requestedTarget > TARGET_FORCE_MAX) {
+    return toast('目标牵引力请输入 1～20 N');
+  }
+  if (tractionState !== 5) return toast('请先完成方向标定并锁定方向');
+  pendingStart = true;
+  applyPermissions();
   try {
-    if (tractionState !== 5) return toast('请先完成方向标定并锁定方向');
+    // Always send the value currently shown in the input immediately before
+    // each run. This is what makes the second and later runs independent of
+    // the previous run's target.
+    currentForce = Math.round(requestedTarget * 10) / 10;
+    updateForceDisplay();
+    await postJson('/api/traction/target', { target_force_n: currentForce });
     await postJson('/api/traction/start');
   } catch (error) {
+    pendingStart = false;
+    applyPermissions();
     return toast(simpleErrorMessage(error));
   }
 
-  pendingStart = true;
   $('workStatus').textContent = '正在开始';
   $('workStatus').classList.add('running');
   applyPermissions();
@@ -206,6 +216,7 @@ function beginLocalRecord() {
 
 function saveFinishedRecord(status) {
   pendingStart = false;
+  finishRequested = false;
   if (!activeRecord) return;
   clearInterval(timerHandle);
   activeRecord = null;
@@ -224,8 +235,11 @@ async function finishTraction(status = '已完成') {
   } catch (error) {
     return toast(simpleErrorMessage(error));
   }
-  saveFinishedRecord(status);
-  toast(status === '已完成' ? '已结束牵引' : '已停止');
+  finishRequested = true;
+  $('workStatus').textContent = '正在结束';
+  $('workStatus').classList.add('running');
+  applyPermissions();
+  toast(status === '已完成' ? '正在结束牵引' : '正在停止');
 }
 
 async function emergencyStop() {
@@ -235,6 +249,7 @@ async function emergencyStop() {
     return toast(`${simpleErrorMessage(error)}；请使用实体急停`);
   }
   if (activeRecord) saveFinishedRecord('紧急终止');
+  finishRequested = false;
   $('workStatus').textContent = '已急停';
   toast('已急停');
 }
@@ -326,7 +341,7 @@ function drawCurve() {
   context.strokeStyle = '#3b82f6';
   context.lineWidth = 3;
   context.beginPath();
-  const maximum = Math.max(40, forceLimit + 10);
+  const maximum = 40;
   const step = width / (dataPoints.length - 1);
   dataPoints.forEach((value, index) => {
     const x = index * step;
@@ -353,6 +368,7 @@ function handleState(state) {
   lastStateAt = Date.now();
   const traction = state.traction || {};
   tractionState = Number(traction.state || 0);
+  if ([2, 3, 4, 5, 6, 7, 8].includes(tractionState)) slackZeroAvailable = true;
   const rosTargetForce = Number(traction.target_force_n);
   if (!activeRecord && document.activeElement !== $('targetForceVal') &&
       Number.isFinite(rosTargetForce) &&
@@ -361,6 +377,12 @@ function handleState(state) {
     updateForceDisplay();
   }
   if (tractionState === 6) beginLocalRecord();
+  if (finishRequested && [5, 8].includes(tractionState) && activeRecord) {
+    saveFinishedRecord('已完成');
+  }
+  if (activeRecord && [9, 10].includes(tractionState) && !pendingStart) {
+    saveFinishedRecord('紧急终止');
+  }
   if (pendingStart && [9, 10].includes(tractionState)) {
     pendingStart = false;
     toast(simpleReason(traction.fault_code || traction.stop_reason) || '开始失败');
@@ -400,7 +422,9 @@ function handleState(state) {
     window.updateForceVector(vector, directionForModel);
   }
   if (activeRecord) {
-    $('workStatus').textContent = simpleReason(traction.fault_code || traction.stop_reason) || '牵引中';
+    $('workStatus').textContent = tractionState === 7
+      ? '正在结束'
+      : (simpleReason(traction.fault_code || traction.stop_reason) || '牵引中');
     $('workStatus').classList.add('running');
   } else if (!dataOnline) {
     $('workStatus').textContent = '设备未连接';
@@ -509,6 +533,7 @@ const callTraction = async path => {
     if (traction) {
       tractionState = Number(traction.state || 0);
       dataOnline = traction.valid === true;
+      if (path === '/api/traction/prepare') slackZeroAvailable = true;
       applyPermissions();
     }
     toast(ACTION_SUCCESS_MESSAGES[path] || '操作完成');
@@ -522,8 +547,6 @@ if ($('prepareBtn')) $('prepareBtn').addEventListener('click', () => callTractio
 if ($('calibrateBtn')) {
   $('calibrateBtn').addEventListener('click', () => callTraction('/api/traction/calibrate-direction'));
 }
-if ($('resetBtn')) $('resetBtn').addEventListener('click', () => callTraction('/api/traction/reset-fault'));
-if ($('setZeroBtn')) $('setZeroBtn').addEventListener('click', () => callTraction('/api/traction/set-zero'));
 if ($('returnZeroBtn')) $('returnZeroBtn').addEventListener('click', () => callTraction('/api/traction/return-zero'));
 setInterval(() => { fetch('/api/traction/heartbeat', {method: 'POST', body: '{}'}).catch(() => {}); }, 500);
 const savedSession = sessionStorage.getItem('tractionSession');

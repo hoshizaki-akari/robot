@@ -48,4 +48,18 @@ TEST(TractionStateMachine, EmergencyStopIsAvailableFromAnyOperationalState)
   EXPECT_TRUE(machine.transition(TractionState::EMERGENCY_STOP));
 }
 
+TEST(TractionStateMachine, CompletedRunReturnsToDirectionLockedIdleState)
+{
+  StateMachine machine;
+  for (const auto next : {TractionState::READY, TractionState::MANUAL_SETUP,
+      TractionState::CALIBRATING, TractionState::DIRECTION_LOCKED,
+      TractionState::TRACTION, TractionState::RELEASING, TractionState::COMPLETED})
+  {
+    EXPECT_TRUE(machine.transition(next));
+  }
+  EXPECT_TRUE(machine.transition(TractionState::DIRECTION_LOCKED));
+  EXPECT_TRUE(machine.transition(TractionState::TRACTION));
+  EXPECT_TRUE(can_transition(TractionState::DIRECTION_LOCKED, TractionState::MANUAL_SETUP));
+}
+
 }  // namespace fr_traction

@@ -59,6 +59,11 @@ TEST(TractionControllerCore, TargetBandBrakesResidualVelocityBeforeItOvershoots)
   output = core.update(ControlMode::TRACTION, direction, 15.0, {16.0, 0.0, 0.0}, 0.01);
   EXPECT_LT(output.scalar_velocity_mps, 0.0);
   EXPECT_LT(output.linear_velocity.x, 0.0);
+
+  core.reset();
+  output = core.update(ControlMode::TRACTION, direction, 5.0, {30.0, 0.0, 0.0}, 0.01);
+  EXPECT_LT(output.scalar_velocity_mps, 0.0);
+  EXPECT_LT(output.linear_velocity.x, 0.0);
 }
 
 TEST(TractionControllerCore, RejectsInvalidDirection)

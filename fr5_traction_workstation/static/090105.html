@@ -250,13 +250,11 @@
       </div>
       <div class="card control-panel">
         <div class="control-grid">
-          <button class="action-btn start" id="prepareBtn" title="绳带松弛时点击">校零</button>
-          <button class="action-btn start" id="calibrateBtn" disabled title="张紧后保持法兰不动">定方向</button>
+          <button class="action-btn start" id="prepareBtn" title="牵引带松弛时点击">初始校准</button>
+          <button class="action-btn start" id="calibrateBtn" disabled title="张紧后保持法兰不动">方向确定</button>
           <button class="action-btn start" id="startBtn" disabled>开始牵引</button>
           <button class="action-btn stop" id="stopBtn" disabled>结束牵引</button>
           <button class="action-btn emergency" id="emergencyBtn" disabled>急停</button>
-          <button class="action-btn stop" id="resetBtn" disabled>复位</button>
-          <button class="action-btn start" id="setZeroBtn" disabled>设置零点</button>
           <button class="action-btn stop" id="returnZeroBtn" disabled>回零</button>
         </div>
       </div>
@@ -317,6 +315,6 @@
     uses /api/traction/* and the ROS2 traction manager; it does not simulate force,
     persist traction records in the browser, or issue robot SDK commands.
   </script>
-  <script src="/assets/090105.js?v=20260901-simple-ui"></script>
+  <script src="/assets/090105.js?v=20260901-state-flow"></script>
 </body>
 </html>
