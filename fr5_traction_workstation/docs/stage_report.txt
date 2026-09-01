@@ -12,7 +12,7 @@ software:
 - target and startup range 1..20 N; 20 N still needs a real test
 - initial calibration now stores the slack baseline and the only return-zero pose
 - the direct driver separately stores the pre-traction pose when Cartesian traction starts;
-  normal end unloads force and returns there automatically
+  normal end disables force control and returns there automatically by position
 - startup scripts fixed for ROS2 environment setup and launch argument syntax
 - initial calibration is available in stopped/fault-recovery states and replaces a stale
   baseline only when the operator confirms the band is slack
@@ -50,7 +50,8 @@ real_validation:
 latest_fault_fix:
 - axial force no longer produces OVERFORCE or HARD_OVERFORCE; force above target is
   sent through the same signed controller error so the arm can counter an external pull
-- normal end now waits for force release and pre-traction position return before completing
+- normal end immediately disables force control, then returns to the saved pre-traction
+  position; the return motion is not regulated by the force controller
 - every new run sends the current UI target immediately before start
 - deadband now brakes velocity and clears integral immediately
 - force-error sign reversal drops stale velocity before correcting direction
@@ -62,6 +63,17 @@ latest_fault_fix:
 - baseline-restart debug sessions are hidden from operator abnormal records
 - recorded-force replay: old controller still increased force at 25.75 N; fixed
   controller stopped increasing before 15 N
+
+latest_force_and_release_regression:
+- session_1788258167955: real Tool Y- search reached stable tension after two bounded
+  30 mm searches; direction locked at [-0.074031, -0.053862, 0.995800]
+- target command approach: 4.10 N at about 1 s, 4.60 N at about 2 s, then slow final
+  1 N approach at 0.5 N/s; actual force first reached 4.85 N after about 2.93 s
+- 5 N traction: stable mean about 4.98 N, median about 4.99 N, maximum 4.995 N;
+  no traction fault during the hold
+- normal end: release samples had target=0 and velocity_command=0 throughout;
+  axis displacement reduced from about 12.55 mm to the 1.5 mm completion band,
+  then the manager confirmed NORMAL_RELEASE_COMPLETED at the pre-traction pose
 
 ui_button_validation_previous:
 - target buttons -5N, -10N, +5N, +10N: clicked with 1.2 s response checks;
