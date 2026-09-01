@@ -173,6 +173,7 @@ class Fr5DirectDriver(Node):
         self._latest_wrench = None
         self._zero_pose = None
         self._zero_joints = None
+        self._slack_calibration_pending = False
         self._pretraction_pose = None
         self._pretraction_joints = None
         self._healthy = True
@@ -260,15 +261,17 @@ class Fr5DirectDriver(Node):
         if (
             self._servo_enabled
             or self._hardware_fault_latched
-            or self._latest_pose is None
-            or self._latest_joints is None
         ):
             self.get_logger().warning(
                 "Slack calibration ignored because FR5 motion or feedback is active."
             )
             return
+        if self._latest_pose is None or self._latest_joints is None:
+            self._slack_calibration_pending = True
+            return
         self._zero_pose = list(self._latest_pose)
         self._zero_joints = list(self._latest_joints)
+        self._slack_calibration_pending = False
         self.get_logger().info("Slack calibration pose stored as the only return-zero pose.")
 
     def _on_return_zero(self, _request, response):
@@ -554,6 +557,13 @@ class Fr5DirectDriver(Node):
             joints, pose = joint_result[1], pose_result[1]
             self._latest_joints, self._latest_pose = list(joints), list(pose)
             self._latest_wrench = list(wrench)
+            if self._slack_calibration_pending and not self._servo_enabled:
+                self._zero_pose = list(pose)
+                self._zero_joints = list(joints)
+                self._slack_calibration_pending = False
+                self.get_logger().info(
+                    "Pending slack calibration pose stored after FR5 feedback became ready."
+                )
             if self._auto_set_zero and self._zero_pose is None:
                 self._zero_pose, self._zero_joints = list(pose), list(joints)
             self._publish_feedback(self.get_clock().now().to_msg(), joints, speeds, wrench, pose)
