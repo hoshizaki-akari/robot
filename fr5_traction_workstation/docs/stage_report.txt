@@ -6,7 +6,7 @@ sensor = KWR75D
 force_frame = base_link
 
 software:
-- direct single-owner Fairino SDK driver, 25 Hz feedback and motion path
+- direct single-owner Fairino SDK driver, 25 Hz motion path and SDK realtime-state feedback
 - baseline-corrected wrench: /traction/corrected_wrench
 - tool Y- bounded tension search: max 30 mm, stable target about 1.5 N
 - target and startup range 1..20 N; 20 N still needs a real test
@@ -20,6 +20,9 @@ software:
   base_servo_sign = 1.0 before validation
 - feedback/motion RPC rate and stale-data windows were adjusted for the real FR5;
   controller timing now uses a steady clock and pauses safely on long scheduling gaps
+- feedback no longer calls the blocking GetActualJointPosDegree/GetActualTCPPose XML-RPC
+  queries during ServoCart; joints, pose, speed and wrench are read coherently from the
+  SDK's realtime port 20004 packet, while a stopped realtime stream still faults safely
 - return-zero reads the current return distance parameter; the separate set-zero UI action
   has been removed
 
@@ -38,6 +41,11 @@ real_validation:
 - session_1788248515416: WRENCH_TIMEOUT followed a measured ~0.5 s feedback gap
 - session_1788248573130: 15 N control oscillated at +/-5 mm/s and overshot to
   26.30 N; OVERFORCE stopped motion
+- latest 5 N regression: initial calibration at the user-confirmed slack pose;
+  first Tool Y- search reached 30 mm without stable tension, second bounded search
+  found +1.53 N at 17.94 mm; direction lock, 5 N traction, 75 s hold, normal unload
+  and automatic return to the pre-traction pose all passed;
+  session_1788253756031, NORMAL_RELEASE_COMPLETED, max=4.60 N
 
 latest_fault_fix:
 - axial force no longer produces OVERFORCE or HARD_OVERFORCE; force above target is
@@ -48,6 +56,9 @@ latest_fault_fix:
 - force-error sign reversal drops stale velocity before correcting direction
 - stale feedback now pauses motion at 0.25 s and faults only if it persists to 0.8 s
 - direct-driver stale command timeout reduced to 0.25 s
+- direct-driver feedback switched from blocking per-field XML-RPC reads to the
+  continuously updated SDK realtime state packet; this removes the observed ~1 s
+  joint-read stall that caused ROS2_CONTROL_ERROR during traction
 - baseline-restart debug sessions are hidden from operator abnormal records
 - recorded-force replay: old controller still increased force at 25.75 N; fixed
   controller stopped increasing before 15 N
@@ -69,12 +80,13 @@ ui_button_validation_previous:
   logout was not clicked so the validated operator session and final READY state
   remained available
 
-current_state = MANUAL_SETUP
-current_motion = stopped near z ~= 0.536 m; target = 15 N; corrected force ~= 0.7 N
-status = STATE_FLOW_UPDATED; BUILT_AND_OFFLINE_TESTED; WAITING_SLACK_CONFIRMATION_FOR_RESTART
+current_state = DIRECTION_LOCKED (牵引停止)
+current_motion = stopped after automatic return to the pre-traction pose; target = 5 N;
+  corrected force ~= 0.1 N
+status = STATE_FLOW_UPDATED; REAL_5N_REGRESSION_PASS; NO_ACTIVE_FAULT
 
 checkpoint:
-Before restarting the ROS stack, the operator must confirm that the traction band is
-physically slack. Restarting at a tensioned pose would incorrectly capture tension as
-the new zero. After confirmation, restart and perform staged 5 N then 10 N/15 N real tests,
-including normal end and automatic return to the pre-traction pose.
+The real 5 N workflow is complete. For another run, keep the band physically slack
+before clicking 初始校准; then use the official teach pendant or the bounded Tool Y-
+search to tension, lock direction, set the target and start traction. Do not recalibrate
+while the band is tensioned.

@@ -7,9 +7,9 @@
 
 ## 软件侧已完成
 
-- 使用 `fr5_direct_driver_node.py` 作为唯一 Fairino SDK 连接者，以 25Hz 读取真实
-  关节、末端位姿和 Wrench，并以 25Hz ServoCart 发送牵引增量；这是针对现场
-  SDK RPC 阻塞特性验证后的稳定频率。
+- 使用 `fr5_direct_driver_node.py` 作为唯一 Fairino SDK 连接者，以 25Hz 读取 SDK
+  实时状态包中的真实关节、末端位姿和 Wrench，并以 25Hz ServoCart 发送牵引增量；
+  不再在 ServoCart 期间调用会阻塞的逐字段 XML-RPC 查询。
 - 管理器在“松绳准备”时采集软件基线，发布 `/traction/corrected_wrench`；控制器、
   网页和记录统一使用减去安装/重力偏置后的力数据。
 - 根据工具 Y− 实体张紧结果修正 FR5 当前现场 ServoCart 基坐标增量方向，配置项为
@@ -49,11 +49,19 @@
   虚报该项结果。
 - 真实 FR5 SDK 反馈稳定约 25Hz；旧版本 ServoCart/反馈调用互相阻塞导致的
   `EE_STATE_TIMEOUT/WRENCH_TIMEOUT` 已通过降频、超时窗口和控制器时钟修复。
+- 本次新增回归修复确认：旧的 `GetActualJointPosDegree` 在 ServoCart 期间曾阻塞约
+  1 秒，导致管理器把健康心跳判为 `ROS2_CONTROL_ERROR`；现在统一读取 SDK 20004
+  实时状态包，5N 实测期间反馈延迟保持在约几十毫秒且未再发生该故障。
 - 末端工具 Y− 张紧搜索曾成功三次：1.53N/9.40mm、1.58N/12.12mm、
   1.91N/29.35mm。
 - 修复后真实 5N 测试完整通过：从松弛零点重新准备、Tool Y− 张紧、锁定方向、启动
   恒力、稳定保持，再结束牵引；记录为
   `debug/traction_sessions/session_1788235241553`，结束原因是
+  `NORMAL_RELEASE_COMPLETED`。
+- 本次修复后的 5N 回归测试完整通过：第一次 Tool Y− 搜索到 30mm 未到张紧判据，
+  第二次在 17.94mm 处检测到 1.53N；随后方向确定、5N 牵引约 75 秒、结束卸力和
+  自动返回牵引前位置均正常，记录为
+  `debug/traction_sessions/session_1788253756031`，最大力 4.60N，结束原因
   `NORMAL_RELEASE_COMPLETED`。
 - 修复后真实 10N 测试未通过，但按保护逻辑安全停止：方向已锁定，沿锁定方向移动约
   80mm，最大轴向张力约 7.92N，触发 `AXIAL_TRAVEL_LIMIT`，没有继续扩大行程猜测。
@@ -61,9 +69,9 @@
 
 ## 当前现场检查点
 
-当前 ROS 状态为 `READY`，末端已回到用户确认的松弛零点（约 `z=0.486m`），速度为 0，
-实际力约 0N，故障已复位。5N 已完成一次完整实体闭环；10N 在当前绳路/测试目标关系
-和 80mm 安全行程内未完成目标。
+当前 ROS 状态为 `DIRECTION_LOCKED`（牵引停止），末端已自动回到本次牵引前的位置，
+速度为 0，实际力约 0.1N，故障为空。5N 已完成一次最新的完整实体闭环；10N 在当前
+绳路/测试目标关系和 80mm 安全行程内未完成目标。
 
 ## 需要人工完成的唯一事项
 
@@ -72,4 +80,5 @@
 行程上限继续增大。日常操作从当前松弛零点开始：页面点击“校零”，用法奥示教器沿
 Tool Y− 张紧并保持，点击“定方向”，设置目标力，再开始牵引。
 
-状态：`READY；SOFTWARE_VALIDATED_TARGET_MAX=20N；5N_REAL_PASS；10N_REAL_NOT_PASS_AXIAL_LIMIT`
+状态：`DIRECTION_LOCKED/牵引停止；SOFTWARE_VALIDATED_TARGET_MAX=20N；
+5N_REAL_PASS_AFTER_REALTIME_FEEDBACK_FIX；10N_REAL_NOT_PASS_AXIAL_LIMIT`

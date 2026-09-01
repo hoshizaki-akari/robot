@@ -88,6 +88,14 @@ class Fr5DirectDriver(Node):
         self._auto_set_zero = bool(
             self.declare_parameter("auto_set_zero_on_start", True).value
         )
+        self._realtime_state_timeout_s = float(
+            self.declare_parameter("realtime_state_timeout_s", 0.5).value
+        )
+        if (
+            not math.isfinite(self._realtime_state_timeout_s)
+            or self._realtime_state_timeout_s <= 0.0
+        ):
+            raise ValueError("realtime_state_timeout_s must be positive")
 
         robot_module = _load_robot_sdk(str(sdk_path))
         self._robot = robot_module.RPC(str(robot_ip))
@@ -171,6 +179,8 @@ class Fr5DirectDriver(Node):
         self._latest_pose = None
         self._latest_joints = None
         self._latest_wrench = None
+        self._last_realtime_state = None
+        self._last_realtime_state_at = 0.0
         self._zero_pose = None
         self._zero_joints = None
         self._slack_calibration_pending = False
@@ -412,6 +422,30 @@ class Fr5DirectDriver(Node):
         ee_message.pose.orientation.z, ee_message.pose.orientation.w = quaternion[2:]
         self._ee_pub.publish(ee_message)
 
+    def _read_realtime_state(self, now):
+        """
+        Read one coherent snapshot from the SDK's realtime state stream.
+
+        The individual GetActual* XML-RPC queries are not suitable for the
+        force loop: GetActualJointPosDegree can block for about a second while
+        ServoCart is active.  The SDK already receives all required values in
+        its realtime port 20004 packet, so use that single packet instead.
+        """
+        state = self._robot.robot_state_pkg
+        if isinstance(state, type) or not hasattr(state, "frame_cnt"):
+            raise RuntimeError("FR5 realtime state packet is not available")
+        if state is self._last_realtime_state:
+            if now - self._last_realtime_state_at > self._realtime_state_timeout_s:
+                raise RuntimeError("FR5 realtime state stream is stale")
+            return None
+        self._last_realtime_state = state
+        self._last_realtime_state_at = now
+        joints = [state.jt_cur_pos[index] for index in range(6)]
+        pose = [state.tl_cur_pos[index] for index in range(6)]
+        speeds = [state.actual_qd[index] for index in range(6)]
+        wrench = [state.ft_sensor_data[index] for index in range(6)]
+        return joints, pose, speeds, wrench
+
     def _servo_cart(self, mode, desc_pos):
         started_at = time.monotonic()
         code = self._robot.ServoCart(mode, desc_pos, cmdT=0.008)
@@ -527,34 +561,15 @@ class Fr5DirectDriver(Node):
         dt = now - self._last_tick
         self._last_tick = now
         try:
-            feedback_started = time.monotonic()
-            joint_result = self._robot.GetActualJointPosDegree()
-            joint_elapsed = time.monotonic() - feedback_started
-            pose_result = self._robot.GetActualTCPPose()
-            pose_elapsed = time.monotonic() - feedback_started - joint_elapsed
-            speed_code, speeds = self._robot.GetActualJointSpeedsDegree()
-            speed_elapsed = (
-                time.monotonic() - feedback_started - joint_elapsed - pose_elapsed
-            )
-            wrench_code, wrench = self._robot.FT_GetForceTorqueRCS()
-            wrench_elapsed = (
-                time.monotonic()
-                - feedback_started
-                - joint_elapsed
-                - pose_elapsed
-                - speed_elapsed
-            )
-            feedback_elapsed = time.monotonic() - feedback_started
-            if feedback_elapsed > 0.20:
-                self.get_logger().warning(
-                    "FR5 feedback RPC batch took "
-                    f"{feedback_elapsed:.3f} s "
-                    f"(joint={joint_elapsed:.3f}, pose={pose_elapsed:.3f}, "
-                    f"speed={speed_elapsed:.3f}, wrench={wrench_elapsed:.3f})."
-                )
-            if joint_result[0] or pose_result[0] or speed_code or wrench_code:
-                raise RuntimeError("FR5 feedback call returned a non-zero code")
-            joints, pose = joint_result[1], pose_result[1]
+            state_snapshot = self._read_realtime_state(now)
+            if state_snapshot is None:
+                # Do not republish stale values with a fresh ROS timestamp and
+                # do not send another motion command while the SDK stream is
+                # momentarily between packets.  The manager observes the last
+                # real feedback timestamp and applies its normal timeout.
+                self._publish_health(True)
+                return
+            joints, pose, speeds, wrench = state_snapshot
             self._latest_joints, self._latest_pose = list(joints), list(pose)
             self._latest_wrench = list(wrench)
             if self._slack_calibration_pending and not self._servo_enabled:
