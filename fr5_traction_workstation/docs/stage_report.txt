@@ -24,7 +24,7 @@ software:
 offline_tests:
 - C++: 5/5 passed
 - Python/UI: 4/4 passed
-- ruff and py_compile: passed
+- py_compile: passed; ruff is not installed in the current ROS environment
 
 real_validation:
 - tool Y- success: 1.53 N at 9.40 mm; 1.58 N at 12.12 mm;
@@ -33,6 +33,23 @@ real_validation:
   session_1788235241553, NORMAL_RELEASE_COMPLETED
 - 10 N: not passed; max approximately 7.92 N at about 80 mm axial travel;
   session_1788235931318, AXIAL_TRAVEL_LIMIT safety stop
+
+ui_button_validation:
+- target buttons -5N, -10N, +5N, +10N: clicked with 1.2 s response checks;
+  UI and ROS target values stayed synchronized and clamped to 1..30 N
+- prepare: clicked at slack zero; READY -> MANUAL_SETUP
+- direction lock: real Tool Y- bounded search followed by UI click;
+  MANUAL_SETUP -> DIRECTION_LOCKED and vectors appeared on the page
+- start: UI click entered TRACTION and started the 1 N record;
+  session_1788236839724
+- normal release: UI click reached COMPLETED and saved the record
+- software emergency stop: UI click reached EMERGENCY_STOP; reset returned to READY
+- set zero and low-speed return: both UI clicks succeeded; final pose returned to
+  z ~= 0.486 m with force below 0.3 N
+- records, CSV export, and modal close: all succeeded; browser error/warn log empty
+- operator-role settings button remained disabled by permission as designed;
+  logout was not clicked so the validated operator session and final READY state
+  remained available
 
 current_state = READY
 current_motion = stopped at confirmed slack zero z ~= 0.486 m; force ~= 0 N
