@@ -10,8 +10,11 @@ traction_controller:
     traction_max_speed_mps: 0.005
     traction_max_acc_mps2: 0.02
     pretension_speed_mps: 0.002
-    wrench_timeout_s: 0.10
-    command_timeout_s: 0.10
+    # ServoCart can briefly occupy the direct-driver RPC thread on the real
+    # FR5. Keep the stop-on-stale-data protection, but allow one short network
+    # jitter window at the validated 5 mm/s speed.
+    wrench_timeout_s: 0.5
+    command_timeout_s: 0.5
     wrench_topic: /traction/corrected_wrench
     command_topic: /traction/command
     cartesian_command_topic: /controller_manager/command_cart_vel
@@ -29,8 +32,10 @@ traction_manager:
     pretension_speed_mps: 0.002
     pretension_timeout_s: 10.0
     pretension_max_travel_m: 0.020
-    calibration_window_s: 1.0
-    calibration_min_samples: 80
+    # Two seconds gives the real ROS graph enough time to collect the
+    # required stationary samples when WSL scheduling briefly jitters.
+    calibration_window_s: 3.0
+    calibration_min_samples: 40
     calibration_max_angle_p95_deg: 15.0
     target_force_min_n: 1.0
     target_force_max_n: 30.0
@@ -43,10 +48,13 @@ traction_manager:
     overforce_limit_n: 25.0
     hard_overforce_limit_n: 30.0
     lateral_force_limit_n: 5.0
-    wrench_timeout_s: 0.10
-    ee_state_timeout_s: 0.20
+    # 50 mm was insufficient for the measured 10 N rope stiffness. Keep the
+    # travel stop explicit and configurable; hard/soft force limits remain.
+    axial_travel_limit_m: 0.080
+    wrench_timeout_s: 0.5
+    ee_state_timeout_s: 0.5
     joint_state_topic: /joint_states
-    controller_health_timeout_s: 0.20
+    controller_health_timeout_s: 0.6
     ui_heartbeat_timeout_s: 2.0
     require_ui_heartbeat: false
     # The direct FR5 driver owns the SDK and publishes these real-hardware

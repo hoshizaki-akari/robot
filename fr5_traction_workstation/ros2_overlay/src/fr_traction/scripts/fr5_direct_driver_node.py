@@ -54,6 +54,12 @@ class Fr5DirectDriver(Node):
             "/home/zhj/projects/fr5_learning/vendor/fairino-python-sdk/linux",
         ).value
         self._rate_hz = float(self.declare_parameter("update_rate_hz", 100.0).value)
+        self._motion_rate_hz = float(
+            self.declare_parameter("motion_rate_hz", 25.0).value
+        )
+        if not math.isfinite(self._motion_rate_hz) or self._motion_rate_hz <= 0.0:
+            raise ValueError("motion_rate_hz must be positive")
+        self._motion_period_s = 1.0 / self._motion_rate_hz
         self._command_timeout = float(
             self.declare_parameter("command_timeout_s", 0.10).value
         )
@@ -72,9 +78,7 @@ class Fr5DirectDriver(Node):
         self._return_speed_mm_s = float(
             self.declare_parameter("return_speed_mm_s", 2.0).value
         )
-        self._return_max_distance_mm = float(
-            self.declare_parameter("return_max_distance_mm", 35.0).value
-        )
+        self.declare_parameter("return_max_distance_mm", 35.0)
         self._tension_search_max_mm = float(
             self.declare_parameter("tension_search_max_mm", 30.0).value
         )
@@ -131,6 +135,7 @@ class Fr5DirectDriver(Node):
 
         self._twist = Twist()
         self._last_command_at = 0.0
+        self._last_motion_at = 0.0
         self._servo_enabled = False
         self._return_active = False
         self._return_started_at = 0.0
@@ -201,6 +206,7 @@ class Fr5DirectDriver(Node):
                 response.ok = False
                 return response
             self._servo_enabled = True
+            self._last_motion_at = time.monotonic()
             self._last_command_at = time.monotonic()
         response.ok = True
         return response
@@ -234,11 +240,18 @@ class Fr5DirectDriver(Node):
         distance_mm = math.sqrt(
             sum((self._zero_pose[i] - self._latest_pose[i]) ** 2 for i in range(3))
         )
-        if distance_mm > self._return_max_distance_mm:
+        return_max_distance_mm = float(
+            self.get_parameter("return_max_distance_mm").value
+        )
+        if not math.isfinite(return_max_distance_mm) or return_max_distance_mm <= 0.0:
+            response.success = False
+            response.message = "Return rejected: return_max_distance_mm is invalid."
+            return response
+        if distance_mm > return_max_distance_mm:
             response.success = False
             response.message = (
                 "Return rejected: zero is more than "
-                f"{self._return_max_distance_mm:.0f} mm away."
+                f"{return_max_distance_mm:.0f} mm away."
             )
             return response
         code = self._robot.ServoMoveStart()
@@ -247,6 +260,7 @@ class Fr5DirectDriver(Node):
             response.message = f"ServoMoveStart failed: {code}."
             return response
         self._servo_enabled = True
+        self._last_motion_at = time.monotonic()
         self._return_active = True
         self._return_started_at = time.monotonic()
         self._return_start_pose = list(self._latest_pose)
@@ -286,6 +300,7 @@ class Fr5DirectDriver(Node):
             response.message = f"ServoMoveStart failed: {code}."
             return response
         self._servo_enabled = True
+        self._last_motion_at = time.monotonic()
         self._auto_tension_active = True
         self._auto_tension_baseline = list(self._latest_wrench)
         self._auto_tension_start_pose = list(self._latest_pose)
@@ -334,24 +349,48 @@ class Fr5DirectDriver(Node):
         ee_message.pose.orientation.z, ee_message.pose.orientation.w = quaternion[2:]
         self._ee_pub.publish(ee_message)
 
+    def _servo_cart(self, mode, desc_pos):
+        started_at = time.monotonic()
+        code = self._robot.ServoCart(mode, desc_pos, cmdT=0.008)
+        elapsed = time.monotonic() - started_at
+        if elapsed > 0.15:
+            self.get_logger().warning(
+                f"ServoCart mode {mode} RPC took {elapsed:.3f} s."
+            )
+        return code
+
     def _send_motion(self, now, dt):
         if not self._servo_enabled:
             return
+        if self._last_motion_at > 0.0 and now - self._last_motion_at < self._motion_period_s:
+            return
+        motion_dt = now - self._last_motion_at if self._last_motion_at > 0.0 else dt
+        self._last_motion_at = now
+        motion_dt = min(max(motion_dt, 0.0), 0.05)
 
         if self._auto_tension_active:
-            force_delta = math.sqrt(
-                sum(
-                    (self._latest_wrench[i] - self._auto_tension_baseline[i]) ** 2
-                    for i in range(3)
-                )
-            )
+            displacement = [
+                self._latest_pose[i] - self._auto_tension_start_pose[i]
+                for i in range(3)
+            ]
             travel_mm = math.sqrt(
                 sum(
                     (self._latest_pose[i] - self._auto_tension_start_pose[i]) ** 2
                     for i in range(3)
                 )
             )
-            if force_delta >= 10.0:
+            force_change = [
+                self._latest_wrench[i] - self._auto_tension_baseline[i]
+                for i in range(3)
+            ]
+            if travel_mm > 0.5:
+                travel_direction = [value / travel_mm for value in displacement]
+                force_increase = sum(
+                    force_change[i] * travel_direction[i] for i in range(3)
+                )
+            else:
+                force_increase = 0.0
+            if force_increase >= 10.0:
                 self._robot.ServoMoveEnd()
                 self._servo_enabled = False
                 self._auto_tension_active = False
@@ -359,7 +398,7 @@ class Fr5DirectDriver(Node):
                     "Auto tension stopped at the 10 N diagnostic limit."
                 )
                 return
-            if force_delta >= 1.5:
+            if force_increase >= 1.5:
                 if self._auto_tension_since is None:
                     self._auto_tension_since = now
                 elif now - self._auto_tension_since >= 0.2:
@@ -368,7 +407,7 @@ class Fr5DirectDriver(Node):
                     self._auto_tension_active = False
                     self.get_logger().info(
                         f"{self._auto_tension_label} tension found at "
-                        f"{force_delta:.2f} N after {travel_mm:.2f} mm."
+                        f"+{force_increase:.2f} N after {travel_mm:.2f} mm."
                     )
                     return
             else:
@@ -382,11 +421,8 @@ class Fr5DirectDriver(Node):
                     f"{self._tension_search_max_mm:.0f} mm without stable tension."
                 )
                 return
-            code = self._robot.ServoCart(
-                self._auto_tension_mode,
-                self._auto_tension_increment,
-                cmdT=0.008,
-            )
+            increment = [value * motion_dt / 0.01 for value in self._auto_tension_increment]
+            code = self._servo_cart(self._auto_tension_mode, increment)
             if code != 0:
                 raise RuntimeError(
                     f"ServoCart {self._auto_tension_label} tension search failed: {code}"
@@ -398,7 +434,7 @@ class Fr5DirectDriver(Node):
                 start + alpha * (zero - start)
                 for start, zero in zip(self._return_start_pose, self._zero_pose)
             ]
-            code = self._robot.ServoCart(0, target, cmdT=0.008)
+            code = self._servo_cart(0, target)
             if alpha >= 1.0:
                 self._robot.ServoMoveEnd()
                 self._servo_enabled = False
@@ -415,10 +451,10 @@ class Fr5DirectDriver(Node):
         elif magnitude > self._max_speed and magnitude > 0.0:
             linear = [value * self._max_speed / magnitude for value in linear]
         increment = [
-            self._base_servo_sign * value * min(dt, 0.02) * 1000.0
+            self._base_servo_sign * value * motion_dt * 1000.0
             for value in linear
         ]
-        code = self._robot.ServoCart(1, increment + [0.0, 0.0, 0.0], cmdT=0.008)
+        code = self._servo_cart(1, increment + [0.0, 0.0, 0.0])
         if code != 0:
             raise RuntimeError(f"ServoCart traction failed: {code}")
 

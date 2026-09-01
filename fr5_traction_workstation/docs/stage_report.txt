@@ -6,7 +6,7 @@ sensor = KWR75D
 force_frame = base_link
 
 software:
-- direct single-owner Fairino SDK driver, 100 Hz feedback/control path
+- direct single-owner Fairino SDK driver, 25 Hz feedback and motion path
 - baseline-corrected wrench: /traction/corrected_wrench
 - tool Y- bounded tension search: max 30 mm, stable target about 1.5 N
 - target range 1..30 N; real validation range 1..15 N
@@ -14,6 +14,12 @@ software:
 - startup scripts fixed for ROS2 environment setup and launch argument syntax
 - prepare/zero controls remain available in READY, MANUAL_SETUP, and COMPLETED;
   stale force baselines can be replaced by pressing the slack-zero prepare button
+- live Tool Y- test showed the deployed base command sign was reversed; configured
+  base_servo_sign = 1.0 before validation
+- feedback/motion RPC rate and stale-data windows were adjusted for the real FR5;
+  controller timing now uses a steady clock and pauses safely on long scheduling gaps
+- return-zero reads the current return distance parameter; temporary Tool Y+ recovery
+  service was removed from the formal driver interface
 
 offline_tests:
 - C++: 5/5 passed
@@ -23,16 +29,16 @@ offline_tests:
 real_validation:
 - tool Y- success: 1.53 N at 9.40 mm; 1.58 N at 12.12 mm;
   1.91 N at 29.35 mm
-- old raw-wrench control run: 6.97 N, 44.8 mm, WRENCH_TIMEOUT;
-  continuous approximately 100 Hz, root cause fixed by corrected wrench topic
-- post-fix search: 30 mm without stable tension after physical target moved;
-  bounded stop completed
+- 5 N: complete real run and normal release passed;
+  session_1788235241553, NORMAL_RELEASE_COMPLETED
+- 10 N: not passed; max approximately 7.92 N at about 80 mm axial travel;
+  session_1788235931318, AXIAL_TRAVEL_LIMIT safety stop
 
-current_state = MANUAL_SETUP
-current_motion = stopped; no automatic robot motion performed during this fix
-status = WAITING_PHYSICAL_CHECKPOINT
+current_state = READY
+current_motion = stopped at confirmed slack zero z ~= 0.486 m; force ~= 0 N
+status = 5N_REAL_PASS; 10N_REAL_NOT_PASS_AXIAL_LIMIT
 
 checkpoint:
-Restore the belt/target physical relationship. Confirm slack at the current pose,
-then use only tool Y- with the official teach pendant until force is stably above
-1 N. Hold still, lock direction, set 5 N, and run the final traction/release test.
+5 N has passed. For any further 10 N test, a human must first confirm the physical
+rope route, target fixation, and a safe larger working envelope; do not increase the
+80 mm travel limit without that confirmation.

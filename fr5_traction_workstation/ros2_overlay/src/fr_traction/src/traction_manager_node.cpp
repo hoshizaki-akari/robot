@@ -66,6 +66,7 @@ public:
     overforce_limit_n_ = declare_parameter("overforce_limit_n", 25.0);
     hard_overforce_limit_n_ = declare_parameter("hard_overforce_limit_n", 30.0);
     lateral_force_limit_n_ = declare_parameter("lateral_force_limit_n", 5.0);
+    axial_travel_limit_m_ = declare_parameter("axial_travel_limit_m", 0.050);
     wrench_timeout_s_ = declare_parameter("wrench_timeout_s", 0.10);
     ee_state_timeout_s_ = declare_parameter("ee_state_timeout_s", 0.20);
     ui_heartbeat_timeout_s_ = declare_parameter("ui_heartbeat_timeout_s", 2.0);
@@ -97,6 +98,7 @@ public:
     safety_limits.overforce_n = overforce_limit_n_;
     safety_limits.hard_overforce_n = hard_overforce_limit_n_;
     safety_limits.lateral_force_n = lateral_force_limit_n_;
+    safety_limits.axial_travel_m = axial_travel_limit_m_;
     safety_monitor_.set_limits(safety_limits);
     force_filter_.set_cutoff(force_filter_cutoff_hz_);
     std::filesystem::create_directories(data_directory_);
@@ -224,6 +226,7 @@ private:
       std::isfinite(overforce_limit_n_) && overforce_limit_n_ > 0.0 &&
       std::isfinite(hard_overforce_limit_n_) && hard_overforce_limit_n_ > overforce_limit_n_ &&
       std::isfinite(lateral_force_limit_n_) && lateral_force_limit_n_ > 0.0 &&
+      std::isfinite(axial_travel_limit_m_) && axial_travel_limit_m_ > 0.0 &&
       std::isfinite(wrench_timeout_s_) && wrench_timeout_s_ > 0.0 &&
       std::isfinite(ee_state_timeout_s_) && ee_state_timeout_s_ > 0.0 &&
       std::isfinite(ui_heartbeat_timeout_s_) && ui_heartbeat_timeout_s_ > 0.0 &&
@@ -1134,6 +1137,7 @@ private:
   double overforce_limit_n_ = 25.0;
   double hard_overforce_limit_n_ = 30.0;
   double lateral_force_limit_n_ = 5.0;
+  double axial_travel_limit_m_ = 0.050;
   double wrench_timeout_s_ = 0.10;
   double ee_state_timeout_s_ = 0.20;
   double ui_heartbeat_timeout_s_ = 2.0;

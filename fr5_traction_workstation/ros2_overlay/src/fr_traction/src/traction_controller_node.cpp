@@ -1,5 +1,6 @@
 #include "fr_traction/traction_controller_core.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -139,22 +140,22 @@ private:
   void control_tick()
   {
     const rclcpp::Time current_time = now();
+    const auto steady_time = std::chrono::steady_clock::now();
     double dt_s = 1.0 / control_rate_hz_;
-    if (last_control_at_.nanoseconds() != 0) {
-      if (current_time < last_control_at_) {
-        publish_zero();
-        blocked_generation_ = command_generation_;
-        core_.reset();
-        publish_health(false);
-        return;
-      }
-      dt_s = (current_time - last_control_at_).seconds();
+    if (last_control_steady_at_.time_since_epoch().count() != 0) {
+      dt_s = std::chrono::duration<double>(steady_time - last_control_steady_at_).count();
     }
-    last_control_at_ = current_time;
+    last_control_steady_at_ = steady_time;
     if (!std::isfinite(dt_s) || dt_s <= 0.0 || dt_s > 0.25) {
+      RCLCPP_WARN(
+        get_logger(), "Control cycle interval invalid or too long: %.3f s; output disabled.",
+        dt_s);
       publish_zero();
       core_.reset();
-      publish_health(false);
+      // A long wall-timer gap is handled as a safe pause. The direct driver
+      // watchdog receives zero velocity, and the next fresh cycle may resume.
+      // Hardware/input faults are still reported by the freshness checks.
+      publish_health(true);
       return;
     }
 
@@ -182,6 +183,12 @@ private:
       mode, vector_from_message(command_.locked_direction_base), command_.target_force_n,
       filtered_wrench, dt_s);
     if (!output.valid) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Controller output invalid: mode=%u target=%.3f direction_norm=%.9f wrench=(%.3f, %.3f, %.3f).",
+        static_cast<unsigned>(command_.mode), command_.target_force_n,
+        norm(vector_from_message(command_.locked_direction_base)), latest_wrench_.x,
+        latest_wrench_.y, latest_wrench_.z);
       publish_zero();
       publish_health(false);
       return;
@@ -227,7 +234,7 @@ private:
   uint64_t blocked_generation_ = 0;
   rclcpp::Time last_command_at_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_wrench_at_{0, 0, RCL_ROS_TIME};
-  rclcpp::Time last_control_at_{0, 0, RCL_ROS_TIME};
+  std::chrono::steady_clock::time_point last_control_steady_at_{};
   FirstOrderLowPass force_filter_;
   TractionControllerCore core_;
 

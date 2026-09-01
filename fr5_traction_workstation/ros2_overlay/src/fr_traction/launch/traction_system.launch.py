@@ -61,9 +61,16 @@ def generate_launch_description():
         parameters=[{
             "robot_ip": robot_ip,
             "sdk_python_path": sdk_python_path,
-            "update_rate_hz": 100.0,
+            # The FR5 SDK exposes four feedback RPCs. 25 Hz keeps the real
+            # hardware feedback continuous instead of queueing 100 Hz calls.
+            "update_rate_hz": 25.0,
+            "motion_rate_hz": 25.0,
+            "command_timeout_s": 0.5,
             "max_linear_speed_mps": 0.005,
-            "base_servo_sign": -1.0,
+            # On this FR5, the live Y- tension search showed that a positive
+            # base command must be passed through unchanged for the force
+            # controller to move in the measured increasing-force direction.
+            "base_servo_sign": 1.0,
             "return_speed_mm_s": 2.0,
             "return_max_distance_mm": 35.0,
             "tension_search_max_mm": 30.0,

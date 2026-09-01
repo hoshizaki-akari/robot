@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
+# ROS 2 Humble's setup script reads AMENT_TRACE_SETUP_FILES while nounset is
+# active. Source both environments first, then restore nounset for checks.
 source /opt/ros/humble/setup.bash
 ROS_WS="${FR5_ROS_WS:-/home/zhj/projects/fr5_learning/robot_ws_backup/new_fairino_ws}"
 if [[ ! -f "$ROS_WS/install/setup.bash" ]]; then
@@ -8,6 +10,7 @@ if [[ ! -f "$ROS_WS/install/setup.bash" ]]; then
   exit 2
 fi
 source "$ROS_WS/install/setup.bash"
+set -u
 
 echo "=== FR5 牵引系统预检 ==="
 echo "节点："
