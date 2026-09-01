@@ -12,7 +12,6 @@ const permissions = {
 let sessionUser = null;
 const TARGET_FORCE_MIN = 1;
 const TARGET_FORCE_MAX = 20;
-const VALIDATED_TARGET_MAX = 20;
 let currentForce = 10;
 const forceLimit = 25;
 let actualForce = 0;
@@ -27,6 +26,37 @@ let directionLocked = false;
 let tractionState = 0;
 let pendingStart = false;
 
+const TRACTION_STATE_LABELS = {
+  0: '连接中',
+  1: '设备就绪',
+  2: '等待张紧',
+  3: '自动张紧中',
+  4: '确认方向中',
+  5: '方向已确定',
+  6: '牵引中',
+  7: '正在结束',
+  8: '已完成',
+  9: '故障',
+  10: '已急停'
+};
+const ACTION_SUCCESS_MESSAGES = {
+  '/api/traction/prepare': '已校准',
+  '/api/traction/calibrate-direction': '方向已确定',
+  '/api/traction/reset-fault': '已复位',
+  '/api/traction/set-zero': '零点已设置',
+  '/api/traction/return-zero': '正在回零'
+};
+const REASON_LABELS = {
+  AXIAL_TRAVEL_LIMIT: '达到行程上限',
+  WRENCH_TIMEOUT: '力数据超时',
+  ROS2_CONTROL_ERROR: '运动控制异常',
+  CALIBRATION_TOO_FEW_SAMPLES: '方向数据不足',
+  OVER_FORCE: '超过安全力',
+  LATERAL_FORCE_LIMIT: '横向力过大',
+  UI_HEARTBEAT_TIMEOUT: '页面连接中断',
+  NORMAL_RELEASE_COMPLETED: '已正常结束'
+};
+
 const $ = id => document.getElementById(id);
 const toast = message => {
   $('toast').textContent = message;
@@ -38,6 +68,20 @@ const formatTime = date => new Intl.DateTimeFormat('zh-CN', {
   year: 'numeric', month: '2-digit', day: '2-digit',
   hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
 }).format(date).replaceAll('/', '-');
+
+function simpleReason(value) {
+  if (!value) return '';
+  const text = String(value);
+  return REASON_LABELS[text] || (/[一-鿿]/.test(text) ? text : '操作失败');
+}
+
+function simpleErrorMessage(error) {
+  const text = String(error?.message || '');
+  if (/target|1 N and 20|1～20/i.test(text)) return '目标牵引力需在1～20N';
+  if (/direction|calibrat/i.test(text)) return '请先完成方向确认';
+  if (/state|rejected|not available|unavailable|不可用/i.test(text)) return '当前状态不能执行';
+  return /[一-鿿]/.test(text) ? text : '操作失败，请检查设备';
+}
 
 async function postJson(path, body = {}) {
   const response = await fetch(path, {
@@ -115,14 +159,11 @@ async function changeTarget(nextTarget) {
   updateForceDisplay();
   try {
     await postJson('/api/traction/target', { target_force_n: currentForce });
-    if (currentForce > VALIDATED_TARGET_MAX) {
-      toast(`已设置 ${currentForce.toFixed(1)}N；当前实机验收上限为 ${VALIDATED_TARGET_MAX}N`);
-    }
     return true;
   } catch (error) {
     currentForce = previousForce;
     updateForceDisplay();
-    toast(error.message);
+    toast(simpleErrorMessage(error));
     return false;
   }
 }
@@ -130,26 +171,26 @@ async function changeTarget(nextTarget) {
 async function startTraction() {
   if (!sessionUser || !permissions[sessionUser.role].operate) return;
   if (pendingStart) return toast('正在等待控制器接管');
-  if (!dataOnline) return toast('ROS2 牵引管理器不可用');
+  if (!dataOnline) return toast('设备未连接');
   try {
     if (tractionState !== 5) return toast('请先完成方向标定并锁定方向');
     await postJson('/api/traction/start');
   } catch (error) {
-    return toast(error.message);
+    return toast(simpleErrorMessage(error));
   }
 
   pendingStart = true;
-  $('workStatus').textContent = '等待控制器接管';
+  $('workStatus').textContent = '正在开始';
   $('workStatus').classList.add('running');
   applyPermissions();
-  toast('已请求接管；控制器确认后开始记录');
+  toast('开始牵引');
 }
 
 function beginLocalRecord() {
   if (activeRecord || !pendingStart) return;
   pendingStart = false;
   activeRecord = { startedAt: Date.now() };
-  $('workStatus').textContent = '恒力保持中';
+  $('workStatus').textContent = '牵引中';
   $('workStatus').classList.add('running');
   const startAt = Date.now();
   timerHandle = setInterval(() => {
@@ -165,7 +206,7 @@ function saveFinishedRecord(status) {
   clearInterval(timerHandle);
   activeRecord = null;
   $('recordTimer').textContent = '未开始记录';
-  $('workStatus').textContent = status === '已完成' ? '等待 ROS2 完成释放' : '软件急停已请求';
+  $('workStatus').textContent = status === '已完成' ? '已结束' : '已急停';
   $('workStatus').classList.remove('running');
   applyPermissions();
   renderRecords();
@@ -177,21 +218,21 @@ async function finishTraction(status = '已完成') {
   try {
     await postJson('/api/traction/stop');
   } catch (error) {
-    return toast(error.message);
+    return toast(simpleErrorMessage(error));
   }
   saveFinishedRecord(status);
-  toast(status === '已完成' ? '牵引记录已保存' : '牵引已停止并保存记录');
+  toast(status === '已完成' ? '已结束牵引' : '已停止');
 }
 
 async function emergencyStop() {
   try {
     await postJson('/api/traction/emergency-stop');
   } catch (error) {
-    return toast(`${error.message}；请立即使用实体急停`);
+    return toast(`${simpleErrorMessage(error)}；请使用实体急停`);
   }
   if (activeRecord) saveFinishedRecord('紧急终止');
-  $('workStatus').textContent = '安全停止';
-  toast('牵引已停止');
+  $('workStatus').textContent = '已急停';
+  toast('已急停');
 }
 
 function renderRecords() {
@@ -222,7 +263,7 @@ async function refreshHistory() {
       start: builtinTimeText(summary.start_time),
       end: builtinTimeText(summary.end_time),
       operator: '--',
-      role: 'ROS2',
+      role: '系统',
       target: Number(summary.target_force_n || 0).toFixed(1),
       average: Number(summary.average_force_n || 0).toFixed(1),
       maximum: Number(summary.max_force_n || 0).toFixed(1),
@@ -235,7 +276,7 @@ async function refreshHistory() {
 }
 
 function exportRecords() {
-  if (!records.length) return toast('暂无 ROS2 牵引历史');
+  if (!records.length) return toast('暂无牵引记录');
   const link = document.createElement('a');
   link.href = '/api/traction/export/latest';
   link.download = `牵引记录_${new Date().toISOString().slice(0, 10)}.csv`;
@@ -315,7 +356,7 @@ function handleState(state) {
   if (tractionState === 6) beginLocalRecord();
   if (pendingStart && [9, 10].includes(tractionState)) {
     pendingStart = false;
-    toast(traction.message || '牵引接管失败，请检查设备状态');
+    toast(simpleReason(traction.fault_code || traction.stop_reason) || '开始失败');
   }
   dataOnline = state.connected === true;
   $('armStatus').textContent = dataOnline ? '通信正常' : '通信中断';
@@ -333,8 +374,7 @@ function handleState(state) {
   actualForce = Number(traction.actual_force_n || 0);
   $('actualForceVal').textContent = actualForce.toFixed(1);
   const tensionDetected = actualForce >= 1.0;
-  $('tensionState').textContent = tensionDetected
-    ? '已张紧：检测到有效牵引力' : '松弛：尚未感知到有效张力';
+  $('tensionState').textContent = tensionDetected ? '牵引带：紧' : '牵引带：松';
   $('tensionState').classList.toggle('tight', tensionDetected);
 
   const vector = Array.isArray(traction.force_vector_n) ? traction.force_vector_n : [];
@@ -352,19 +392,14 @@ function handleState(state) {
   if (window.updateForceVector && vector.length === 3) {
     window.updateForceVector(vector, directionForModel);
   }
-  $('forceVectorMessage').textContent = traction.message || traction.stop_reason || (
-    tractionState === 4 ? '正在确认方向，请保持机械臂静止' :
-      directionLocked ? '方向已锁定，等待开始恒力牵引' : '移动中只显示力，不判定恒力'
-  );
-
   if (activeRecord) {
-    $('workStatus').textContent = traction.fault_code || traction.stop_reason || `ROS2 状态：${tractionState}`;
+    $('workStatus').textContent = simpleReason(traction.fault_code || traction.stop_reason) || '牵引中';
     $('workStatus').classList.add('running');
   } else if (!dataOnline) {
-    $('workStatus').textContent = 'ROS2 牵引管理器不可用';
+    $('workStatus').textContent = '设备未连接';
     $('workStatus').classList.remove('running');
   } else {
-    $('workStatus').textContent = traction.state_name || '设备就绪';
+    $('workStatus').textContent = TRACTION_STATE_LABELS[tractionState] || '设备状态';
     $('workStatus').classList.remove('running');
   }
 
@@ -434,8 +469,6 @@ $('settingsBtn').addEventListener('click', () => {
     return toast('当前角色无权修改参数');
   }
   $('settingTarget').value = currentForce;
-    $('settingLimit').value = 30;
-  $('settingLimit').disabled = true;
   $('settingsModal').classList.remove('hidden');
 });
 $('saveSettingsBtn').addEventListener('click', async () => {
@@ -471,10 +504,10 @@ const callTraction = async path => {
       dataOnline = traction.valid === true;
       applyPermissions();
     }
-    if (result.message) toast(result.message);
+    toast(ACTION_SUCCESS_MESSAGES[path] || '操作完成');
     return result;
   } catch (error) {
-    toast(error.message);
+    toast(simpleErrorMessage(error));
     return null;
   }
 };

@@ -87,7 +87,7 @@
       display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 16px rgba(59,130,246,.15);
     }
     .force-value-target {
-      width: 150px; border: 0; outline: 0; background: transparent; text-align: right;
+      width: 150px; border: 0; outline: 0; background: transparent; text-align: center;
       font: inherit; font-size: 70px; font-weight: 800; color: var(--navy);
       appearance: textfield; -moz-appearance: textfield;
     }
@@ -124,7 +124,6 @@
       color: var(--navy); font-size: 12px; white-space: nowrap;
       overflow: hidden; text-overflow: ellipsis;
     }
-    .vector-message { min-height: 18px; margin-top: 8px; color: var(--muted); font-size: 12px; }
     .tension-state { margin-top: 8px; font-weight: 700; color: #64748b; }
     .tension-state.tight { color: #15803d; }
 
@@ -230,9 +229,9 @@
           <div class="force-display-target">
             <div class="force-label-target">目标牵引力</div>
             <div class="force-box-target"><input class="force-value-target" id="targetForceVal" type="number" min="1" max="20" step="0.1" value="10" inputmode="decimal" aria-label="目标牵引力"><span class="force-unit-target">N</span></div>
-            <div class="actual-force">实时轴向张力：<strong id="actualForceVal">0.0</strong> N</div>
-            <div class="force-vector-card" aria-label="base_link三轴力向量">
-              <div class="vector-card-title">实时力向量 <code>base_link</code></div>
+            <div class="actual-force">当前张力：<strong id="actualForceVal">0.0</strong> N</div>
+            <div class="force-vector-card" aria-label="三轴受力">
+              <div class="vector-card-title">三轴受力</div>
               <div class="vector-components">
                 <div><span>Fx</span><strong id="forceFx">--</strong><small>N</small></div>
                 <div><span>Fy</span><strong id="forceFy">--</strong><small>N</small></div>
@@ -240,8 +239,7 @@
               </div>
               <div class="vector-direction"><span>受力方向</span><code id="forceDirection">--</code></div>
               <div class="vector-direction"><span>增力方向</span><code id="increaseDirection">--</code></div>
-              <div class="tension-state" id="tensionState">松弛：尚未感知到有效张力</div>
-              <div class="vector-message" id="forceVectorMessage">等待真实力数据</div>
+              <div class="tension-state" id="tensionState">牵引带：松</div>
             </div>
           </div>
           <div class="round-btn-group">
@@ -252,14 +250,14 @@
       </div>
       <div class="card control-panel">
         <div class="control-grid">
-          <button class="action-btn start" id="prepareBtn">松绳校零并准备</button>
-          <button class="action-btn start" id="calibrateBtn" disabled>确认并锁定方向</button>
-          <button class="action-btn start" id="startBtn" disabled>开始恒力牵引</button>
-          <button class="action-btn stop" id="stopBtn" disabled>正常释放</button>
-          <button class="action-btn emergency" id="emergencyBtn" disabled>软件急停</button>
-          <button class="action-btn stop" id="resetBtn" disabled>复位故障</button>
-          <button class="action-btn start" id="setZeroBtn" disabled>设置当前位置为零点</button>
-          <button class="action-btn stop" id="returnZeroBtn" disabled>低速回零</button>
+          <button class="action-btn start" id="prepareBtn" title="绳带松弛时点击">校零</button>
+          <button class="action-btn start" id="calibrateBtn" disabled title="张紧后保持法兰不动">定方向</button>
+          <button class="action-btn start" id="startBtn" disabled>开始牵引</button>
+          <button class="action-btn stop" id="stopBtn" disabled>结束牵引</button>
+          <button class="action-btn emergency" id="emergencyBtn" disabled>急停</button>
+          <button class="action-btn stop" id="resetBtn" disabled>复位</button>
+          <button class="action-btn start" id="setZeroBtn" disabled>设置零点</button>
+          <button class="action-btn stop" id="returnZeroBtn" disabled>回零</button>
         </div>
       </div>
     </section>
@@ -289,7 +287,6 @@
         <div class="table-wrap">
           <table><thead><tr><th>记录编号</th><th>开始时间</th><th>结束时间</th><th>操作人员</th><th>角色</th><th>目标力(N)</th><th>平均力(N)</th><th>最大力(N)</th><th>状态</th></tr></thead><tbody id="recordsBody"></tbody></table>
         </div>
-        <div class="permission-note">历史由 ROS2 traction_manager 持久化；页面只提供查看与导出，不提供删除。</div>
       </div>
     </div>
   </div>
@@ -299,9 +296,7 @@
       <div class="modal-header"><h2>牵引参数设置</h2><button class="close-btn" data-close="settingsModal">×</button></div>
       <div class="modal-body">
         <div class="form-item"><label>默认目标牵引力（N）</label><input id="settingTarget" type="number" min="1" max="20" step="0.1"></div>
-        <div class="form-item"><label>固定安全上限（N）</label><input id="settingLimit" type="number" min="30" max="30" step="1" value="30" disabled></div>
         <button class="primary-btn" id="saveSettingsBtn">保存参数</button>
-        <div class="permission-note">仅管理员和医生可以修改目标；25/30 N 超力、5 N 横向力等硬件安全阈值不可在网页放宽。</div>
       </div>
     </div>
   </div>
@@ -316,12 +311,12 @@
       }
     }
   </script>
-  <script type="module" src="/assets/robot_viewer.js?v=20260901-fr5-real"></script>
+  <script type="module" src="/assets/robot_viewer.js?v=20260901-simple-arm"></script>
 <script type="text/plain" id="legacyLogic">
     Legacy traction logic is intentionally disabled. The active compatibility page
     uses /api/traction/* and the ROS2 traction manager; it does not simulate force,
     persist traction records in the browser, or issue robot SDK commands.
   </script>
-  <script src="/assets/090105.js?v=20260901-fr5-real"></script>
+  <script src="/assets/090105.js?v=20260901-simple-ui"></script>
 </body>
 </html>

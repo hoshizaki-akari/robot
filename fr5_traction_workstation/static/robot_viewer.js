@@ -57,27 +57,6 @@ const jointMaterial = new THREE.MeshStandardMaterial({
   roughness: 0.45,
   metalness: 0.18,
 });
-const adapterMaterial = new THREE.MeshStandardMaterial({
-  color: 0x718096,
-  roughness: 0.38,
-  metalness: 0.5,
-});
-const sensorMaterial = new THREE.MeshStandardMaterial({
-  color: 0x2f855a,
-  roughness: 0.42,
-  metalness: 0.25,
-});
-const gripperMaterial = new THREE.MeshStandardMaterial({
-  color: 0x334155,
-  roughness: 0.48,
-  metalness: 0.3,
-});
-const fingerMaterial = new THREE.MeshStandardMaterial({
-  color: 0xe2e8f0,
-  roughness: 0.56,
-  metalness: 0.15,
-});
-
 function addMesh(parent, name, material = robotMaterial) {
   return new Promise((resolve, reject) => {
     loader.load(
@@ -133,11 +112,10 @@ meshLoads.push(addMesh(link, "wrist3_link", jointMaterial));
 
 const toolRoot = new THREE.Group();
 link.add(toolRoot);
-let leftFinger = null;
-let rightFinger = null;
-let tractionPoint = null;
-let gripperConfig = null;
-let latestOpeningRaw = 0;
+// The viewer shows the FR5 itself. The real sensor, flange and belt are not
+// part of the robot body, so they are deliberately not drawn as a fake tool.
+const tractionPoint = new THREE.Object3D();
+toolRoot.add(tractionPoint);
 
 const forceArrow = new THREE.ArrowHelper(
   new THREE.Vector3(0, 0, 1),
@@ -158,75 +136,6 @@ const movementArrow = new THREE.ArrowHelper(
 forceArrow.visible = false;
 movementArrow.visible = false;
 robotRoot.add(forceArrow, movementArrow);
-
-function mm(value) {
-  return Number(value) / 1000;
-}
-
-function addCylinder(parent, diameterMm, thicknessMm, material) {
-  const mesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(mm(diameterMm) / 2, mm(diameterMm) / 2, mm(thicknessMm), 48),
-    material,
-  );
-  mesh.rotation.x = Math.PI / 2;
-  parent.add(mesh);
-  return mesh;
-}
-
-function buildEndEffector(config) {
-  const model = config.model;
-  toolRoot.position.z = mm(model.flange_face_offset_mm);
-  let cursor = 0;
-
-  for (const [part, material] of [
-    [model.rear_adapter, adapterMaterial],
-    [model.sensor, sensorMaterial],
-    [model.front_adapter, adapterMaterial],
-  ]) {
-    const mesh = addCylinder(toolRoot, part.diameter_mm, part.thickness_mm, material);
-    mesh.position.z = cursor + mm(part.thickness_mm) / 2;
-    cursor += mm(part.thickness_mm);
-  }
-
-  gripperConfig = model.gripper;
-  const bodyWidth = mm(gripperConfig.body_width_mm);
-  const bodyLength = mm(gripperConfig.body_length_mm);
-  const fingerLength = mm(gripperConfig.finger_length_mm);
-  const fingerWidth = mm(gripperConfig.finger_width_mm);
-
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(bodyWidth, bodyWidth, bodyLength),
-    gripperMaterial,
-  );
-  body.position.z = cursor + bodyLength / 2;
-  toolRoot.add(body);
-
-  const fingerGeometry = new THREE.BoxGeometry(fingerWidth, bodyWidth * 0.72, fingerLength);
-  leftFinger = new THREE.Mesh(fingerGeometry, fingerMaterial);
-  rightFinger = new THREE.Mesh(fingerGeometry, fingerMaterial);
-  leftFinger.position.z = rightFinger.position.z = cursor + bodyLength + fingerLength / 2;
-  toolRoot.add(leftFinger, rightFinger);
-
-  tractionPoint = new THREE.Object3D();
-  tractionPoint.position.z = cursor + bodyLength + fingerLength;
-  toolRoot.add(tractionPoint);
-  updateAG95(latestOpeningRaw);
-  if (window.latestForceVector) {
-    updateForceVector(window.latestForceVector, window.latestMovementVector || [0, 0, 0]);
-  }
-}
-
-function updateAG95(positionRaw) {
-  latestOpeningRaw = Number(positionRaw || 0);
-  if (!leftFinger || !rightFinger || !gripperConfig) return;
-  const rawMin = Number(gripperConfig.position_raw_min);
-  const rawMax = Number(gripperConfig.position_raw_max);
-  const ratio = THREE.MathUtils.clamp((latestOpeningRaw - rawMin) / (rawMax - rawMin), 0, 1);
-  const opening = mm(gripperConfig.stroke_mm) * ratio;
-  const halfOffset = (mm(gripperConfig.finger_width_mm) + opening) / 2;
-  leftFinger.position.x = -halfOffset;
-  rightFinger.position.x = halfOffset;
-}
 
 function placeArrow(arrow, vector, length) {
   if (!tractionPoint) return;
@@ -270,21 +179,13 @@ function updateJoints(degrees) {
 }
 
 window.updateFR5Joints = updateJoints;
-window.updateAG95 = updateAG95;
 window.updateForceVector = updateForceVector;
 if (window.latestFR5Joints) updateJoints(window.latestFR5Joints);
 
-const endEffectorLoad = fetch("/assets/config.json", { cache: "no-store" })
-  .then(response => {
-    if (!response.ok) throw new Error(`配置读取失败：${response.status}`);
-    return response.json();
-  })
-  .then(buildEndEffector);
-
-Promise.all([...meshLoads, endEffectorLoad])
+Promise.all(meshLoads)
   .then(() => {
     if (status) {
-      status.textContent = "三维模型已连接真实关节角和末端工具";
+      status.textContent = "FR5模型已连接真实关节角";
       status.classList.add("ready");
     }
   })
