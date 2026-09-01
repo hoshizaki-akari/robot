@@ -12,10 +12,9 @@ source "$ROS_WS/install/setup.bash"
 echo "=== FR5 牵引系统预检 ==="
 echo "节点："
 ros2 node list | sed -n '1,80p'
-echo "控制器："
-ros2 control list_controllers 2>/dev/null || true
 echo "关键话题："
-for topic in /joint_states /force_torque_sensor_broadcaster/wrench /traction/status /traction_controller/healthy; do
+for topic in /joint_states /controller_manager/wrench /traction/corrected_wrench \
+  /traction/status /traction_controller/healthy /controller_manager/healthy; do
   if ros2 topic list | grep -Fxq "$topic"; then
     echo "  [OK] $topic"
   else
@@ -23,7 +22,10 @@ for topic in /joint_states /force_torque_sensor_broadcaster/wrench /traction/sta
   fi
 done
 echo "关键服务："
-for service in /traction/prepare /traction/calibrate_direction /traction/start /traction/stop /traction/emergency_stop; do
+for service in /traction/set_zero_pose /traction/return_zero_pose /traction/prepare \
+  /traction/calibrate_direction /traction/set_target_force /traction/start \
+  /traction/stop /traction/emergency_stop /traction/reset_fault \
+  /traction/auto_tension_tool_y_minus; do
   if ros2 service list | grep -Fxq "$service"; then
     echo "  [OK] $service"
   else

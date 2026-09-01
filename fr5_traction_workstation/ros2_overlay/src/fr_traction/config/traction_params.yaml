@@ -12,7 +12,7 @@ traction_controller:
     pretension_speed_mps: 0.002
     wrench_timeout_s: 0.10
     command_timeout_s: 0.10
-    wrench_topic: /controller_manager/wrench
+    wrench_topic: /traction/corrected_wrench
     command_topic: /traction/command
     cartesian_command_topic: /controller_manager/command_cart_vel
     velocity_command_topic: /traction/controller_velocity_cmd
@@ -25,6 +25,7 @@ traction_manager:
     target_ramp_nps: 1.0
     pretension_detect_n: 1.0
     pretension_target_n: 3.0
+    calibration_min_force_n: 0.5
     pretension_speed_mps: 0.002
     pretension_timeout_s: 10.0
     pretension_max_travel_m: 0.020
@@ -48,14 +49,15 @@ traction_manager:
     controller_health_timeout_s: 0.20
     ui_heartbeat_timeout_s: 2.0
     require_ui_heartbeat: false
-    # ros2_control's Humble controller manager gives its composed controller
-    # nodes the process node name.  The broadcaster/controller private topics
-    # therefore resolve below /controller_manager in this real-hardware stack.
+    # The direct FR5 driver owns the SDK and publishes these real-hardware
+    # feedback topics under the compatibility /controller_manager namespace.
     wrench_topic: /controller_manager/wrench
     ee_state_topic: /controller_manager/ee_state
     command_topic: /traction/command
     controller_health_topic: /traction_controller/healthy
+    hardware_health_topic: /controller_manager/healthy
     velocity_command_topic: /traction/controller_velocity_cmd
+    corrected_wrench_topic: /traction/corrected_wrench
     ui_heartbeat_topic: /traction/ui_heartbeat
     data_directory: debug/traction_sessions
     expected_wrench_frame: base_link

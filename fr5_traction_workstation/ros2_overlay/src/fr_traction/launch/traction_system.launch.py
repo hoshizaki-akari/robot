@@ -1,15 +1,14 @@
 """Single-entry launch for the fixed-model FR5 traction prototype."""
 
-# Only ros2_control owns the FR SDK connection. Legacy direct-SDK nodes,
-# MoveGroup, vision and gripper launch files are intentionally not included.
+# The direct driver is the sole FR SDK owner. MoveGroup, vision, gripper and
+# the blocking ros2_control hardware path are intentionally not included.
 
 import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, RegisterEventHandler
+from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.event_handlers import OnProcessExit, OnProcessStart
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -20,13 +19,6 @@ def generate_launch_description():
     traction_share = get_package_share_directory("fr_traction")
     urdf_file = os.path.join(fairino_share, "config", "fairino5_v6_robot.urdf.xacro")
     initial_positions_file = os.path.join(fairino_share, "config", "initial_positions.yaml")
-    controller_yaml = os.path.join(fairino_share, "config", "admittance_controller.yaml")
-    cartesian_controller_yaml = os.path.join(
-        fairino_share, "config", "cartesian_velocity_controller.yaml"
-    )
-    force_torque_yaml = os.path.join(
-        fairino_share, "config", "force_torque_sensor_broadcaster.yaml"
-    )
     traction_yaml = os.path.join(traction_share, "config", "traction_params.yaml")
     rviz_config = os.path.join(fairino_share, "launch", "moveit.rviz")
 
@@ -36,6 +28,7 @@ def generate_launch_description():
     use_rviz = LaunchConfiguration("use_rviz")
     use_web_bridge = LaunchConfiguration("use_web_bridge")
     data_directory = LaunchConfiguration("data_directory")
+    sdk_python_path = LaunchConfiguration("sdk_python_path")
 
     robot_description = {
         "robot_description": ParameterValue(
@@ -53,7 +46,6 @@ def generate_launch_description():
             value_type=str,
         )
     }
-
     robot_state_publisher = Node(
         package="robot_state_publisher",
         executable="robot_state_publisher",
@@ -61,38 +53,23 @@ def generate_launch_description():
         output="both",
         parameters=[robot_description, {"use_sim_time": use_sim_time}],
     )
-    ros2_control_node = Node(
-        package="controller_manager",
-        executable="ros2_control_node",
-        name="controller_manager",
+    direct_driver = Node(
+        package="fr_traction",
+        executable="fr5_direct_driver_node.py",
+        name="fr5_direct_driver",
         output="screen",
-        parameters=[robot_description, controller_yaml, {"use_sim_time": use_sim_time}],
-    )
-
-    spawn_joint_state = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=["joint_state_broadcaster", "--controller-manager", "/controller_manager"],
-        output="screen",
-    )
-    spawn_cartesian = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=[
-            "cartesian_velocity_controller", "--controller-manager", "/controller_manager",
-            "--inactive",
-            "--param-file", cartesian_controller_yaml,
-        ],
-        output="screen",
-    )
-    spawn_force_torque = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=[
-            "force_torque_sensor_broadcaster", "--controller-manager", "/controller_manager",
-            "--param-file", force_torque_yaml,
-        ],
-        output="screen",
+        parameters=[{
+            "robot_ip": robot_ip,
+            "sdk_python_path": sdk_python_path,
+            "update_rate_hz": 100.0,
+            "max_linear_speed_mps": 0.005,
+            "base_servo_sign": -1.0,
+            "return_speed_mm_s": 2.0,
+            "return_max_distance_mm": 35.0,
+            "tension_search_max_mm": 30.0,
+            "auto_set_zero_on_start": True,
+            "use_sim_time": use_sim_time,
+        }],
     )
 
     manager = Node(
@@ -130,26 +107,6 @@ def generate_launch_description():
         condition=IfCondition(use_rviz),
     )
 
-    # Controller spawners are event-chained.  Cartesian motion is deliberately
-    # loaded inactive so the operator can use the official teach pendant during
-    # MANUAL_SETUP without a stale ServoJ hold. The manager activates it only
-    # after direction confirmation and a fresh handoff check.
-    # The manager still independently
-    # waits for the controller health topic before becoming READY, so a failed
-    # spawner can never silently enable traction.
-    start_joint = RegisterEventHandler(
-        OnProcessStart(target_action=ros2_control_node, on_start=[spawn_joint_state])
-    )
-    start_cartesian = RegisterEventHandler(
-        OnProcessExit(target_action=spawn_joint_state, on_exit=[spawn_cartesian])
-    )
-    start_force_torque = RegisterEventHandler(
-        OnProcessExit(target_action=spawn_cartesian, on_exit=[spawn_force_torque])
-    )
-    start_business = RegisterEventHandler(
-        OnProcessExit(target_action=spawn_force_torque, on_exit=[controller, manager])
-    )
-
     return LaunchDescription([
         DeclareLaunchArgument("robot_ip", default_value="192.168.58.2"),
         DeclareLaunchArgument("zero_sensor_on_activate", default_value="true"),
@@ -157,12 +114,14 @@ def generate_launch_description():
         DeclareLaunchArgument("use_rviz", default_value="false"),
         DeclareLaunchArgument("use_web_bridge", default_value="false"),
         DeclareLaunchArgument("data_directory", default_value="debug/traction_sessions"),
+        DeclareLaunchArgument(
+            "sdk_python_path",
+            default_value="/home/zhj/projects/fr5_learning/vendor/fairino-python-sdk/linux",
+        ),
         robot_state_publisher,
-        ros2_control_node,
-        start_joint,
-        start_cartesian,
-        start_force_torque,
-        start_business,
+        direct_driver,
+        controller,
+        manager,
         bridge,
         rviz,
     ])

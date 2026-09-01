@@ -80,6 +80,9 @@ function applyPermissions() {
   if ($('calibrateBtn')) $('calibrateBtn').disabled = !permission.operate || !dataOnline || tractionState !== 2;
   if ($('emergencyBtn')) $('emergencyBtn').disabled = !permission.operate || !dataOnline || tractionState === 10;
   if ($('resetBtn')) $('resetBtn').disabled = !permission.operate || !dataOnline || ![9, 10].includes(tractionState);
+  const zeroOperationDisabled = !permission.operate || !dataOnline || ![1, 8].includes(tractionState);
+  if ($('setZeroBtn')) $('setZeroBtn').disabled = zeroOperationDisabled;
+  if ($('returnZeroBtn')) $('returnZeroBtn').disabled = zeroOperationDisabled;
   $('recordsBtn').disabled = !permission.records;
 }
 
@@ -107,6 +110,7 @@ async function changeTarget(nextTarget) {
     updateForceDisplay();
     return toast('目标牵引力请输入 1～30 N');
   }
+  const previousForce = currentForce;
   currentForce = Math.round(numericTarget * 10) / 10;
   updateForceDisplay();
   try {
@@ -114,8 +118,12 @@ async function changeTarget(nextTarget) {
     if (currentForce > VALIDATED_TARGET_MAX) {
       toast(`已设置 ${currentForce.toFixed(1)}N；当前实机验收上限为 ${VALIDATED_TARGET_MAX}N`);
     }
+    return true;
   } catch (error) {
+    currentForce = previousForce;
+    updateForceDisplay();
     toast(error.message);
+    return false;
   }
 }
 
@@ -428,9 +436,10 @@ $('saveSettingsBtn').addEventListener('click', async () => {
   if (target < TARGET_FORCE_MIN || target > TARGET_FORCE_MAX) {
     return toast('目标牵引力必须在 1～30 N；当前实机验收上限为 15 N');
   }
-  await changeTarget(target);
-  $('settingsModal').classList.add('hidden');
-  toast('参数已保存');
+  if (await changeTarget(target)) {
+    $('settingsModal').classList.add('hidden');
+    toast('参数已保存');
+  }
 });
 $('recordSearch').addEventListener('input', renderRecords);
 $('recordStatusFilter').addEventListener('change', renderRecords);
@@ -449,11 +458,13 @@ connectStateStream();
 const callTraction = async path => {
   try {
     const result = await postJson(path);
-    if (result.traction) {
-      tractionState = Number(result.traction.state || 0);
-      dataOnline = result.traction.valid === true;
+    const traction = result.snapshot && result.snapshot.traction;
+    if (traction) {
+      tractionState = Number(traction.state || 0);
+      dataOnline = traction.valid === true;
       applyPermissions();
     }
+    if (result.message) toast(result.message);
     return result;
   } catch (error) {
     toast(error.message);
@@ -465,6 +476,8 @@ if ($('calibrateBtn')) {
   $('calibrateBtn').addEventListener('click', () => callTraction('/api/traction/calibrate-direction'));
 }
 if ($('resetBtn')) $('resetBtn').addEventListener('click', () => callTraction('/api/traction/reset-fault'));
+if ($('setZeroBtn')) $('setZeroBtn').addEventListener('click', () => callTraction('/api/traction/set-zero'));
+if ($('returnZeroBtn')) $('returnZeroBtn').addEventListener('click', () => callTraction('/api/traction/return-zero'));
 setInterval(() => { fetch('/api/traction/heartbeat', {method: 'POST', body: '{}'}).catch(() => {}); }, 500);
 const savedSession = sessionStorage.getItem('tractionSession');
 if (savedSession) {

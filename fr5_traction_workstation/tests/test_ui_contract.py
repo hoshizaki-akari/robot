@@ -11,9 +11,14 @@ class UiContractTest(unittest.TestCase):
         self.assertIn("robotViewer", page)
         self.assertIn("forceCanvas", page)
         self.assertIn("/api/traction", script)
+        self.assertIn("设置当前位置为零点", page)
+        self.assertIn("低速回零", page)
+        self.assertIn("/api/traction/set-zero", script)
+        self.assertIn("/api/traction/return-zero", script)
         self.assertIn("/ws", script)
         self.assertNotIn("Math.random()", script)
         self.assertNotIn("actualForce +=", script)
+        self.assertIn("previousForce", script)
 
     def test_no_old_platform_b_dependency(self):
         page = (ROOT / "static" / "090105.html").read_text(encoding="utf-8")

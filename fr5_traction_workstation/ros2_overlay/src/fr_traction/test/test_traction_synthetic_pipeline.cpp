@@ -13,7 +13,7 @@ TEST(TractionSyntheticPipeline, TenNewtonAxisOnlyConvergesWithoutLateralCommand)
   double actual_force = 0.0;
   double previous_force = 0.0;
   for (int step = 0; step < 400; ++step) {
-    const fr_traction::Vec3 wrench{0.0, 0.0, actual_force};
+    const fr_traction::Vec3 wrench{0.0, 0.0, -actual_force};
     const auto output = controller.update(
       fr_traction::ControlMode::TRACTION, direction, 10.0, wrench, 0.01);
     ASSERT_TRUE(output.valid);
@@ -29,7 +29,7 @@ TEST(TractionSyntheticPipeline, TenNewtonAxisOnlyConvergesWithoutLateralCommand)
   controller.reset();
   const auto settled = controller.update(
     fr_traction::ControlMode::TRACTION, direction, 10.0,
-    {0.0, 0.0, 9.8}, 0.01);
+    {0.0, 0.0, -9.8}, 0.01);
   EXPECT_TRUE(settled.valid);
   EXPECT_DOUBLE_EQ(settled.scalar_velocity_mps, 0.0);
 }

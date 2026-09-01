@@ -106,6 +106,12 @@ class RosBridge:
                 Trigger, "/traction/emergency_stop"
             ),
             "reset_fault": self._node.create_client(Trigger, "/traction/reset_fault"),
+            "set_zero_pose": self._node.create_client(
+                Trigger, "/traction/set_zero_pose"
+            ),
+            "return_zero_pose": self._node.create_client(
+                Trigger, "/traction/return_zero_pose"
+            ),
             "set_target_force": self._node.create_client(
                 SetTargetForce, "/traction/set_target_force"
             ),
@@ -197,7 +203,7 @@ class RosBridge:
             if _vector_norm(candidate) >= 0.9:
                 increase_direction = candidate
         if increase_direction is None and force_direction:
-            increase_direction = [-value for value in force_direction]
+            increase_direction = force_direction
         with self._lock:
             self._traction = {
                 "valid": True,

@@ -72,6 +72,7 @@ private:
   std::string _controller_ip = CONTROLLER_IP_ADDRESS;
   bool _zero_sensor_on_activate = true;
   bool _servoj_enabled = false;
+  bool _servo_session_active = false;
   unsigned int _consecutive_ft_failures = 0;
   std::unique_ptr<FRRobot> _ptr_robot;
 };

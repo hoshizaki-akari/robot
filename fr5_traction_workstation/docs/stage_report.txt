@@ -1,25 +1,35 @@
-===== FR5 TRACTION INTEGRATION =====
+===== FR5 TRACTION WORKSTATION =====
 
-date = 2026-08-31
-robot = FR5
-force_sensor = KWR75D
+date = 2026-09-01
+robot = FR5 @ 192.168.58.2
+sensor = KWR75D
 force_frame = base_link
 
-verified:
-- Fairino SDK connected to 192.168.58.2
-- live joint_states: j1..j6
-- force_torque_sensor_broadcaster: active
-- cartesian_velocity_controller: inactive (safe handoff state)
-- traction_manager/controller: running
-- workstation UI: live FR5 model and base_link force vector verified
+software:
+- direct single-owner Fairino SDK driver, 100 Hz feedback/control path
+- baseline-corrected wrench: /traction/corrected_wrench
+- tool Y- bounded tension search: max 30 mm, stable target about 1.5 N
+- target range 1..30 N; real validation range 1..15 N
+- zero-pose and low-speed return services added
 
-current_state:
-MANUAL_SETUP
+offline_tests:
+- C++: 5/5 passed
+- Python/UI: 4/4 passed
+- ruff and py_compile: passed
 
-status:
-WAITING_CHECKPOINT_MANUAL_TENSION
+real_validation:
+- tool Y- success: 1.53 N at 9.40 mm; 1.58 N at 12.12 mm;
+  1.91 N at 29.35 mm
+- old raw-wrench control run: 6.97 N, 44.8 mm, WRENCH_TIMEOUT;
+  continuous approximately 100 Hz, root cause fixed by corrected wrench topic
+- post-fix search: 30 mm without stable tension after physical target moved;
+  bounded stop completed
+
+current_state = MANUAL_SETUP
+current_motion = stopped; returned to stored zero
+status = WAITING_PHYSICAL_CHECKPOINT
 
 checkpoint:
-Use the official Fairino teach pendant for XYZ translation only, keep flange
-orientation fixed, tension the slack belt, stop, then confirm direction in the
-workstation UI. Do not start traction before direction lock.
+Restore the belt/target physical relationship. Confirm slack at the current pose,
+then use only tool Y- with the official teach pendant until force is stably above
+1 N. Hold still, lock direction, set 5 N, and run the final traction/release test.

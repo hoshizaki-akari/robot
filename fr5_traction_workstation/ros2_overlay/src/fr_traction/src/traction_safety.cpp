@@ -40,6 +40,13 @@ SafetyFault SafetyMonitor::update(
   if (!finite(sample.raw_wrench) || !std::isfinite(now_s)) {
     return SafetyFault::WRENCH_INVALID;
   }
+  if (!std::isfinite(sample.metrics.actual_force_n) ||
+    sample.metrics.actual_force_n < 0.0 ||
+    !finite(sample.metrics.lateral_force_vector) ||
+    !std::isfinite(sample.metrics.lateral_force_n) || sample.metrics.lateral_force_n < 0.0)
+  {
+    return SafetyFault::WRENCH_INVALID;
+  }
   if (norm(sample.raw_wrench) >= limits_.hard_overforce_n) {
     return SafetyFault::HARD_OVERFORCE;
   }

@@ -81,3 +81,14 @@ TEST(TractionSafety, RejectsNonFiniteInputs)
   sample.raw_wrench.x = std::numeric_limits<double>::quiet_NaN();
   EXPECT_EQ(monitor.update(sample, 0.0, false), fr_traction::SafetyFault::WRENCH_INVALID);
 }
+
+TEST(TractionSafety, RejectsInvalidForceMetrics)
+{
+  fr_traction::SafetyMonitor monitor;
+  auto sample = nominal_sample();
+  sample.metrics.actual_force_n = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(monitor.update(sample, 0.0, false), fr_traction::SafetyFault::WRENCH_INVALID);
+  sample = nominal_sample();
+  sample.metrics.lateral_force_vector.x = std::numeric_limits<double>::infinity();
+  EXPECT_EQ(monitor.update(sample, 0.0, false), fr_traction::SafetyFault::WRENCH_INVALID);
+}

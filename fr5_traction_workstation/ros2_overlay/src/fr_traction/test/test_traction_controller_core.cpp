@@ -26,17 +26,17 @@ TEST(TractionControllerCore, ProducesOnlyLockedAxisVelocity)
   EXPECT_DOUBLE_EQ(output.linear_velocity.z, 0.0);
 
   core.reset();
-  output = core.update(ControlMode::TRACTION, direction, 10.0, {-12.0, 0.0, 0.0}, 0.01);
+  output = core.update(ControlMode::TRACTION, direction, 10.0, {12.0, 0.0, 0.0}, 0.01);
   EXPECT_LT(output.scalar_velocity_mps, 0.0);
 }
 
 TEST(TractionControllerCore, DeadbandAndDisableStopTheController)
 {
   TractionControllerCore core(10.0, 80.0, 0.5, 0.005, 0.02);
-  auto output = core.update(ControlMode::TRACTION, {1.0, 0.0, 0.0}, 10.0, {-9.8, 0.0, 0.0}, 0.01);
+  auto output = core.update(ControlMode::TRACTION, {1.0, 0.0, 0.0}, 10.0, {9.8, 0.0, 0.0}, 0.01);
   EXPECT_TRUE(output.valid);
   EXPECT_NEAR(output.scalar_velocity_mps, 0.0, 1e-12);
-  output = core.update(ControlMode::DISABLED, {1.0, 0.0, 0.0}, 0.0, {-9.8, 0.0, 0.0}, 0.01);
+  output = core.update(ControlMode::DISABLED, {1.0, 0.0, 0.0}, 0.0, {9.8, 0.0, 0.0}, 0.01);
   EXPECT_TRUE(output.valid);
   EXPECT_DOUBLE_EQ(output.scalar_velocity_mps, 0.0);
   EXPECT_DOUBLE_EQ(output.linear_velocity.x, 0.0);

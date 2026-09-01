@@ -183,10 +183,22 @@ controller_interface::return_type CartesianVelocityController::update(
   }
 
   const double dt = period.seconds();
-  if (!std::isfinite(dt) || dt <= 0.0 || dt > 0.25) {
+  if (!std::isfinite(dt) || dt <= 0.0) {
     KDL::SetToZero(q_vel_cmd_);
     KDL::SetToZero(last_q_vel_cmd_);
     return controller_interface::return_type::ERROR;
+  }
+  const bool timing_gap = dt > 0.25;
+  const double integration_dt = std::min(dt, 0.05);
+  if (timing_gap) {
+    // Controller activation can include a one-off SDK mode handshake. Keep
+    // output at zero for that cycle, but still publish fresh FK feedback and
+    // do not poison the lifecycle controller with an avoidable ERROR return.
+    KDL::SetToZero(q_vel_cmd_);
+    KDL::SetToZero(last_q_vel_cmd_);
+    RCLCPP_WARN_THROTTLE(
+      get_node()->get_logger(), *get_node()->get_clock(), 1000,
+      "Long controller period %.3f s; holding zero for this cycle.", dt);
   }
 
   bool fatal_error = false;
@@ -197,7 +209,7 @@ controller_interface::return_type CartesianVelocityController::update(
   const double command_age_s = time_is_monotonic ?
     static_cast<double>(now_ns - command_state->received_time_ns) * 1e-9 :
     std::numeric_limits<double>::infinity();
-  const bool command_fresh = command_state->finite && time_is_monotonic &&
+  const bool command_fresh = !timing_gap && command_state->finite && time_is_monotonic &&
     command_age_s <= command_timeout_s_;
   if (command_state->received_time_ns > 0 && !command_state->finite) {
     RCLCPP_ERROR_THROTTLE(
@@ -251,12 +263,12 @@ controller_interface::return_type CartesianVelocityController::update(
       for (size_t i = 0; i < joint_names_.size(); ++i) {
         double bounded = std::clamp(
           q_vel_cmd_(i), -joint_max_velocities_[i], joint_max_velocities_[i]);
-        const double max_delta = joint_max_accelerations_[i] * dt;
+        const double max_delta = joint_max_accelerations_[i] * integration_dt;
         bounded = last_q_vel_cmd_(i) + std::clamp(
           bounded - last_q_vel_cmd_(i), -max_delta, max_delta);
         q_vel_cmd_(i) = bounded;
         const double current_command = command_interfaces_[i].get_value();
-        const double next_position = current_command + bounded * dt;
+        const double next_position = current_command + bounded * integration_dt;
         if (!std::isfinite(current_command) || !std::isfinite(next_position) ||
           current_command < joint_min_positions_[i] || current_command > joint_max_positions_[i] ||
           next_position<joint_min_positions_[i] || next_position> joint_max_positions_[i])
@@ -273,7 +285,7 @@ controller_interface::return_type CartesianVelocityController::update(
       } else {
         for (size_t i = 0; i < joint_names_.size(); ++i) {
           command_interfaces_[i].set_value(
-            command_interfaces_[i].get_value() + q_vel_cmd_(i) * dt);
+            command_interfaces_[i].get_value() + q_vel_cmd_(i) * integration_dt);
           last_q_vel_cmd_(i) = q_vel_cmd_(i);
         }
       }

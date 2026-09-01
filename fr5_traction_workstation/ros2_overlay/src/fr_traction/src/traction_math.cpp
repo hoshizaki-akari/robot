@@ -62,8 +62,11 @@ bool project_force(const Vec3 & force, const Vec3 & direction, ForceMetrics & re
     result = {};
     return false;
   }
-  result.actual_force_n = std::max(0.0, -dot(force, unit));
-  result.lateral_force_vector = force + result.actual_force_n * unit;
+  // The KWR75D field reports the direction in which the flange load acts.
+  // On this FR5 setup that is also the positive direction that increases
+  // belt tension, so the axial projection is positive dot(force, unit).
+  result.actual_force_n = std::max(0.0, dot(force, unit));
+  result.lateral_force_vector = force - result.actual_force_n * unit;
   result.lateral_force_n = norm(result.lateral_force_vector);
   return finite(result.lateral_force_vector) && std::isfinite(result.lateral_force_n);
 }
@@ -255,7 +258,7 @@ CalibrationResult robust_calibrate_direction(
     result.reason = "CALIBRATION_DIRECTION_VARIATION";
     return result;
   }
-  result.direction = mean_unit * -1.0;
+  result.direction = mean_unit;
   result.success = true;
   result.reason = "OK";
   return result;

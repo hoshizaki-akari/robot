@@ -2,6 +2,9 @@
 #include "fairino_hardware/finite_checks.hpp"
 
 #include <arpa/inet.h>
+#include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -207,6 +210,7 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_activate(
   _ptr_robot = std::make_unique<FRRobot>();  //创建机器人实例
   _consecutive_ft_failures = 0;
   _servoj_enabled = false;
+  _servo_session_active = false;
   for (int i = 0; i < 6; i++) {//初始化变量
     _jnt_position_command[i] = 0;
     _jnt_velocity_command[i] = 0;
@@ -315,11 +319,32 @@ hardware_interface::return_type FairinoHardwareInterface::perform_command_mode_s
 {
   if (!stop_interfaces.empty()) {
     _servoj_enabled = false;
+    if (_servo_session_active) {
+      const errno_t returncode = _ptr_robot->ServoMoveEnd();
+      _servo_session_active = false;
+      if (returncode != 0) {
+        RCLCPP_ERROR(
+          rclcpp::get_logger("FairinoHardwareInterface"),
+          "ServoMoveEnd failed during controller handoff, error code: %d", returncode);
+        return hardware_interface::return_type::ERROR;
+      }
+    }
   }
   if (!start_interfaces.empty()) {
     // The Cartesian controller synchronizes its first command to the latest
-    // feedback before the first update. This flag only permits the subsequent
-    // ServoJ writes after that controller handoff.
+    // feedback before the first update. FR5 requires an explicit servo-session
+    // handshake before the first ServoJ command; without it the SDK call blocks
+    // the ros2_control loop and all Wrench/EE watchdogs expire.
+    const errno_t returncode = _ptr_robot->ServoMoveStart();
+    if (returncode != 0) {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("FairinoHardwareInterface"),
+        "ServoMoveStart failed during controller handoff, error code: %d", returncode);
+      _servoj_enabled = false;
+      _servo_session_active = false;
+      return hardware_interface::return_type::ERROR;
+    }
+    _servo_session_active = true;
     _servoj_enabled = true;
   }
   return hardware_interface::return_type::OK;
@@ -331,6 +356,16 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_deactivate(
   const rclcpp_lifecycle::State & previous_state)
 {
   RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "Stopping ...please wait...");
+  _servoj_enabled = false;
+  if (_servo_session_active) {
+    const errno_t returncode = _ptr_robot->ServoMoveEnd();
+    if (returncode != 0) {
+      RCLCPP_WARN(
+        rclcpp::get_logger("FairinoHardwareInterface"),
+        "ServoMoveEnd failed during hardware shutdown, error code: %d", returncode);
+    }
+    _servo_session_active = false;
+  }
   _ptr_robot->StopMotion();  //停止机器人
   _ptr_robot->CloseRPC();  //销毁实例，连接断开
   _ptr_robot.release();
@@ -442,7 +477,22 @@ hardware_interface::return_type FairinoHardwareInterface::write(
     //RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "ServoJ下发位置:%f,%f,%f,%f,%f,%f",\
     //             cmd.jPos[0],cmd.jPos[1],cmd.jPos[2],cmd.jPos[3],cmd.jPos[4],cmd.jPos[5]);
 
+    const auto servo_started = std::chrono::steady_clock::now();
     int returncode = _ptr_robot->ServoJ(&cmd, &extcmd, 0, 0, 0.008, 0, 0);
+    const double servo_duration_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - servo_started).count();
+    if (servo_duration_ms > 50.0) {
+      double maximum_tracking_error_deg = 0.0;
+      for (int j = 0; j < 6; ++j) {
+        maximum_tracking_error_deg = std::max(
+          maximum_tracking_error_deg,
+          std::abs(cmd.jPos[j] - _jnt_position_state[j] / M_PI * 180.0));
+      }
+      RCLCPP_WARN(
+        rclcpp::get_logger("FairinoHardwareInterface"),
+        "Slow ServoJ call: %.1f ms, max command/feedback delta: %.4f deg.",
+        servo_duration_ms, maximum_tracking_error_deg);
+    }
     if (returncode != 0) {
       RCLCPP_INFO(
         rclcpp::get_logger("FairinoHardwareInterface"), "ServoJ指令下发错误,错误码:%d",

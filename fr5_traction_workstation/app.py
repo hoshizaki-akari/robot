@@ -110,6 +110,16 @@ def reset_fault() -> dict:
     return _call("reset_fault")
 
 
+@app.post("/api/traction/set-zero")
+def set_zero() -> dict:
+    return _call("set_zero_pose")
+
+
+@app.post("/api/traction/return-zero")
+def return_zero() -> dict:
+    return _call("return_zero_pose")
+
+
 @app.post("/api/traction/heartbeat")
 def heartbeat() -> dict:
     bridge.heartbeat()

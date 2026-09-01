@@ -48,6 +48,7 @@ public:
     target_ramp_nps_ = declare_parameter("target_ramp_nps", 1.0);
     pretension_detect_n_ = declare_parameter("pretension_detect_n", 1.0);
     pretension_target_n_ = declare_parameter("pretension_target_n", 3.0);
+    calibration_min_force_n_ = declare_parameter("calibration_min_force_n", 0.5);
     pretension_speed_mps_ = declare_parameter("pretension_speed_mps", 0.002);
     pretension_timeout_s_ = declare_parameter("pretension_timeout_s", 10.0);
     pretension_max_travel_m_ = declare_parameter("pretension_max_travel_m", 0.020);
@@ -78,8 +79,12 @@ public:
     command_topic_ = declare_parameter("command_topic", std::string("/traction/command"));
     controller_health_topic_ = declare_parameter(
       "controller_health_topic", std::string("/traction_controller/healthy"));
+    hardware_health_topic_ = declare_parameter(
+      "hardware_health_topic", std::string("/controller_manager/healthy"));
     velocity_command_topic_ = declare_parameter(
       "velocity_command_topic", std::string("/traction/controller_velocity_cmd"));
+    corrected_wrench_topic_ = declare_parameter(
+      "corrected_wrench_topic", std::string("/traction/corrected_wrench"));
     ui_heartbeat_topic_ = declare_parameter(
       "ui_heartbeat_topic", std::string("/traction/ui_heartbeat"));
     expected_wrench_frame_ = declare_parameter("expected_wrench_frame", std::string("base_link"));
@@ -100,6 +105,8 @@ public:
       command_topic_, rclcpp::QoS(10).reliable());
     status_publisher_ = create_publisher<msg::TractionStatus>(
       "/traction/status", rclcpp::QoS(10).reliable());
+    corrected_wrench_publisher_ = create_publisher<geometry_msgs::msg::WrenchStamped>(
+      corrected_wrench_topic_, rclcpp::SensorDataQoS());
     history_publisher_ = create_publisher<msg::TractionHistory>(
       "/traction/history", rclcpp::QoS(1).reliable().transient_local());
     switch_client_ = create_client<controller_manager_msgs::srv::SwitchController>(
@@ -119,6 +126,12 @@ public:
       [this](const std_msgs::msg::Bool::SharedPtr message) {
         controller_healthy_ = message->data;
         last_controller_health_at_ = now();
+      });
+    hardware_health_subscription_ = create_subscription<std_msgs::msg::Bool>(
+      hardware_health_topic_, rclcpp::QoS(1).reliable().transient_local(),
+      [this](const std_msgs::msg::Bool::SharedPtr message) {
+        hardware_healthy_ = message->data;
+        last_hardware_health_at_ = now();
       });
     velocity_subscription_ = create_subscription<std_msgs::msg::Float64>(
       velocity_command_topic_, rclcpp::QoS(10).reliable(),
@@ -195,6 +208,7 @@ private:
       std::isfinite(pretension_speed_mps_) && pretension_speed_mps_ > 0.0 &&
       std::isfinite(pretension_timeout_s_) && pretension_timeout_s_ > 0.0 &&
       std::isfinite(pretension_max_travel_m_) && pretension_max_travel_m_ > 0.0 &&
+      std::isfinite(calibration_min_force_n_) && calibration_min_force_n_ > 0.0 &&
       std::isfinite(calibration_window_s_) && calibration_window_s_ > 0.0 &&
       calibration_min_samples_ > 0 && std::isfinite(calibration_max_angle_p95_deg_) &&
       calibration_max_angle_p95_deg_ > 0.0 && std::isfinite(target_force_min_n_) &&
@@ -243,6 +257,13 @@ private:
       wrench_baseline_valid_ = true;
     }
     latest_wrench_ = raw_wrench_ - wrench_baseline_;
+    if (corrected_wrench_publisher_) {
+      auto corrected = message;
+      corrected.wrench.force.x = latest_wrench_.x;
+      corrected.wrench.force.y = latest_wrench_.y;
+      corrected.wrench.force.z = latest_wrench_.z;
+      corrected_wrench_publisher_->publish(corrected);
+    }
     latest_torque_finite_ = std::isfinite(message.wrench.torque.x) &&
       std::isfinite(message.wrench.torque.y) && std::isfinite(message.wrench.torque.z);
     wrench_frame_valid_ = message.header.frame_id == expected_wrench_frame_;
@@ -295,10 +316,15 @@ private:
   {
     return controller_healthy_ && fresh(last_controller_health_at_, controller_health_timeout_s_);
   }
+  bool live_hardware() const
+  {
+    return hardware_healthy_ && fresh(last_hardware_health_at_, controller_health_timeout_s_);
+  }
 
   bool readiness_check(std::string & reason) const
   {
     if (!live_controller()) {reason = "CONTROLLER_NOT_HEALTHY"; return false;}
+    if (!live_hardware()) {reason = "FR5_HARDWARE_NOT_HEALTHY"; return false;}
     if (!live_wrench()) {
       reason = wrench_frame_valid_ ? "WRENCH_NOT_FRESH" : "WRENCH_FRAME_INVALID"; return false;
     }
@@ -371,15 +397,15 @@ private:
       response->message = state_and_allowed("calibrate_direction only from MANUAL_SETUP");
       return;
     }
-    if (!live_wrench() || !live_joint() || !live_controller()) {
+    if (!live_wrench() || !live_joint() || !live_controller() || !live_hardware()) {
       response->success = false;
       response->message =
         "Calibration rejected: live Wrench, joint state and controller health are required.";
       return;
     }
-    if (norm(filtered_wrench_) < pretension_detect_n_) {
+    if (norm(filtered_wrench_) < calibration_min_force_n_) {
       response->success = false;
-      response->message = "Calibration rejected: maintain at least 1 N manual tension first.";
+      response->message = "Calibration rejected: maintain at least 0.5 N manual tension first.";
       return;
     }
     if (latest_joint_speed_norm_ > 0.02) {
@@ -387,7 +413,7 @@ private:
       response->message = "Calibration rejected: stop the teach pendant and hold the flange still.";
       return;
     }
-    if (!normalize(filtered_wrench_ * -1.0, temporary_direction_)) {
+    if (!normalize(filtered_wrench_, temporary_direction_)) {
       response->success = false;
       response->message = "Calibration rejected: the measured force direction is invalid.";
       return;
@@ -409,14 +435,21 @@ private:
       response->message = state_and_allowed("start only from DIRECTION_LOCKED");
       return;
     }
-    if (!direction_locked_ || !live_wrench() || !live_controller()) {
+    if (!direction_locked_ || !live_wrench() || !live_controller() || !live_hardware()) {
       response->success = false;
-      response->message = "Start rejected: locked direction, Wrench and controller health are required.";
+      response->message =
+        "Start rejected: locked direction, Wrench and controller health are required.";
       return;
     }
     if (!target_in_range(target_force_n_)) {
       response->success = false;
       response->message = "Start rejected: target must be between 1 N and 30 N.";
+      return;
+    }
+    if (!target_force_configured_) {
+      response->success = false;
+      response->message =
+        "Start rejected: set the target force after direction lock before starting.";
       return;
     }
     if (target_force_n_ > validated_target_max_n_) {
@@ -437,7 +470,8 @@ private:
     }
     current_command_target_n_ = std::clamp(current_metrics().actual_force_n, 0.0, target_force_n_);
     response->success = true;
-    response->message = "Cartesian handoff requested; traction will start after controller confirmation.";
+    response->message =
+      "Cartesian handoff requested; traction will start after controller confirmation.";
   }
 
   void handle_stop(const std_srvs::srv::Trigger::Response::SharedPtr response)
@@ -477,7 +511,7 @@ private:
       response->message = state_and_allowed("reset_fault only from FAULT or EMERGENCY_STOP");
       return;
     }
-    if (!live_controller() || !live_wrench() || !live_joint() ||
+    if (!live_controller() || !live_hardware() || !live_wrench() || !live_joint() ||
       latest_joint_speed_norm_ > 0.02 ||
       std::abs(velocity_command_mps_) > 1e-9)
     {
@@ -508,14 +542,16 @@ private:
     }
     const auto state = state_machine_.state();
     if (state != TractionState::READY && state != TractionState::COMPLETED &&
-      state != TractionState::MANUAL_SETUP)
+      state != TractionState::MANUAL_SETUP && state != TractionState::DIRECTION_LOCKED)
     {
       response->success = false;
       response->message =
-        state_and_allowed("set_target_force from READY, COMPLETED or MANUAL_SETUP");
+        state_and_allowed(
+        "set_target_force from READY, COMPLETED, MANUAL_SETUP or DIRECTION_LOCKED");
       return;
     }
     target_force_n_ = request->target_force_n;
+    target_force_configured_ = true;
     response->success = true;
     response->message = "Target force set to " + std::to_string(target_force_n_) + " N.";
   }
@@ -540,6 +576,9 @@ private:
     pretension_detection_samples_.clear();
     safety_monitor_.reset();
     force_filter_.reset();
+    controller_start_pending_ = false;
+    controller_activation_confirming_ = false;
+    target_force_configured_ = false;
     velocity_command_mps_ = 0.0;
     stop_reason_.clear();
     fault_code_.clear();
@@ -631,12 +670,15 @@ private:
     if (stop_reason_.empty()) {stop_reason_ = reason;}
     transition(TractionState::FAULT);
     publish_disabled();
+    request_controller_stop();
     finalize_session();
     RCLCPP_ERROR(get_logger(), "Traction fault latched: %s (%s).", code.c_str(), reason.c_str());
   }
 
   void request_controller_stop()
   {
+    controller_activation_confirming_ = false;
+    controller_start_pending_ = false;
     if (!switch_client_ || !switch_client_->service_is_ready()) {
       RCLCPP_ERROR(
         get_logger(), "Controller switch service is unavailable during software emergency stop.");
@@ -666,21 +708,22 @@ private:
       request,
       [this](rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedFuture future) {
         controller_start_pending_ = false;
-        const auto result = future.get();
-        if (!result->ok) {
-          enter_fault("CARTESIAN_CONTROLLER_START_FAILED", "CARTESIAN_CONTROLLER_START_FAILED");
-          return;
+        try {
+          const auto result = future.get();
+          if (!result->ok) {
+            enter_fault(
+              "CARTESIAN_CONTROLLER_START_FAILED", "CARTESIAN_CONTROLLER_START_FAILED");
+            return;
+          }
+          if (state_machine_.state() != TractionState::DIRECTION_LOCKED) {return;}
+          controller_activation_confirming_ = true;
+          controller_activation_started_at_ = now();
+          RCLCPP_INFO(
+            get_logger(),
+            "Cartesian controller switch completed; waiting for fresh EE feedback.");
+        } catch (const std::exception & error) {
+          enter_fault("CARTESIAN_CONTROLLER_START_EXCEPTION", error.what());
         }
-        if (state_machine_.state() != TractionState::DIRECTION_LOCKED) {return;}
-        if (!live_wrench() || !live_controller()) {
-          enter_fault("START_INPUT_TIMEOUT", "START_INPUT_TIMEOUT");
-          return;
-        }
-        session_start_position_ = latest_ee_position_;
-        current_command_target_n_ = std::clamp(
-          current_metrics().actual_force_n, 0.0, target_force_n_);
-        transition(TractionState::TRACTION);
-        RCLCPP_INFO(get_logger(), "Cartesian controller active; traction control started.");
       });
     return true;
   }
@@ -698,7 +741,7 @@ private:
     sample.wrench_valid = wrench_frame_valid_ && wrench_valid_;
     sample.wrench_fresh = live_wrench();
     sample.ee_fresh = live_ee();
-    sample.controller_healthy = live_controller();
+    sample.controller_healthy = live_controller() && live_hardware();
     sample.ui_heartbeat_fresh = fresh(last_ui_heartbeat_at_, ui_heartbeat_timeout_s_);
     sample.raw_wrench = latest_wrench_;
     sample.metrics = current_metrics();
@@ -772,6 +815,7 @@ private:
     }
     locked_direction_ = result.direction;
     direction_locked_ = true;
+    target_force_configured_ = false;
     calibration_requested_ = false;
     temporary_direction_valid_ = false;
     transition(TractionState::DIRECTION_LOCKED);
@@ -822,6 +866,23 @@ private:
       if (readiness_check(reason)) {transition(TractionState::READY);}
     }
     check_safety(current_time);
+    if (state_machine_.state() == TractionState::DIRECTION_LOCKED &&
+      controller_activation_confirming_)
+    {
+      publish_disabled();
+      const bool activation_inputs_ready = live_wrench() && live_controller() && live_ee();
+      if (activation_inputs_ready) {
+        controller_activation_confirming_ = false;
+        session_start_position_ = latest_ee_position_;
+        current_command_target_n_ = std::clamp(
+          current_metrics().actual_force_n, 0.0, target_force_n_);
+        transition(TractionState::TRACTION);
+        RCLCPP_INFO(get_logger(), "Fresh EE feedback confirmed; traction control started.");
+      } else if ((current_time - controller_activation_started_at_).seconds() > 2.0) {
+        controller_activation_confirming_ = false;
+        enter_fault("CONTROLLER_ACTIVATION_TIMEOUT", "CONTROLLER_ACTIVATION_TIMEOUT");
+      }
+    }
     switch (state_machine_.state()) {
       case TractionState::MANUAL_SETUP: handle_manual_setup(current_time); break;
       case TractionState::PRETENSION: handle_pretension(current_time); break;
@@ -973,7 +1034,8 @@ private:
     status.state = static_cast<uint8_t>(state_machine_.state());
     status.ready = state_machine_.state() != TractionState::INITIALIZING &&
       state_machine_.state() != TractionState::FAULT &&
-      state_machine_.state() != TractionState::EMERGENCY_STOP && live_controller();
+      state_machine_.state() != TractionState::EMERGENCY_STOP &&
+      live_controller() && live_hardware();
     // The message exposes the operator-selected target, not the instantaneous
     // release/disabled command. This keeps READY/DIRECTION_LOCKED observable
     // without turning the target into zero between motion phases.
@@ -999,7 +1061,7 @@ private:
     status.measured_force_direction_base.z = measured_direction.z;
     Vec3 increase_direction = direction;
     if (norm(increase_direction) < 0.9 && status.force_direction_valid) {
-      increase_direction = measured_direction * -1.0;
+      increase_direction = measured_direction;
     }
     status.increase_direction_base.x = increase_direction.x;
     status.increase_direction_base.y = increase_direction.y;
@@ -1032,6 +1094,7 @@ private:
   double force_filter_cutoff_hz_ = 5.0;
   double pretension_detect_n_ = 1.0;
   double pretension_target_n_ = 3.0;
+  double calibration_min_force_n_ = 0.5;
   double pretension_speed_mps_ = 0.002;
   double pretension_timeout_s_ = 10.0;
   double pretension_max_travel_m_ = 0.020;
@@ -1060,7 +1123,9 @@ private:
   std::string joint_state_topic_;
   std::string command_topic_;
   std::string controller_health_topic_;
+  std::string hardware_health_topic_;
   std::string velocity_command_topic_;
+  std::string corrected_wrench_topic_;
   std::string ui_heartbeat_topic_;
   std::string expected_wrench_frame_;
   std::string data_directory_;
@@ -1086,6 +1151,7 @@ private:
   bool latest_torque_finite_ = false;
   bool ee_valid_ = false;
   bool controller_healthy_ = false;
+  bool hardware_healthy_ = false;
   bool calibration_requested_ = false;
   bool temporary_direction_valid_ = false;
   bool direction_locked_ = false;
@@ -1095,6 +1161,7 @@ private:
   rclcpp::Time last_wrench_at_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_ee_at_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_controller_health_at_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_hardware_health_at_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_ui_heartbeat_at_{0, 0, RCL_ROS_TIME};
   std::optional<rclcpp::Time> pretension_detection_started_at_;
   std::optional<rclcpp::Time> pretension_started_at_;
@@ -1103,6 +1170,7 @@ private:
   std::vector<Vec3> pretension_detection_samples_;
   std::vector<Vec3> calibration_samples_;
   double target_force_n_ = 10.0;
+  bool target_force_configured_ = false;
   double current_command_target_n_ = 0.0;
   double velocity_command_mps_ = 0.0;
   std::string fault_code_;
@@ -1121,11 +1189,13 @@ private:
 
   rclcpp::Publisher<msg::TractionCommand>::SharedPtr command_publisher_;
   rclcpp::Publisher<msg::TractionStatus>::SharedPtr status_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::WrenchStamped>::SharedPtr corrected_wrench_publisher_;
   rclcpp::Publisher<msg::TractionHistory>::SharedPtr history_publisher_;
   rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr wrench_subscription_;
   rclcpp::Subscription<fairino_msgs::msg::PoseTwist>::SharedPtr ee_state_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr health_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr hardware_health_subscription_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr velocity_subscription_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr heartbeat_subscription_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr prepare_service_;
@@ -1142,6 +1212,8 @@ private:
   double latest_joint_speed_norm_ = 0.0;
   bool joint_state_valid_ = false;
   bool controller_start_pending_ = false;
+  bool controller_activation_confirming_ = false;
+  rclcpp::Time controller_activation_started_at_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_joint_state_at_{0, 0, RCL_ROS_TIME};
 };
 

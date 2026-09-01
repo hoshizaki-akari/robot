@@ -61,7 +61,11 @@ install(TARGETS fr_traction_core traction_controller_node traction_manager_node
 )
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
-install(PROGRAMS scripts/check_traction_runtime.py DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS
+  scripts/check_traction_runtime.py
+  scripts/fr5_direct_driver_node.py
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
