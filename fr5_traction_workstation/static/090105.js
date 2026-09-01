@@ -178,7 +178,11 @@ async function startTraction() {
     return toast('目标牵引力请输入 1～20 N');
   }
   if (tractionState !== 5) return toast('请先完成方向标定并锁定方向');
+  // A new run must not inherit the previous run's completion request/status.
+  finishRequested = false;
   pendingStart = true;
+  $('workStatus').textContent = '正在开始';
+  $('workStatus').classList.add('running');
   applyPermissions();
   try {
     // Always send the value currently shown in the input immediately before
@@ -194,8 +198,6 @@ async function startTraction() {
     return toast(simpleErrorMessage(error));
   }
 
-  $('workStatus').textContent = '正在开始';
-  $('workStatus').classList.add('running');
   applyPermissions();
   toast('开始牵引');
 }
@@ -424,7 +426,11 @@ function handleState(state) {
   if (activeRecord) {
     $('workStatus').textContent = tractionState === 7
       ? '正在结束'
-      : (simpleReason(traction.fault_code || traction.stop_reason) || '牵引中');
+      // The controller may still report the previous stop reason while a new
+      // run is active. The live traction state always takes priority.
+      : (tractionState === 6
+        ? '牵引中'
+        : (simpleReason(traction.fault_code || traction.stop_reason) || '牵引中'));
     $('workStatus').classList.add('running');
   } else if (!dataOnline) {
     $('workStatus').textContent = '设备未连接';
