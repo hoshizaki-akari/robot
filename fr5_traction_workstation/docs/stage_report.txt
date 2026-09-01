@@ -33,6 +33,18 @@ real_validation:
   session_1788235241553, NORMAL_RELEASE_COMPLETED
 - 10 N: not passed; max approximately 7.92 N at about 80 mm axial travel;
   session_1788235931318, AXIAL_TRAVEL_LIMIT safety stop
+- session_1788248515416: WRENCH_TIMEOUT followed a measured ~0.5 s feedback gap
+- session_1788248573130: 15 N control oscillated at +/-5 mm/s and overshot to
+  26.30 N; OVERFORCE stopped motion
+
+latest_fault_fix:
+- deadband now brakes velocity and clears integral immediately
+- force-error sign reversal drops stale velocity before correcting direction
+- stale feedback now pauses motion at 0.25 s and faults only if it persists to 0.8 s
+- direct-driver stale command timeout reduced to 0.25 s
+- baseline-restart debug sessions are hidden from operator abnormal records
+- recorded-force replay: old controller still increased force at 25.75 N; fixed
+  controller stopped increasing before 15 N
 
 ui_button_validation:
 - target buttons -5N, -10N, +5N, +10N: clicked with 1.2 s response checks;
@@ -51,11 +63,11 @@ ui_button_validation:
   logout was not clicked so the validated operator session and final READY state
   remained available
 
-current_state = READY
-current_motion = stopped at confirmed slack zero z ~= 0.486 m; force ~= 0 N
-status = SOFTWARE_VALIDATED_TARGET_MAX_20N; 5N_REAL_PASS; 10N_REAL_NOT_PASS_AXIAL_LIMIT
+current_state = MANUAL_SETUP
+current_motion = stopped near z ~= 0.536 m; target = 15 N; corrected force ~= 0.7 N
+status = SOFTWARE_FIXED; BUILT_AND_OFFLINE_TESTED; WAITING_SLACK_CONFIRMATION_FOR_RESTART
 
 checkpoint:
-5 N has passed. For any further 10 N test, a human must first confirm the physical
-rope route, target fixation, and a safe larger working envelope; do not increase the
-80 mm travel limit without that confirmation.
+Before restarting the ROS stack, the operator must confirm that the traction band is
+physically slack. Restarting at a tensioned pose would incorrectly capture tension as
+the new zero. After confirmation, restart and perform staged 5 N then 15 N real tests.

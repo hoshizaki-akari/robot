@@ -69,6 +69,7 @@ public:
     axial_travel_limit_m_ = declare_parameter("axial_travel_limit_m", 0.050);
     wrench_timeout_s_ = declare_parameter("wrench_timeout_s", 0.10);
     ee_state_timeout_s_ = declare_parameter("ee_state_timeout_s", 0.20);
+    motion_pause_timeout_s_ = declare_parameter("motion_pause_timeout_s", 0.10);
     ui_heartbeat_timeout_s_ = declare_parameter("ui_heartbeat_timeout_s", 2.0);
     controller_health_timeout_s_ = declare_parameter("controller_health_timeout_s", 0.20);
     require_ui_heartbeat_ = declare_parameter("require_ui_heartbeat", false);
@@ -229,6 +230,9 @@ private:
       std::isfinite(axial_travel_limit_m_) && axial_travel_limit_m_ > 0.0 &&
       std::isfinite(wrench_timeout_s_) && wrench_timeout_s_ > 0.0 &&
       std::isfinite(ee_state_timeout_s_) && ee_state_timeout_s_ > 0.0 &&
+      std::isfinite(motion_pause_timeout_s_) && motion_pause_timeout_s_ > 0.0 &&
+      motion_pause_timeout_s_ <= wrench_timeout_s_ &&
+      motion_pause_timeout_s_ <= ee_state_timeout_s_ &&
       std::isfinite(ui_heartbeat_timeout_s_) && ui_heartbeat_timeout_s_ > 0.0 &&
       std::isfinite(controller_health_timeout_s_) && controller_health_timeout_s_ > 0.0;
     if (!valid) {
@@ -311,6 +315,12 @@ private:
 
   bool live_wrench() const {return wrench_valid_ && fresh(last_wrench_at_, wrench_timeout_s_);}
   bool live_ee() const {return ee_valid_ && fresh(last_ee_at_, ee_state_timeout_s_);}
+  bool motion_feedback_fresh() const
+  {
+    return wrench_valid_ && ee_valid_ &&
+           fresh(last_wrench_at_, motion_pause_timeout_s_) &&
+           fresh(last_ee_at_, motion_pause_timeout_s_);
+  }
   bool live_joint() const
   {
     return joint_state_valid_ && fresh(last_joint_state_at_, ee_state_timeout_s_);
@@ -786,6 +796,10 @@ private:
 
   void handle_pretension(const rclcpp::Time & current_time)
   {
+    if (!motion_feedback_fresh()) {
+      publish_disabled();
+      return;
+    }
     if (!temporary_direction_valid_) {
       enter_fault("PRETENSION_DIRECTION_INVALID", "PRETENSION_DIRECTION_INVALID");
       return;
@@ -854,6 +868,10 @@ private:
     if (!release_started_at_) {
       release_started_at_ = current_time;
     }
+    if (!motion_feedback_fresh()) {
+      publish_disabled();
+      return;
+    }
     const double elapsed = (current_time - *release_started_at_).seconds();
     current_command_target_n_ = std::max(0.0, target_force_n_ - release_rate_nps_ * elapsed);
     publish_command(msg::TractionCommand::RELEASING, locked_direction_, current_command_target_n_);
@@ -912,6 +930,10 @@ private:
       case TractionState::PRETENSION: handle_pretension(current_time); break;
       case TractionState::CALIBRATING: handle_calibration(current_time); break;
       case TractionState::TRACTION:
+        if (!motion_feedback_fresh()) {
+          publish_disabled();
+          break;
+        }
         current_command_target_n_ = std::min(
           target_force_n_, current_command_target_n_ + target_ramp_nps_ * dt_s);
         publish_command(
@@ -1140,6 +1162,7 @@ private:
   double axial_travel_limit_m_ = 0.050;
   double wrench_timeout_s_ = 0.10;
   double ee_state_timeout_s_ = 0.20;
+  double motion_pause_timeout_s_ = 0.10;
   double ui_heartbeat_timeout_s_ = 2.0;
   double controller_health_timeout_s_ = 0.20;
   bool require_ui_heartbeat_ = false;

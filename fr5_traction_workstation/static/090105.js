@@ -49,10 +49,14 @@ const ACTION_SUCCESS_MESSAGES = {
 const REASON_LABELS = {
   AXIAL_TRAVEL_LIMIT: '达到行程上限',
   WRENCH_TIMEOUT: '力数据超时',
+  EE_STATE_TIMEOUT: '位置数据超时',
   ROS2_CONTROL_ERROR: '运动控制异常',
   CALIBRATION_TOO_FEW_SAMPLES: '方向数据不足',
-  OVER_FORCE: '超过安全力',
+  OVER_FORCE: '张力过大',
+  OVERFORCE: '张力过大',
+  HARD_OVERFORCE: '张力严重过大',
   LATERAL_FORCE_LIMIT: '横向力过大',
+  LATERAL_FORCE: '横向力过大',
   UI_HEARTBEAT_TIMEOUT: '页面连接中断',
   NORMAL_RELEASE_COMPLETED: '已正常结束'
 };
@@ -244,8 +248,8 @@ function renderRecords() {
     && (!status || record.status === status)
   );
   $('recordsBody').innerHTML = list.length
-    ? list.map(record => `<tr><td>${record.id}</td><td>${record.start}</td><td>${record.end}</td><td>${record.operator}</td><td>${record.role}</td><td>${record.target}</td><td>${record.average}</td><td>${record.maximum}</td><td>${record.status}</td></tr>`).join('')
-    : '<tr><td colspan="9" class="empty">暂无符合条件的牵引记录</td></tr>';
+    ? list.map(record => `<tr><td>${record.id}</td><td>${record.start}</td><td>${record.end}</td><td>${record.operator}</td><td>${record.role}</td><td>${record.target}</td><td>${record.average}</td><td>${record.maximum}</td><td>${record.status}</td><td>${record.reason}</td></tr>`).join('')
+    : '<tr><td colspan="10" class="empty">暂无符合条件的牵引记录</td></tr>';
 }
 
 function builtinTimeText(value) {
@@ -258,17 +262,20 @@ async function refreshHistory() {
     const response = await fetch('/api/traction/history', { cache: 'no-store' });
     if (!response.ok) return;
     const history = await response.json();
-    records = (history.summaries || []).map(summary => ({
-      id: summary.session_id || '--',
-      start: builtinTimeText(summary.start_time),
-      end: builtinTimeText(summary.end_time),
-      operator: '--',
-      role: '系统',
-      target: Number(summary.target_force_n || 0).toFixed(1),
-      average: Number(summary.average_force_n || 0).toFixed(1),
-      maximum: Number(summary.max_force_n || 0).toFixed(1),
-      status: Number(summary.final_state) === 8 ? '已完成' : '异常终止'
-    }));
+    records = (history.summaries || [])
+      .filter(summary => summary.stop_reason !== 'PREPARE_RESTARTED_AFTER_BASELINE_RESET')
+      .map(summary => ({
+        id: summary.session_id || '--',
+        start: builtinTimeText(summary.start_time),
+        end: builtinTimeText(summary.end_time),
+        operator: '--',
+        role: '系统',
+        target: Number(summary.target_force_n || 0).toFixed(1),
+        average: Number(summary.average_force_n || 0).toFixed(1),
+        maximum: Number(summary.max_force_n || 0).toFixed(1),
+        status: Number(summary.final_state) === 8 ? '已完成' : '异常终止',
+        reason: simpleReason(summary.stop_reason) || '--'
+      }));
     renderRecords();
   } catch (_) {
     // The page remains usable; the next poll retries without fabricating data.

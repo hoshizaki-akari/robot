@@ -463,10 +463,31 @@ class Fr5DirectDriver(Node):
         dt = now - self._last_tick
         self._last_tick = now
         try:
+            feedback_started = time.monotonic()
             joint_result = self._robot.GetActualJointPosDegree()
+            joint_elapsed = time.monotonic() - feedback_started
             pose_result = self._robot.GetActualTCPPose()
+            pose_elapsed = time.monotonic() - feedback_started - joint_elapsed
             speed_code, speeds = self._robot.GetActualJointSpeedsDegree()
+            speed_elapsed = (
+                time.monotonic() - feedback_started - joint_elapsed - pose_elapsed
+            )
             wrench_code, wrench = self._robot.FT_GetForceTorqueRCS()
+            wrench_elapsed = (
+                time.monotonic()
+                - feedback_started
+                - joint_elapsed
+                - pose_elapsed
+                - speed_elapsed
+            )
+            feedback_elapsed = time.monotonic() - feedback_started
+            if feedback_elapsed > 0.20:
+                self.get_logger().warning(
+                    "FR5 feedback RPC batch took "
+                    f"{feedback_elapsed:.3f} s "
+                    f"(joint={joint_elapsed:.3f}, pose={pose_elapsed:.3f}, "
+                    f"speed={speed_elapsed:.3f}, wrench={wrench_elapsed:.3f})."
+                )
             if joint_result[0] or pose_result[0] or speed_code or wrench_code:
                 raise RuntimeError("FR5 feedback call returned a non-zero code")
             joints, pose = joint_result[1], pose_result[1]

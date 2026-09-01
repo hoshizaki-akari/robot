@@ -148,9 +148,22 @@ double OneDimensionalAdmittance::update(double target_force_n, double actual_for
     reset();
     return 0.0;
   }
-  double error = target_force_n - actual_force_n;
+  const double error = target_force_n - actual_force_n;
+  // A compliant rope can change force much faster than the velocity ramp can
+  // decelerate. Carrying the old velocity through the force deadband caused
+  // the real FR5 to repeatedly cross a 15 N target and eventually overshoot
+  // the 25 N software limit. Hold immediately once the target band is reached.
   if (std::abs(error) <= deadband_n_) {
-    error = 0.0;
+    integral_state_n_s_ = 0.0;
+    velocity_mps_ = 0.0;
+    return 0.0;
+  }
+  // If the force error has changed sign, the previous velocity is now moving
+  // in the wrong direction. Drop that stale momentum before accelerating back
+  // toward the target; this is a one-axis force controller, not a free mass.
+  if (error * velocity_mps_ < 0.0) {
+    integral_state_n_s_ = 0.0;
+    velocity_mps_ = 0.0;
   }
   const bool saturated_positive = velocity_mps_ >= max_speed_mps_ && error > 0.0;
   const bool saturated_negative = velocity_mps_ <= -max_speed_mps_ && error < 0.0;

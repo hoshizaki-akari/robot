@@ -10,11 +10,10 @@ traction_controller:
     traction_max_speed_mps: 0.005
     traction_max_acc_mps2: 0.02
     pretension_speed_mps: 0.002
-    # ServoCart can briefly occupy the direct-driver RPC thread on the real
-    # FR5. Keep the stop-on-stale-data protection, but allow one short network
-    # jitter window at the validated 5 mm/s speed.
-    wrench_timeout_s: 0.5
-    command_timeout_s: 0.5
+    # Pause output quickly when feedback/commands stop. The manager below has
+    # a longer fault window so one recoverable SDK jitter does not end a run.
+    wrench_timeout_s: 0.25
+    command_timeout_s: 0.25
     wrench_topic: /traction/corrected_wrench
     command_topic: /traction/command
     cartesian_command_topic: /controller_manager/command_cart_vel
@@ -51,8 +50,11 @@ traction_manager:
     # 50 mm was insufficient for the measured 10 N rope stiffness. Keep the
     # travel stop explicit and configurable; hard/soft force limits remain.
     axial_travel_limit_m: 0.080
-    wrench_timeout_s: 0.5
-    ee_state_timeout_s: 0.5
+    # Two-stage stale-data handling: motion is disabled after 0.25 s, while a
+    # persistent 0.8 s gap still latches the normal safety fault.
+    motion_pause_timeout_s: 0.25
+    wrench_timeout_s: 0.8
+    ee_state_timeout_s: 0.8
     joint_state_topic: /joint_states
     controller_health_timeout_s: 0.6
     ui_heartbeat_timeout_s: 2.0

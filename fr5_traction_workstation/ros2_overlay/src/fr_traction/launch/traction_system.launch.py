@@ -65,7 +65,8 @@ def generate_launch_description():
             # hardware feedback continuous instead of queueing 100 Hz calls.
             "update_rate_hz": 25.0,
             "motion_rate_hz": 25.0,
-            "command_timeout_s": 0.5,
+            # Reject a velocity command left behind by a blocked feedback RPC.
+            "command_timeout_s": 0.25,
             "max_linear_speed_mps": 0.005,
             # On this FR5, the live Y- tension search showed that a positive
             # base command must be passed through unchanged for the force
