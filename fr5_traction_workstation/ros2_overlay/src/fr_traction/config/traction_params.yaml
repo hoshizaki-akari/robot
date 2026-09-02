@@ -75,13 +75,15 @@ traction_manager:
     # The axial force is regulated to the selected target; it is not a
     # separate fault condition. Travel and lateral-force guards remain.
     axial_travel_limit_m: 0.080
-    # Two-stage stale-data handling: motion is disabled after 0.25 s, while a
-    # persistent 0.8 s gap still latches the normal safety fault.
+    # Two-stage stale-data handling: motion is disabled after 0.25 s, while
+    # wrench/pose gaps still fault at 1.2 s. The FR5 SDK health heartbeat is
+    # emitted by the same timer as ServoCart; a measured 0.607 s RPC gap needs
+    # a separate 1.2 s heartbeat allowance to avoid a false control fault.
     motion_pause_timeout_s: 0.25
-    wrench_timeout_s: 0.8
-    ee_state_timeout_s: 0.8
+    wrench_timeout_s: 1.2
+    ee_state_timeout_s: 1.2
     joint_state_topic: /joint_states
-    controller_health_timeout_s: 0.6
+    controller_health_timeout_s: 1.2
     ui_heartbeat_timeout_s: 2.0
     require_ui_heartbeat: false
     # The direct FR5 driver owns the SDK and publishes these real-hardware

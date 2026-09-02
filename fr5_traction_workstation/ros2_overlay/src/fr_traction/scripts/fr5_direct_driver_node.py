@@ -3,6 +3,7 @@
 
 import math
 import sys
+import threading
 import time
 import types
 
@@ -189,8 +190,13 @@ class Fr5DirectDriver(Node):
         self._healthy = True
         self._hardware_fault_latched = False
         self._last_tick = time.monotonic()
+        self._feedback_stop_event = threading.Event()
+        self._feedback_thread = threading.Thread(
+            target=self._feedback_loop, name="fr5-feedback", daemon=True
+        )
         self.create_timer(1.0 / self._rate_hz, self._tick)
         self._publish_health(True)
+        self._feedback_thread.start()
         self.get_logger().info("FR5 direct driver connected; SDK owner is unique.")
 
     def _publish_health(self, value):
@@ -358,6 +364,15 @@ class Fr5DirectDriver(Node):
         )
 
     def _start_auto_tension(self, response, mode, label, increment):
+        # Read the limit at each operation. ROS2 parameter updates are valid
+        # at runtime; using only the constructor cache made a successful
+        # parameter change appear ineffective to the operator.
+        current_limit = float(self.get_parameter("tension_search_max_mm").value)
+        if not math.isfinite(current_limit) or current_limit <= 0.0:
+            response.success = False
+            response.message = "Auto tension rejected: tension_search_max_mm is invalid."
+            return response
+        self._tension_search_max_mm = current_limit
         if (
             self._servo_enabled
             or self._hardware_fault_latched
@@ -450,7 +465,7 @@ class Fr5DirectDriver(Node):
         started_at = time.monotonic()
         code = self._robot.ServoCart(mode, desc_pos, cmdT=0.008)
         elapsed = time.monotonic() - started_at
-        if elapsed > 0.15:
+        if elapsed > 0.05:
             self.get_logger().warning(
                 f"ServoCart mode {mode} RPC took {elapsed:.3f} s."
             )
@@ -556,34 +571,52 @@ class Fr5DirectDriver(Node):
         if code != 0:
             raise RuntimeError(f"ServoCart traction failed: {code}")
 
+    def _feedback_loop(self):
+        """Publish feedback independently of potentially slow motion RPCs."""
+        period = 1.0 / self._rate_hz
+        while not self._feedback_stop_event.is_set():
+            now = time.monotonic()
+            try:
+                state_snapshot = self._read_realtime_state(now)
+                if state_snapshot is not None:
+                    joints, pose, speeds, wrench = state_snapshot
+                    self._latest_joints, self._latest_pose = list(joints), list(pose)
+                    self._latest_wrench = list(wrench)
+                    if self._slack_calibration_pending and not self._servo_enabled:
+                        self._zero_pose = list(pose)
+                        self._zero_joints = list(joints)
+                        self._slack_calibration_pending = False
+                        self.get_logger().info(
+                            "Pending slack calibration pose stored after FR5 feedback "
+                            "became ready."
+                        )
+                    if self._auto_set_zero and self._zero_pose is None:
+                        self._zero_pose, self._zero_joints = list(pose), list(joints)
+                    self._publish_feedback(
+                        self.get_clock().now().to_msg(), joints, speeds, wrench, pose
+                    )
+                    self._publish_health(not self._hardware_fault_latched)
+                # No new packet means no new health confirmation. The manager
+                # will use the last real feedback timestamp for stale detection.
+            except Exception as error:  # noqa: BLE001  # Hardware faults must latch health loss.
+                self.get_logger().error(str(error))
+                if self._servo_enabled:
+                    self._robot.ServoMoveEnd()
+                self._servo_enabled = False
+                self._return_active = False
+                self._return_target_pose = None
+                self._auto_tension_active = False
+                self._hardware_fault_latched = True
+                self._publish_health(False)
+            self._feedback_stop_event.wait(period)
+
     def _tick(self):
+        """Run motion commands without holding up the feedback publisher."""
         now = time.monotonic()
         dt = now - self._last_tick
         self._last_tick = now
         try:
-            state_snapshot = self._read_realtime_state(now)
-            if state_snapshot is None:
-                # Do not republish stale values with a fresh ROS timestamp and
-                # do not send another motion command while the SDK stream is
-                # momentarily between packets.  The manager observes the last
-                # real feedback timestamp and applies its normal timeout.
-                self._publish_health(True)
-                return
-            joints, pose, speeds, wrench = state_snapshot
-            self._latest_joints, self._latest_pose = list(joints), list(pose)
-            self._latest_wrench = list(wrench)
-            if self._slack_calibration_pending and not self._servo_enabled:
-                self._zero_pose = list(pose)
-                self._zero_joints = list(joints)
-                self._slack_calibration_pending = False
-                self.get_logger().info(
-                    "Pending slack calibration pose stored after FR5 feedback became ready."
-                )
-            if self._auto_set_zero and self._zero_pose is None:
-                self._zero_pose, self._zero_joints = list(pose), list(joints)
-            self._publish_feedback(self.get_clock().now().to_msg(), joints, speeds, wrench, pose)
             self._send_motion(now, dt)
-            self._publish_health(not self._hardware_fault_latched)
         except Exception as error:  # noqa: BLE001  # Hardware faults must latch health loss.
             self.get_logger().error(str(error))
             if self._servo_enabled:
@@ -596,6 +629,9 @@ class Fr5DirectDriver(Node):
             self._publish_health(False)
 
     def destroy_node(self):
+        self._feedback_stop_event.set()
+        if self._feedback_thread.is_alive():
+            self._feedback_thread.join(timeout=1.0)
         if self._servo_enabled:
             self._robot.ServoMoveEnd()
         self._robot.CloseRPC()

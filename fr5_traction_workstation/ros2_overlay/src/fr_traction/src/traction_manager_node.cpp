@@ -140,8 +140,9 @@ public:
       command_topic_, rclcpp::QoS(10).reliable());
     status_publisher_ = create_publisher<msg::TractionStatus>(
       "/traction/status", rclcpp::QoS(10).reliable());
+    // Keep the safety-critical corrected force stream reliable end to end.
     corrected_wrench_publisher_ = create_publisher<geometry_msgs::msg::WrenchStamped>(
-      corrected_wrench_topic_, rclcpp::SensorDataQoS());
+      corrected_wrench_topic_, rclcpp::QoS(10).reliable());
     history_publisher_ = create_publisher<msg::TractionHistory>(
       "/traction/history", rclcpp::QoS(1).reliable().transient_local());
     slack_calibration_publisher_ = create_publisher<std_msgs::msg::Bool>(
@@ -152,13 +153,15 @@ public:
       pretraction_return_service_name_);
 
     wrench_subscription_ = create_subscription<geometry_msgs::msg::WrenchStamped>(
-      wrench_topic_, rclcpp::SensorDataQoS(),
+      // The direct FR5 driver publishes this stream reliably. Match that
+      // QoS instead of downgrading the safety-critical feedback to best effort.
+      wrench_topic_, rclcpp::QoS(10).reliable(),
       [this](const geometry_msgs::msg::WrenchStamped::SharedPtr message) {on_wrench(*message);});
     ee_state_subscription_ = create_subscription<fairino_msgs::msg::PoseTwist>(
       ee_state_topic_, rclcpp::QoS(10).reliable(),
       [this](const fairino_msgs::msg::PoseTwist::SharedPtr message) {on_ee_state(*message);});
     joint_state_subscription_ = create_subscription<sensor_msgs::msg::JointState>(
-      joint_state_topic_, rclcpp::SensorDataQoS(),
+      joint_state_topic_, rclcpp::QoS(10).reliable(),
       [this](const sensor_msgs::msg::JointState::SharedPtr message) {on_joint_state(*message);});
     health_subscription_ = create_subscription<std_msgs::msg::Bool>(
       controller_health_topic_, rclcpp::QoS(1).reliable().transient_local(),
@@ -290,8 +293,8 @@ private:
       direction_robust_window_size_ >= 3 && direction_robust_window_size_ <= 101 &&
       std::isfinite(direction_minimum_force_n_) && direction_minimum_force_n_ > 0.0 &&
       std::isfinite(direction_minimum_forward_cosine_) &&
-      direction_minimum_forward_cosine_ > 0.0 && direction_minimum_forward_cosine_ < 1.0 &&
-      std::isfinite(direction_change_confirm_s_) && direction_change_confirm_s_ > 0.0 &&
+      direction_minimum_forward_cosine_ > 0.0 && direction_minimum_forward_cosine_<1.0 &&
+        std::isfinite(direction_change_confirm_s_) && direction_change_confirm_s_>0.0 &&
       std::isfinite(direction_settling_s_) && direction_settling_s_ > 0.0 &&
       std::isfinite(direction_correction_position_gain_s_inv_) &&
       direction_correction_position_gain_s_inv_ > 0.0 &&
@@ -385,6 +388,16 @@ private:
     const auto age = std::chrono::duration<double>(
       std::chrono::steady_clock::now() - stamp).count();
     return std::isfinite(age) && age >= 0.0 && age <= timeout_s;
+  }
+
+  double age_seconds(const std::chrono::steady_clock::time_point & stamp) const
+  {
+    if (stamp.time_since_epoch().count() == 0) {
+      return std::numeric_limits<double>::infinity();
+    }
+    const double age = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - stamp).count();
+    return std::isfinite(age) && age >= 0.0 ? age : std::numeric_limits<double>::infinity();
   }
 
   bool live_wrench() const
@@ -986,6 +999,25 @@ private:
     sample.raw_wrench = latest_wrench_;
     sample.metrics = current_metrics();
     sample.axis_displacement_m = axis_displacement();
+    if (!sample.wrench_fresh || !sample.ee_fresh) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Feedback freshness failed before safety fault: wrench_valid=%s frame_valid=%s "
+        "wrench_age=%.3f s ee_valid=%s ee_age=%.3f s "
+        "wrench_timeout=%.3f s ee_timeout=%.3f s.",
+        wrench_valid_ ? "true" : "false", wrench_frame_valid_ ? "true" : "false",
+        age_seconds(last_wrench_steady_at_), ee_valid_ ? "true" : "false",
+        age_seconds(last_ee_steady_at_), wrench_timeout_s_, ee_state_timeout_s_);
+    }
+    if (!sample.controller_healthy) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Health check failed before safety fault: controller_value=%s controller_age=%.3f s "
+        "hardware_value=%s hardware_age=%.3f s timeout=%.3f s.",
+        controller_healthy_ ? "true" : "false", age_seconds(last_controller_health_steady_at_),
+        hardware_healthy_ ? "true" : "false", age_seconds(last_hardware_health_steady_at_),
+        controller_health_timeout_s_);
+    }
     const auto fault = safety_monitor_.update(
       sample, monotonic_now_s, require_ui_heartbeat_ && state == TractionState::TRACTION);
     if (fault != SafetyFault::NONE) {
@@ -1249,8 +1281,8 @@ private:
                    << direction_estimate_.fast_angle_rad << ','
                    << direction_estimate_.fast_slow_angle_rad << ','
                    << (direction_correction_command_mode() ==
-      msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE ?
-      lateral_correction_result_.applied_speed_mps : lateral_correction_result_.requested_speed_mps)
+    msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE ?
+    lateral_correction_result_.applied_speed_mps : lateral_correction_result_.requested_speed_mps)
                    << ',' << lateral_correction_result_.accumulated_displacement_m << ','
                    << lateral_correction_velocity_base_.x << ','
                    << lateral_correction_velocity_base_.y << ','

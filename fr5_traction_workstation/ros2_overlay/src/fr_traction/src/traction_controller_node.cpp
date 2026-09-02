@@ -67,7 +67,9 @@ public:
       command_topic_, rclcpp::QoS(10).reliable(),
       [this](const msg::TractionCommand::SharedPtr message) {on_command(*message);});
     wrench_subscription_ = create_subscription<geometry_msgs::msg::WrenchStamped>(
-      wrench_topic_, rclcpp::SensorDataQoS(),
+      // The direct FR5 driver publishes this stream reliably. Match that
+      // QoS so the force loop does not silently lose a feedback burst.
+      wrench_topic_, rclcpp::QoS(10).reliable(),
       [this](const geometry_msgs::msg::WrenchStamped::SharedPtr message) {on_wrench(*message);});
     twist_publisher_ = create_publisher<geometry_msgs::msg::Twist>(
       cartesian_command_topic_, rclcpp::QoS(10).reliable());
@@ -178,12 +180,19 @@ private:
       command_age <= command_timeout_s_;
     const bool wrench_fresh = wrench_valid_ && wrench_age >= 0.0 &&
       wrench_age <= wrench_timeout_s_;
-    if (!command_fresh || !wrench_fresh || blocked_generation_ == command_generation_) {
+    if (!command_fresh || !wrench_fresh) {
       publish_zero();
       core_.reset();
-      if (!command_fresh || !wrench_fresh) {
-        blocked_generation_ = command_generation_;
-      }
+      // A stale feedback interval is a safe one-cycle pause. Do not leave
+      // the controller permanently blocked after the stream recovers.
+      blocked_generation_ = command_generation_;
+      publish_health(true);
+      return;
+    }
+    if (blocked_generation_ == command_generation_) {
+      // Require one fresh, zero-output cycle after a feedback interruption,
+      // then resume the same command generation on the following cycle.
+      blocked_generation_ = 0;
       publish_health(true);
       return;
     }

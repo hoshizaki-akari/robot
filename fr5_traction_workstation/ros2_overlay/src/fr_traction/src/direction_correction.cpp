@@ -118,7 +118,9 @@ DirectionNoiseProfile estimate_direction_noise(
   const double center = median(angles);
   std::vector<double> deviations;
   deviations.reserve(angles.size());
-  for (const double angle : angles) {deviations.push_back(std::abs(angle - center));}
+  for (const double angle : angles) {
+    deviations.push_back(std::abs(angle - center));
+  }
   const double mad = median(deviations);
   if (!std::isfinite(center) || !std::isfinite(mad)) {return result;}
 
@@ -223,7 +225,8 @@ bool DirectionEstimator::valid_direction_sample(
 {
   tension = norm(force);
   if (!normalize(force, unit) || !std::isfinite(tension) ||
-    tension < config_.minimum_force_n || dot(unit, locked_direction_) < config_.minimum_forward_cosine)
+    tension < config_.minimum_force_n ||
+    dot(unit, locked_direction_) < config_.minimum_forward_cosine)
   {
     return false;
   }
@@ -340,7 +343,10 @@ DirectionEstimate DirectionEstimator::update(const Vec3 & force, double dt_s)
     slow_direction_ = slow_direction_ + (robust - slow_direction_) * slow_alpha;
     Vec3 normalized_fast;
     Vec3 normalized_slow;
-    if (!normalize(fast_direction_, normalized_fast) || !normalize(slow_direction_, normalized_slow)) {
+    if (!normalize(
+        fast_direction_,
+        normalized_fast) || !normalize(slow_direction_, normalized_slow))
+    {
       estimate.valid = false;
       update_track_state(estimate, dt_s);
       return estimate;
