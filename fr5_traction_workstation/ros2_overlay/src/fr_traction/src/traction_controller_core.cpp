@@ -29,7 +29,8 @@ ControllerOutput TractionControllerCore::update(
   const Vec3 & direction,
   double target_force_n,
   const Vec3 & wrench,
-  double dt_s)
+  double dt_s,
+  const Vec3 & lateral_velocity)
 {
   ControllerOutput result;
   if (mode == ControlMode::DISABLED) {
@@ -47,7 +48,7 @@ ControllerOutput TractionControllerCore::update(
   }
   const double scalar = admittance_.update(target_force_n, metrics.actual_force_n, dt_s);
   result.scalar_velocity_mps = scalar;
-  result.linear_velocity = unit * scalar;
+  result.linear_velocity = unit * scalar + lateral_velocity;
   result.valid = finite(result.linear_velocity);
   return result;
 }

@@ -34,6 +34,8 @@ public:
     force_deadband_n_ = declare_parameter("force_deadband_n", 0.15);
     max_speed_mps_ = declare_parameter("traction_max_speed_mps", 0.005);
     max_acceleration_mps2_ = declare_parameter("traction_max_acc_mps2", 0.02);
+    direction_correction_max_speed_mps_ = declare_parameter(
+      "direction_correction_max_speed_mps", 0.0005);
     pretension_speed_mps_ = declare_parameter("pretension_speed_mps", 0.002);
     wrench_timeout_s_ = declare_parameter("wrench_timeout_s", 0.10);
     command_timeout_s_ = declare_parameter("command_timeout_s", 0.10);
@@ -49,7 +51,9 @@ public:
       !std::isfinite(force_filter_cutoff_hz_) || force_filter_cutoff_hz_ <= 0.0 ||
       !std::isfinite(wrench_timeout_s_) || wrench_timeout_s_ <= 0.0 ||
       !std::isfinite(command_timeout_s_) || command_timeout_s_ <= 0.0 ||
-      !std::isfinite(pretension_speed_mps_) || pretension_speed_mps_ <= 0.0)
+      !std::isfinite(pretension_speed_mps_) || pretension_speed_mps_ <= 0.0 ||
+      !std::isfinite(direction_correction_max_speed_mps_) ||
+      direction_correction_max_speed_mps_ <= 0.0)
     {
       throw std::runtime_error("invalid traction controller timing parameters");
     }
@@ -98,8 +102,10 @@ private:
     last_command_steady_at_ = std::chrono::steady_clock::now();
     ++command_generation_;
     command_valid_ = message.mode <= msg::TractionCommand::RELEASING &&
+      message.direction_correction_mode <= msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE &&
       std::isfinite(message.target_force_n) && message.target_force_n >= 0.0 &&
-      finite(vector_from_message(message.locked_direction_base));
+      finite(vector_from_message(message.locked_direction_base)) &&
+      finite(vector_from_message(message.lateral_velocity_base));
   }
 
   void on_wrench(const geometry_msgs::msg::WrenchStamped & message)
@@ -184,9 +190,19 @@ private:
 
     const Vec3 filtered_wrench = force_filter_.update(latest_wrench_, dt_s);
     const auto mode = static_cast<ControlMode>(command_.mode);
+    Vec3 lateral_velocity;
+    if (mode == ControlMode::TRACTION &&
+      command_.direction_correction_mode == msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE)
+    {
+      lateral_velocity = vector_from_message(command_.lateral_velocity_base);
+      const double lateral_speed = norm(lateral_velocity);
+      if (lateral_speed > direction_correction_max_speed_mps_) {
+        lateral_velocity = lateral_velocity * (direction_correction_max_speed_mps_ / lateral_speed);
+      }
+    }
     const ControllerOutput output = core_.update(
       mode, vector_from_message(command_.locked_direction_base), command_.target_force_n,
-      filtered_wrench, dt_s);
+      filtered_wrench, dt_s, lateral_velocity);
     if (!output.valid) {
       RCLCPP_ERROR(
         get_logger(),
@@ -223,6 +239,7 @@ private:
   double force_deadband_n_ = 0.15;
   double max_speed_mps_ = 0.005;
   double max_acceleration_mps2_ = 0.02;
+  double direction_correction_max_speed_mps_ = 0.0005;
   double pretension_speed_mps_ = 0.002;
   double wrench_timeout_s_ = 0.10;
   double command_timeout_s_ = 0.10;

@@ -28,6 +28,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 )
 
 add_library(fr_traction_core SHARED
+  src/direction_correction.cpp
   src/traction_math.cpp
   src/traction_safety.cpp
   src/traction_state_machine.cpp
@@ -88,6 +89,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_traction_synthetic_pipeline test/test_traction_synthetic_pipeline.cpp)
   target_link_libraries(test_traction_synthetic_pipeline fr_traction_core)
+
+  ament_add_gtest(test_direction_correction test/test_direction_correction.cpp)
+  target_link_libraries(test_direction_correction fr_traction_core)
 
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)

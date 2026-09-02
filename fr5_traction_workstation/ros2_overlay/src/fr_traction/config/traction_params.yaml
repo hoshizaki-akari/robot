@@ -9,6 +9,7 @@ traction_controller:
     force_deadband_n: 0.15
     traction_max_speed_mps: 0.005
     traction_max_acc_mps2: 0.02
+    direction_correction_max_speed_mps: 0.0005
     pretension_speed_mps: 0.002
     # Pause output quickly when feedback/commands stop. The manager below has
     # a longer fault window so one recoverable SDK jitter does not end a run.
@@ -24,6 +25,28 @@ traction_manager:
     control_rate_hz: 100.0
     status_rate_hz: 20.0
     force_filter_cutoff_hz: 5.0
+    # Direction V1 starts in shadow mode: the algorithm calculates and logs
+    # corrections but does not send lateral motion to the real FR5.
+    direction_correction_mode: shadow
+    direction_fast_cutoff_hz: 4.0
+    direction_slow_cutoff_hz: 0.6
+    direction_robust_window_size: 7
+    direction_minimum_force_n: 0.5
+    direction_minimum_forward_cosine: 0.20
+    direction_change_confirm_s: 0.15
+    direction_settling_s: 0.25
+    direction_correction_position_gain_s_inv: 0.30
+    direction_correction_damping_n_per_m: 0.50
+    direction_correction_minimum_lateral_force_n: 0.03
+    direction_correction_max_speed_mps: 0.0005
+    direction_correction_max_displacement_m: 0.003
+    # Identified from the 2026-09-02 fixed-target base X/Y sign test.
+    # Units are N/m; the measured values were 0.00647, 0.00584,
+    # 0.01079 and 0.00076 N/mm.
+    direction_j11_n_per_m: 6.47
+    direction_j12_n_per_m: 5.84
+    direction_j21_n_per_m: 10.79
+    direction_j22_n_per_m: 0.76
     # Fast through the large force error, slow down during the final 1 N.
     target_ramp_fast_nps: 3.0
     target_ramp_slow_nps: 0.5

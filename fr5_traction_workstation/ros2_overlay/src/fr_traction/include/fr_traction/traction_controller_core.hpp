@@ -39,7 +39,8 @@ public:
     const Vec3 & direction,
     double target_force_n,
     const Vec3 & wrench,
-    double dt_s);
+    double dt_s,
+    const Vec3 & lateral_velocity = {});
 
 private:
   OneDimensionalAdmittance admittance_;

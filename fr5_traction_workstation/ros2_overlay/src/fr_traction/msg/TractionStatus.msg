@@ -27,6 +27,14 @@ geometry_msgs/Vector3 locked_direction_base
 geometry_msgs/Point ee_position_base
 float64 axis_displacement_m
 float64 velocity_cmd_mps
+uint8 direction_track_state
+bool direction_correction_active
+float64 direction_error_rad
+float64 direction_fast_slow_error_rad
+float64 direction_entry_threshold_rad
+float64 direction_correction_velocity_mps
+float64 direction_correction_displacement_m
+geometry_msgs/Vector3 lateral_correction_velocity_base
 string fault_code
 string stop_reason
 string message

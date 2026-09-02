@@ -204,6 +204,16 @@ class RosBridge:
                 increase_direction = candidate
         if increase_direction is None and force_direction:
             increase_direction = force_direction
+        reported_lateral_velocity = getattr(message, "lateral_correction_velocity_base", None)
+        lateral_velocity = (
+            [
+                float(reported_lateral_velocity.x),
+                float(reported_lateral_velocity.y),
+                float(reported_lateral_velocity.z),
+            ]
+            if reported_lateral_velocity is not None
+            else [0.0, 0.0, 0.0]
+        )
         with self._lock:
             self._traction = {
                 "valid": True,
@@ -220,6 +230,24 @@ class RosBridge:
                 "ee_position_base_m": [float(ee.x), float(ee.y), float(ee.z)],
                 "axis_displacement_m": float(message.axis_displacement_m),
                 "velocity_cmd_mps": float(message.velocity_cmd_mps),
+                "direction_track_state": int(getattr(message, "direction_track_state", 4)),
+                "direction_correction_active": bool(
+                    getattr(message, "direction_correction_active", False)
+                ),
+                "direction_error_rad": float(getattr(message, "direction_error_rad", 0.0)),
+                "direction_fast_slow_error_rad": float(
+                    getattr(message, "direction_fast_slow_error_rad", 0.0)
+                ),
+                "direction_entry_threshold_rad": float(
+                    getattr(message, "direction_entry_threshold_rad", 0.0)
+                ),
+                "direction_correction_velocity_mps": float(
+                    getattr(message, "direction_correction_velocity_mps", 0.0)
+                ),
+                "direction_correction_displacement_m": float(
+                    getattr(message, "direction_correction_displacement_m", 0.0)
+                ),
+                "lateral_correction_velocity_base": lateral_velocity,
                 "fault_code": str(message.fault_code),
                 "stop_reason": str(message.stop_reason),
                 "message": str(getattr(message, "message", "")),
