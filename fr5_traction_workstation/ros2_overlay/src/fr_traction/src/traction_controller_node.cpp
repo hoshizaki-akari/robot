@@ -95,6 +95,7 @@ private:
   {
     command_ = message;
     last_command_at_ = now();
+    last_command_steady_at_ = std::chrono::steady_clock::now();
     ++command_generation_;
     command_valid_ = message.mode <= msg::TractionCommand::RELEASING &&
       std::isfinite(message.target_force_n) && message.target_force_n >= 0.0 &&
@@ -105,6 +106,7 @@ private:
   {
     latest_wrench_ = force_from_message(message);
     last_wrench_at_ = now();
+    last_wrench_steady_at_ = std::chrono::steady_clock::now();
     wrench_valid_ = message.header.frame_id == "base_link" && finite(latest_wrench_) &&
       std::isfinite(message.wrench.torque.x) && std::isfinite(message.wrench.torque.y) &&
       std::isfinite(message.wrench.torque.z);
@@ -159,10 +161,13 @@ private:
       return;
     }
 
-    const double command_age = last_command_at_.nanoseconds() == 0 ?
-      std::numeric_limits<double>::infinity() : (current_time - last_command_at_).seconds();
-    const double wrench_age = last_wrench_at_.nanoseconds() == 0 ?
-      std::numeric_limits<double>::infinity() : (current_time - last_wrench_at_).seconds();
+    const auto steady_now = std::chrono::steady_clock::now();
+    const double command_age = last_command_steady_at_.time_since_epoch().count() == 0 ?
+      std::numeric_limits<double>::infinity() :
+      std::chrono::duration<double>(steady_now - last_command_steady_at_).count();
+    const double wrench_age = last_wrench_steady_at_.time_since_epoch().count() == 0 ?
+      std::numeric_limits<double>::infinity() :
+      std::chrono::duration<double>(steady_now - last_wrench_steady_at_).count();
     const bool command_fresh = command_valid_ && command_age >= 0.0 &&
       command_age <= command_timeout_s_;
     const bool wrench_fresh = wrench_valid_ && wrench_age >= 0.0 &&
@@ -234,6 +239,8 @@ private:
   uint64_t blocked_generation_ = 0;
   rclcpp::Time last_command_at_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_wrench_at_{0, 0, RCL_ROS_TIME};
+  std::chrono::steady_clock::time_point last_command_steady_at_{};
+  std::chrono::steady_clock::time_point last_wrench_steady_at_{};
   std::chrono::steady_clock::time_point last_control_steady_at_{};
   FirstOrderLowPass force_filter_;
   TractionControllerCore core_;

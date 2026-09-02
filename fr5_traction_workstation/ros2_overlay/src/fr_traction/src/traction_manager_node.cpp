@@ -140,12 +140,14 @@ public:
       [this](const std_msgs::msg::Bool::SharedPtr message) {
         controller_healthy_ = message->data;
         last_controller_health_at_ = now();
+        last_controller_health_steady_at_ = std::chrono::steady_clock::now();
       });
     hardware_health_subscription_ = create_subscription<std_msgs::msg::Bool>(
       hardware_health_topic_, rclcpp::QoS(1).reliable().transient_local(),
       [this](const std_msgs::msg::Bool::SharedPtr message) {
         hardware_healthy_ = message->data;
         last_hardware_health_at_ = now();
+        last_hardware_health_steady_at_ = std::chrono::steady_clock::now();
       });
     velocity_subscription_ = create_subscription<std_msgs::msg::Float64>(
       velocity_command_topic_, rclcpp::QoS(10).reliable(),
@@ -154,7 +156,10 @@ public:
       });
     heartbeat_subscription_ = create_subscription<std_msgs::msg::Empty>(
       ui_heartbeat_topic_, rclcpp::QoS(10).reliable(),
-      [this](const std_msgs::msg::Empty::SharedPtr) {last_ui_heartbeat_at_ = now();});
+      [this](const std_msgs::msg::Empty::SharedPtr) {
+        last_ui_heartbeat_at_ = now();
+        last_ui_heartbeat_steady_at_ = std::chrono::steady_clock::now();
+      });
 
     prepare_service_ = create_service<std_srvs::srv::Trigger>(
       "/traction/prepare",
@@ -287,6 +292,7 @@ private:
     wrench_frame_valid_ = message.header.frame_id == expected_wrench_frame_;
     wrench_valid_ = finite(latest_wrench_) && latest_torque_finite_ && wrench_frame_valid_;
     last_wrench_at_ = now();
+    last_wrench_steady_at_ = std::chrono::steady_clock::now();
     ++wrench_sequence_;
   }
 
@@ -300,6 +306,7 @@ private:
     ee_valid_ = finite(latest_ee_position_) && finite(latest_ee_linear_velocity_) &&
       finite(latest_ee_angular_velocity_);
     last_ee_at_ = now();
+    last_ee_steady_at_ = std::chrono::steady_clock::now();
   }
 
   void on_joint_state(const sensor_msgs::msg::JointState & message)
@@ -315,34 +322,41 @@ private:
       latest_joint_speed_norm_ = std::hypot(latest_joint_speed_norm_, message.velocity[index]);
     }
     last_joint_state_at_ = now();
+    last_joint_state_steady_at_ = std::chrono::steady_clock::now();
   }
 
-  bool fresh(const rclcpp::Time & stamp, double timeout_s) const
+  bool fresh(const std::chrono::steady_clock::time_point & stamp, double timeout_s) const
   {
-    if (stamp.nanoseconds() == 0) {return false;}
-    const auto age = (now() - stamp).seconds();
+    if (stamp.time_since_epoch().count() == 0) {return false;}
+    const auto age = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - stamp).count();
     return std::isfinite(age) && age >= 0.0 && age <= timeout_s;
   }
 
-  bool live_wrench() const {return wrench_valid_ && fresh(last_wrench_at_, wrench_timeout_s_);}
-  bool live_ee() const {return ee_valid_ && fresh(last_ee_at_, ee_state_timeout_s_);}
+  bool live_wrench() const
+  {
+    return wrench_valid_ && fresh(last_wrench_steady_at_, wrench_timeout_s_);
+  }
+  bool live_ee() const {return ee_valid_ && fresh(last_ee_steady_at_, ee_state_timeout_s_);}
   bool motion_feedback_fresh() const
   {
     return wrench_valid_ && ee_valid_ &&
-           fresh(last_wrench_at_, motion_pause_timeout_s_) &&
-           fresh(last_ee_at_, motion_pause_timeout_s_);
+           fresh(last_wrench_steady_at_, motion_pause_timeout_s_) &&
+           fresh(last_ee_steady_at_, motion_pause_timeout_s_);
   }
   bool live_joint() const
   {
-    return joint_state_valid_ && fresh(last_joint_state_at_, ee_state_timeout_s_);
+    return joint_state_valid_ && fresh(last_joint_state_steady_at_, ee_state_timeout_s_);
   }
   bool live_controller() const
   {
-    return controller_healthy_ && fresh(last_controller_health_at_, controller_health_timeout_s_);
+    return controller_healthy_ &&
+           fresh(last_controller_health_steady_at_, controller_health_timeout_s_);
   }
   bool live_hardware() const
   {
-    return hardware_healthy_ && fresh(last_hardware_health_at_, controller_health_timeout_s_);
+    return hardware_healthy_ &&
+           fresh(last_hardware_health_steady_at_, controller_health_timeout_s_);
   }
 
   bool readiness_check(std::string & reason) const
@@ -794,7 +808,7 @@ private:
     return true;
   }
 
-  void check_safety(const rclcpp::Time & current_time)
+  void check_safety(double monotonic_now_s)
   {
     const auto state = state_machine_.state();
     const bool needs_live_data = state == TractionState::PRETENSION ||
@@ -808,12 +822,12 @@ private:
     sample.wrench_fresh = live_wrench();
     sample.ee_fresh = live_ee();
     sample.controller_healthy = live_controller() && live_hardware();
-    sample.ui_heartbeat_fresh = fresh(last_ui_heartbeat_at_, ui_heartbeat_timeout_s_);
+    sample.ui_heartbeat_fresh = fresh(last_ui_heartbeat_steady_at_, ui_heartbeat_timeout_s_);
     sample.raw_wrench = latest_wrench_;
     sample.metrics = current_metrics();
     sample.axis_displacement_m = axis_displacement();
     const auto fault = safety_monitor_.update(
-      sample, current_time.seconds(), require_ui_heartbeat_ && state == TractionState::TRACTION);
+      sample, monotonic_now_s, require_ui_heartbeat_ && state == TractionState::TRACTION);
     if (fault != SafetyFault::NONE) {
       enter_fault(SafetyMonitor::code(fault), SafetyMonitor::code(fault));
     }
@@ -988,6 +1002,8 @@ private:
   void control_tick()
   {
     const rclcpp::Time current_time = now();
+    const double monotonic_now_s = std::chrono::duration<double>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
     static rclcpp::Time previous_tick(0, 0, RCL_ROS_TIME);
     double dt_s = 1.0 / control_rate_hz_;
     if (previous_tick.nanoseconds() != 0 && current_time >= previous_tick) {
@@ -1003,7 +1019,7 @@ private:
       std::string reason;
       if (readiness_check(reason)) {transition(TractionState::READY);}
     }
-    check_safety(current_time);
+    check_safety(monotonic_now_s);
     if (state_machine_.state() == TractionState::DIRECTION_LOCKED &&
       controller_activation_confirming_)
     {
@@ -1307,6 +1323,12 @@ private:
   rclcpp::Time last_controller_health_at_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_hardware_health_at_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_ui_heartbeat_at_{0, 0, RCL_ROS_TIME};
+  std::chrono::steady_clock::time_point last_wrench_steady_at_{};
+  std::chrono::steady_clock::time_point last_ee_steady_at_{};
+  std::chrono::steady_clock::time_point last_joint_state_steady_at_{};
+  std::chrono::steady_clock::time_point last_controller_health_steady_at_{};
+  std::chrono::steady_clock::time_point last_hardware_health_steady_at_{};
+  std::chrono::steady_clock::time_point last_ui_heartbeat_steady_at_{};
   std::optional<rclcpp::Time> pretension_detection_started_at_;
   std::optional<rclcpp::Time> pretension_started_at_;
   std::optional<rclcpp::Time> calibration_started_at_;
