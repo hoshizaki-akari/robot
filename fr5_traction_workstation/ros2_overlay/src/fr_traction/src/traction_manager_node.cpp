@@ -424,11 +424,14 @@ private:
     std_msgs::msg::Bool slack_calibration;
     slack_calibration.data = true;
     slack_calibration_publisher_->publish(slack_calibration);
-    // A second prepare from MANUAL_SETUP starts a clean record instead of
-    // appending samples collected with the previous baseline. Keep the old
-    // record in history with an explicit reason so it remains auditable.
-    if (state == TractionState::MANUAL_SETUP && session_active_) {
-      stop_reason_ = "PREPARE_RESTARTED_AFTER_BASELINE_RESET";
+    // Every prepare starts a clean record.  The previous implementation only
+    // closed a record when prepare was repeated from MANUAL_SETUP.  Repeating
+    // prepare from DIRECTION_LOCKED left record_stream_ open, so begin_session()
+    // attempted to open a second file on the same stream and terminated the
+    // manager.  Close any active session before resetting its state.
+    if (session_active_) {
+      stop_reason_ = state == TractionState::MANUAL_SETUP ?
+        "PREPARE_RESTARTED_AFTER_BASELINE_RESET" : "INITIAL_CALIBRATION_RESTARTED";
       finalize_session();
     }
     reset_session_state();
