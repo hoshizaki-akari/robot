@@ -53,12 +53,13 @@ TEST(TractionSafety, AxialForceDoesNotLatchAnOverforceFault)
   sample.metrics.actual_force_n = 100.0;
   EXPECT_EQ(monitor.update(sample, 1.0, false), fr_traction::SafetyFault::NONE);
 
+  // A direction change may temporarily place all of the rope tension in the
+  // lateral component. It must remain available to the adaptive tracker.
   monitor.reset();
   sample = nominal_sample();
-  sample.metrics.lateral_force_n = 5.0;
+  sample.metrics.lateral_force_n = 30.0;
   EXPECT_EQ(monitor.update(sample, 2.0, false), fr_traction::SafetyFault::NONE);
-  EXPECT_EQ(monitor.update(sample, 2.199, false), fr_traction::SafetyFault::NONE);
-  EXPECT_EQ(monitor.update(sample, 2.200, false), fr_traction::SafetyFault::LATERAL_FORCE);
+  EXPECT_EQ(monitor.update(sample, 20.0, false), fr_traction::SafetyFault::NONE);
 }
 
 TEST(TractionSafety, ChecksTravelAndOptionalUiHeartbeat)

@@ -407,6 +407,10 @@ function handleState(state) {
   const tensionDetected = actualForce >= 1.0;
   $('tensionState').textContent = tensionDetected ? '牵引带：紧' : '牵引带：松';
   $('tensionState').classList.toggle('tight', tensionDetected);
+  const directionTrackState = Number(traction.direction_track_state ?? 4);
+  const directionFollowing = tractionState === 6 && directionTrackState !== 0;
+  $('directionState').textContent = directionFollowing ? '正在跟随方向' : '方向稳定';
+  $('directionState').classList.toggle('following', directionFollowing);
 
   const vector = Array.isArray(traction.force_vector_n) ? traction.force_vector_n : [];
   ['forceFx', 'forceFy', 'forceFz'].forEach((id, index) => {

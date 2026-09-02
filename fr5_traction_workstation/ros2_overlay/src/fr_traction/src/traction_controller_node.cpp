@@ -35,7 +35,8 @@ public:
     max_speed_mps_ = declare_parameter("traction_max_speed_mps", 0.005);
     max_acceleration_mps2_ = declare_parameter("traction_max_acc_mps2", 0.02);
     direction_correction_max_speed_mps_ = declare_parameter(
-      "direction_correction_max_speed_mps", 0.0005);
+      "direction_correction_max_speed_mps", 0.020);
+    combined_max_speed_mps_ = declare_parameter("combined_max_speed_mps", 0.025);
     pretension_speed_mps_ = declare_parameter("pretension_speed_mps", 0.002);
     wrench_timeout_s_ = declare_parameter("wrench_timeout_s", 0.10);
     command_timeout_s_ = declare_parameter("command_timeout_s", 0.10);
@@ -53,7 +54,8 @@ public:
       !std::isfinite(command_timeout_s_) || command_timeout_s_ <= 0.0 ||
       !std::isfinite(pretension_speed_mps_) || pretension_speed_mps_ <= 0.0 ||
       !std::isfinite(direction_correction_max_speed_mps_) ||
-      direction_correction_max_speed_mps_ <= 0.0)
+      direction_correction_max_speed_mps_ <= 0.0 ||
+      !std::isfinite(combined_max_speed_mps_) || combined_max_speed_mps_ <= 0.0)
     {
       throw std::runtime_error("invalid traction controller timing parameters");
     }
@@ -235,6 +237,14 @@ private:
         bounded_output.linear_velocity = unit * bounded_output.scalar_velocity_mps;
       }
     }
+    if (mode == ControlMode::TRACTION) {
+      const double combined_speed = norm(bounded_output.linear_velocity);
+      if (combined_speed > combined_max_speed_mps_) {
+        const double scale = combined_max_speed_mps_ / combined_speed;
+        bounded_output.linear_velocity = bounded_output.linear_velocity * scale;
+        bounded_output.scalar_velocity_mps *= scale;
+      }
+    }
     publish_output(bounded_output);
     publish_health(true);
   }
@@ -248,7 +258,8 @@ private:
   double force_deadband_n_ = 0.15;
   double max_speed_mps_ = 0.005;
   double max_acceleration_mps2_ = 0.02;
-  double direction_correction_max_speed_mps_ = 0.0005;
+  double direction_correction_max_speed_mps_ = 0.020;
+  double combined_max_speed_mps_ = 0.025;
   double pretension_speed_mps_ = 0.002;
   double wrench_timeout_s_ = 0.10;
   double command_timeout_s_ = 0.10;

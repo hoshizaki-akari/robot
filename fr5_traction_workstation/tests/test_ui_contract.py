@@ -18,6 +18,8 @@ class UiContractTest(unittest.TestCase):
         self.assertIn("开始牵引", page)
         self.assertIn("结束牵引", page)
         self.assertIn("急停", page)
+        self.assertIn("方向稳定", page)
+        self.assertIn("正在跟随方向", script)
         self.assertEqual(len(re.findall(r'class="action-btn', page)), 6)
         self.assertIn("<th>原因</th>", page)
         self.assertNotIn("尚未感知到有效张力", page)

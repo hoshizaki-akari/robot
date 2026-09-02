@@ -86,4 +86,16 @@ TEST(TractionControllerCore, RejectsInvalidDirection)
       ControlMode::TRACTION, {0.0, 0.0, 0.0}, 10.0, {-1.0, 0.0, 0.0}, 0.01).valid);
 }
 
+TEST(TractionControllerCore, TractionControlsTotalRopeTensionAfterDirectionChange)
+{
+  TractionControllerCore core(10.0, 80.0, 0.15, 0.005, 0.02);
+  // The current control direction has not yet caught up with the measured
+  // rope direction. The rope already carries 5 N in total, so no extra axial
+  // motion should be requested.
+  const auto output = core.update(
+    ControlMode::TRACTION, {0.0, 0.0, 1.0}, 5.0, {3.0, 4.0, 0.0}, 0.01);
+  ASSERT_TRUE(output.valid);
+  EXPECT_DOUBLE_EQ(output.scalar_velocity_mps, 0.0);
+}
+
 }  // namespace fr_traction

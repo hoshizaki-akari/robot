@@ -1,0 +1,24 @@
+===== REALTIME DIRECTION FOLLOWING V2 =====
+
+mode:
+active adaptive direction following
+
+algorithm:
+11-sample spherical medoid + adaptive MAD threshold + 0.2 s consensus
+dynamic spherical tracking + fast-then-slow Cartesian follow
+total rope tension control using norm(F)
+
+safety changes:
+lateral force is no longer a software fault
+no accumulated direction-follow displacement limit
+feedback, controller health, emergency stop and workspace guards retained
+direction ambiguity faults only after 8 s without consensus
+
+automatic verification:
+ROS2 build passed; 83 checks, 0 failures
+direction noise/spike/large-turn/wander/ambiguity tests passed
+total-tension and combined force-direction pipeline tests passed
+real robot movement not performed by user request
+
+status:
+WAITING_FOR_OPERATOR_TRACTION_RECORD

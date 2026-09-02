@@ -47,29 +47,26 @@ public:
     status_rate_hz_ = declare_parameter("status_rate_hz", 20.0);
     force_filter_cutoff_hz_ = declare_parameter("force_filter_cutoff_hz", 5.0);
     direction_correction_mode_name_ = declare_parameter(
-      "direction_correction_mode", std::string("shadow"));
+      "direction_correction_mode", std::string("active"));
     direction_fast_cutoff_hz_ = declare_parameter("direction_fast_cutoff_hz", 4.0);
-    direction_slow_cutoff_hz_ = declare_parameter("direction_slow_cutoff_hz", 0.6);
-    direction_robust_window_size_ = declare_parameter("direction_robust_window_size", 7);
+    direction_slow_cutoff_hz_ = declare_parameter("direction_slow_cutoff_hz", 1.0);
+    direction_robust_window_size_ = declare_parameter("direction_robust_window_size", 11);
     direction_minimum_force_n_ = declare_parameter("direction_minimum_force_n", 0.5);
-    direction_minimum_forward_cosine_ = declare_parameter(
-      "direction_minimum_forward_cosine", 0.20);
-    direction_change_confirm_s_ = declare_parameter("direction_change_confirm_s", 0.15);
-    direction_settling_s_ = declare_parameter("direction_settling_s", 0.25);
-    direction_correction_position_gain_s_inv_ = declare_parameter(
-      "direction_correction_position_gain_s_inv", 0.30);
-    direction_correction_damping_n_per_m_ = declare_parameter(
-      "direction_correction_damping_n_per_m", 0.50);
-    direction_correction_minimum_lateral_force_n_ = declare_parameter(
-      "direction_correction_minimum_lateral_force_n", 0.03);
+    direction_recovery_confirm_s_ = declare_parameter("direction_recovery_confirm_s", 0.30);
+    direction_change_confirm_s_ = declare_parameter("direction_change_confirm_s", 0.20);
+    direction_settling_s_ = declare_parameter("direction_settling_s", 0.50);
+    direction_candidate_max_dispersion_deg_ = declare_parameter(
+      "direction_candidate_max_dispersion_deg", 8.0);
+    direction_ambiguity_timeout_s_ = declare_parameter("direction_ambiguity_timeout_s", 8.0);
+    direction_tracking_gain_s_inv_ = declare_parameter("direction_tracking_gain_s_inv", 5.0);
+    direction_tracking_max_rate_deg_s_ = declare_parameter(
+      "direction_tracking_max_rate_deg_s", 180.0);
+    direction_follow_speed_gain_mps_per_rad_ = declare_parameter(
+      "direction_follow_speed_gain_mps_per_rad", 0.020);
     direction_correction_max_speed_mps_ = declare_parameter(
-      "direction_correction_max_speed_mps", 0.0005);
-    direction_correction_max_displacement_m_ = declare_parameter(
-      "direction_correction_max_displacement_m", 0.003);
-    direction_j11_n_per_m_ = declare_parameter("direction_j11_n_per_m", 6.47);
-    direction_j12_n_per_m_ = declare_parameter("direction_j12_n_per_m", 5.84);
-    direction_j21_n_per_m_ = declare_parameter("direction_j21_n_per_m", 10.79);
-    direction_j22_n_per_m_ = declare_parameter("direction_j22_n_per_m", 0.76);
+      "direction_correction_max_speed_mps", 0.020);
+    direction_follow_max_acceleration_mps2_ = declare_parameter(
+      "direction_follow_max_acceleration_mps2", 0.10);
     // Use a two-stage command ramp: move quickly through the large error, then
     // slow down inside the final window so the compliant rope is not hit with
     // a uniform force step all the way to the target.
@@ -93,7 +90,6 @@ public:
     // The timeout now covers the direct, low-speed position return. It is not
     // a force-unloading timeout because RELEASING no longer runs force control.
     release_timeout_s_ = declare_parameter("release_timeout_s", 60.0);
-    lateral_force_limit_n_ = declare_parameter("lateral_force_limit_n", 5.0);
     axial_travel_limit_m_ = declare_parameter("axial_travel_limit_m", 0.050);
     wrench_timeout_s_ = declare_parameter("wrench_timeout_s", 0.10);
     ee_state_timeout_s_ = declare_parameter("ee_state_timeout_s", 0.20);
@@ -130,7 +126,6 @@ public:
 
     validate_parameters();
     SafetyLimits safety_limits;
-    safety_limits.lateral_force_n = lateral_force_limit_n_;
     safety_limits.axial_travel_m = axial_travel_limit_m_;
     safety_monitor_.set_limits(safety_limits);
     force_filter_.set_cutoff(force_filter_cutoff_hz_);
@@ -276,7 +271,6 @@ private:
       std::isfinite(target_ramp_slow_window_n_) && target_ramp_slow_window_n_ > 0.0 &&
       std::isfinite(force_tolerance_n_) &&
       std::isfinite(release_timeout_s_) && release_timeout_s_ > 0.0 &&
-      std::isfinite(lateral_force_limit_n_) && lateral_force_limit_n_ > 0.0 &&
       std::isfinite(axial_travel_limit_m_) && axial_travel_limit_m_ > 0.0 &&
       std::isfinite(wrench_timeout_s_) && wrench_timeout_s_ > 0.0 &&
       std::isfinite(ee_state_timeout_s_) && ee_state_timeout_s_ > 0.0 &&
@@ -292,22 +286,22 @@ private:
       direction_slow_cutoff_hz_ <= direction_fast_cutoff_hz_ &&
       direction_robust_window_size_ >= 3 && direction_robust_window_size_ <= 101 &&
       std::isfinite(direction_minimum_force_n_) && direction_minimum_force_n_ > 0.0 &&
-      std::isfinite(direction_minimum_forward_cosine_) &&
-      direction_minimum_forward_cosine_ > 0.0 && direction_minimum_forward_cosine_<1.0 &&
-        std::isfinite(direction_change_confirm_s_) && direction_change_confirm_s_>0.0 &&
+      std::isfinite(direction_recovery_confirm_s_) && direction_recovery_confirm_s_ > 0.0 &&
+      std::isfinite(direction_change_confirm_s_) && direction_change_confirm_s_ > 0.0 &&
       std::isfinite(direction_settling_s_) && direction_settling_s_ > 0.0 &&
-      std::isfinite(direction_correction_position_gain_s_inv_) &&
-      direction_correction_position_gain_s_inv_ > 0.0 &&
-      std::isfinite(direction_correction_damping_n_per_m_) &&
-      direction_correction_damping_n_per_m_ > 0.0 &&
-      std::isfinite(direction_correction_minimum_lateral_force_n_) &&
-      direction_correction_minimum_lateral_force_n_ >= 0.0 &&
+      std::isfinite(direction_candidate_max_dispersion_deg_) &&
+      direction_candidate_max_dispersion_deg_ > 0.0 &&
+      direction_candidate_max_dispersion_deg_<90.0 &&
+        std::isfinite(direction_ambiguity_timeout_s_) && direction_ambiguity_timeout_s_>0.0 &&
+      std::isfinite(direction_tracking_gain_s_inv_) && direction_tracking_gain_s_inv_ > 0.0 &&
+      std::isfinite(direction_tracking_max_rate_deg_s_) &&
+      direction_tracking_max_rate_deg_s_ > 0.0 &&
+      std::isfinite(direction_follow_speed_gain_mps_per_rad_) &&
+      direction_follow_speed_gain_mps_per_rad_ > 0.0 &&
       std::isfinite(direction_correction_max_speed_mps_) &&
       direction_correction_max_speed_mps_ > 0.0 &&
-      std::isfinite(direction_correction_max_displacement_m_) &&
-      direction_correction_max_displacement_m_ > 0.0 &&
-      std::isfinite(direction_j11_n_per_m_) && std::isfinite(direction_j12_n_per_m_) &&
-      std::isfinite(direction_j21_n_per_m_) && std::isfinite(direction_j22_n_per_m_);
+      std::isfinite(direction_follow_max_acceleration_mps2_) &&
+      direction_follow_max_acceleration_mps2_ > 0.0;
     if (!valid || !direction_valid) {
       throw std::runtime_error("invalid traction manager safety or timing parameter");
     }
@@ -755,9 +749,16 @@ private:
       throw std::runtime_error("could not open traction record: " + session_record_path_);
     }
     record_stream_ << "timestamp,elapsed_s,state,target_force_n,actual_force_n,lateral_force_n,"
-      "fx,fy,fz,dir_x,dir_y,dir_z,ee_x,ee_y,ee_z,axis_displacement_m,"
+      "fx,fy,fz,dir_x,dir_y,dir_z,initial_dir_x,initial_dir_y,initial_dir_z,"
+      "raw_dir_x,raw_dir_y,raw_dir_z,robust_dir_x,robust_dir_y,robust_dir_z,"
+      "filtered_dir_x,filtered_dir_y,filtered_dir_z,"
+      "candidate_dir_x,candidate_dir_y,candidate_dir_z,"
+      "ee_x,ee_y,ee_z,axis_displacement_m,"
       "velocity_cmd_mps,direction_track_state,direction_error_rad,"
-      "direction_fast_slow_error_rad,direction_correction_velocity_mps,"
+      "direction_fast_slow_error_rad,direction_candidate_dispersion_rad,"
+      "direction_candidate_elapsed_s,direction_ambiguity_elapsed_s,"
+      "direction_candidate_confirmed,direction_correction_requested_velocity_mps,"
+      "direction_correction_velocity_mps,combined_velocity_mps,"
       "direction_correction_displacement_m,direction_vx,direction_vy,direction_vz,"
       "stop_reason\n";
     record_stream_ << std::setprecision(10);
@@ -770,7 +771,11 @@ private:
 
   Vec3 active_direction() const
   {
-    if (direction_locked_) {return locked_direction_;}
+    if (direction_locked_) {
+      Vec3 tracked;
+      if (normalize(direction_estimate_.tracked_direction, tracked)) {return tracked;}
+      return locked_direction_;
+    }
     if (temporary_direction_valid_) {return temporary_direction_;}
     return {};
   }
@@ -780,6 +785,9 @@ private:
     ForceMetrics metrics;
     const Vec3 direction = active_direction();
     if (!project_force(filtered_wrench_, direction, metrics)) {return {};}
+    // The force loop controls rope tension magnitude. Lateral force is kept
+    // only as the component perpendicular to the current tracked direction.
+    metrics.actual_force_n = norm(filtered_wrench_);
     return metrics;
   }
 
@@ -796,57 +804,32 @@ private:
 
   void initialize_direction_tracking()
   {
+    constexpr double kRadiansPerDegree = 3.14159265358979323846 / 180.0;
     DirectionFilterConfig filter_config;
     filter_config.fast_cutoff_hz = direction_fast_cutoff_hz_;
     filter_config.slow_cutoff_hz = direction_slow_cutoff_hz_;
     filter_config.robust_window_size = static_cast<std::size_t>(direction_robust_window_size_);
     filter_config.minimum_force_n = direction_minimum_force_n_;
-    filter_config.minimum_forward_cosine = direction_minimum_forward_cosine_;
+    filter_config.recovery_confirm_s = direction_recovery_confirm_s_;
     filter_config.change_confirm_s = direction_change_confirm_s_;
     filter_config.settling_s = direction_settling_s_;
+    filter_config.candidate_max_dispersion_rad =
+      direction_candidate_max_dispersion_deg_ * kRadiansPerDegree;
+    filter_config.ambiguity_timeout_s = direction_ambiguity_timeout_s_;
+    filter_config.tracking_gain_s_inv = direction_tracking_gain_s_inv_;
+    filter_config.tracking_max_rate_rad_s =
+      direction_tracking_max_rate_deg_s_ * kRadiansPerDegree;
     direction_estimator_ = std::make_unique<DirectionEstimator>(locked_direction_, filter_config);
     direction_noise_profile_ = estimate_direction_noise(
       calibration_samples_, locked_direction_, calibration_min_force_n_);
     if (direction_noise_profile_.valid) {
       direction_estimator_->set_noise_profile(direction_noise_profile_);
     }
-    LateralResponseJacobian jacobian;
-    // The first FR5 sign-test identified the response in base X/Y. Convert
-    // that measured matrix into the locked tangent coordinates before using
-    // it in the controller.
-    const auto & basis = direction_estimator_->basis();
-    const double q11 = basis.b1.x;
-    const double q12 = basis.b1.y;
-    const double q21 = basis.b2.x;
-    const double q22 = basis.b2.y;
-    const double q_det = q11 * q22 - q12 * q21;
-    jacobian.valid = basis.valid && std::isfinite(q_det) && std::abs(q_det) > 0.05;
-    if (jacobian.valid) {
-      const double ib11 = q22 / q_det;
-      const double ib12 = -q12 / q_det;
-      const double ib21 = -q21 / q_det;
-      const double ib22 = q11 / q_det;
-      const double b11 = direction_j11_n_per_m_ * ib11 + direction_j12_n_per_m_ * ib21;
-      const double b12 = direction_j11_n_per_m_ * ib12 + direction_j12_n_per_m_ * ib22;
-      const double b21 = direction_j21_n_per_m_ * ib11 + direction_j22_n_per_m_ * ib21;
-      const double b22 = direction_j21_n_per_m_ * ib12 + direction_j22_n_per_m_ * ib22;
-      jacobian.j11_n_per_m = q11 * b11 + q12 * b21;
-      jacobian.j12_n_per_m = q11 * b12 + q12 * b22;
-      jacobian.j21_n_per_m = q21 * b11 + q22 * b21;
-      jacobian.j22_n_per_m = q21 * b12 + q22 * b22;
-      jacobian.valid = std::isfinite(jacobian.j11_n_per_m) &&
-        std::isfinite(jacobian.j12_n_per_m) && std::isfinite(jacobian.j21_n_per_m) &&
-        std::isfinite(jacobian.j22_n_per_m);
-    }
-    LateralCorrectionConfig correction_config;
-    correction_config.position_gain_s_inv = direction_correction_position_gain_s_inv_;
-    correction_config.damping_n_per_m = direction_correction_damping_n_per_m_;
-    correction_config.minimum_lateral_force_n =
-      direction_correction_minimum_lateral_force_n_;
-    correction_config.maximum_speed_mps = direction_correction_max_speed_mps_;
-    correction_config.maximum_total_displacement_m = direction_correction_max_displacement_m_;
-    direction_controller_ = std::make_unique<DampedLateralController>(
-      locked_direction_, jacobian, correction_config);
+    AdaptiveFollowConfig follow_config;
+    follow_config.speed_gain_mps_per_rad = direction_follow_speed_gain_mps_per_rad_;
+    follow_config.maximum_speed_mps = direction_correction_max_speed_mps_;
+    follow_config.maximum_acceleration_mps2 = direction_follow_max_acceleration_mps2_;
+    direction_controller_ = std::make_unique<AdaptiveDirectionFollower>(follow_config);
     direction_estimate_ = {};
     lateral_correction_result_ = {};
     lateral_correction_velocity_base_ = {};
@@ -1246,8 +1229,14 @@ private:
         }
         current_command_target_n_ = ramped_command_target(dt_s);
         update_direction_correction(dt_s);
+        if (direction_estimate_.ambiguity_timed_out) {
+          enter_fault(
+            "DIRECTION_UNCONFIRMED_TIMEOUT",
+            "The measured direction remained mutually inconsistent for too long.");
+          break;
+        }
         publish_command(
-          msg::TractionCommand::TRACTION, locked_direction_, current_command_target_n_,
+          msg::TractionCommand::TRACTION, active_direction(), current_command_target_n_,
           direction_correction_command_mode(), lateral_correction_velocity_base_);
         break;
       case TractionState::RELEASING: handle_releasing(current_time); break;
@@ -1268,22 +1257,39 @@ private:
     if (!session_active_ || !record_stream_) {return;}
     const auto metrics = current_metrics();
     const auto direction = active_direction();
+    const Vec3 combined_velocity = direction * velocity_command_mps_ +
+      lateral_correction_velocity_base_;
     const double elapsed = (current_time - session_start_at_).seconds();
     record_stream_ << std::fixed << current_time.seconds() << ',' << elapsed << ','
                    << state_name(state_machine_.state()) << ',' << current_command_target_n_ << ','
                    << metrics.actual_force_n << ',' << metrics.lateral_force_n << ','
                    << latest_wrench_.x << ',' << latest_wrench_.y << ',' << latest_wrench_.z << ','
                    << direction.x << ',' << direction.y << ',' << direction.z << ','
+                   << locked_direction_.x << ',' << locked_direction_.y << ',' <<
+      locked_direction_.z << ','
+                   << direction_estimate_.raw_direction.x << ',' <<
+      direction_estimate_.raw_direction.y << ',' << direction_estimate_.raw_direction.z << ','
+                   << direction_estimate_.robust_direction.x << ',' <<
+      direction_estimate_.robust_direction.y << ',' << direction_estimate_.robust_direction.z << ','
+                   << direction_estimate_.fast_direction.x << ',' <<
+      direction_estimate_.fast_direction.y << ',' << direction_estimate_.fast_direction.z << ','
+                   << direction_estimate_.candidate_direction.x << ',' <<
+      direction_estimate_.candidate_direction.y << ',' <<
+      direction_estimate_.candidate_direction.z << ','
                    << latest_ee_position_.x << ',' << latest_ee_position_.y << ',' <<
       latest_ee_position_.z << ','
                    << axis_displacement() << ',' << velocity_command_mps_ << ','
                    << static_cast<int>(direction_estimate_.state) << ','
                    << direction_estimate_.fast_angle_rad << ','
                    << direction_estimate_.fast_slow_angle_rad << ','
-                   << (direction_correction_command_mode() ==
-    msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE ?
-    lateral_correction_result_.applied_speed_mps : lateral_correction_result_.requested_speed_mps)
-                   << ',' << lateral_correction_result_.accumulated_displacement_m << ','
+                   << direction_estimate_.candidate_dispersion_rad << ','
+                   << direction_estimate_.candidate_elapsed_s << ','
+                   << direction_estimate_.ambiguity_elapsed_s << ','
+                   << (direction_estimate_.candidate_confirmed ? 1 : 0) << ','
+                   << lateral_correction_result_.requested_speed_mps << ','
+                   << lateral_correction_result_.applied_speed_mps << ','
+                   << norm(combined_velocity) << ','
+                   << lateral_correction_result_.accumulated_displacement_m << ','
                    << lateral_correction_velocity_base_.x << ','
                    << lateral_correction_velocity_base_.y << ','
                    << lateral_correction_velocity_base_.z << ',' << stop_reason_ << '\n';
@@ -1416,9 +1422,9 @@ private:
     status.fy = latest_wrench_.y;
     status.fz = latest_wrench_.z;
     const auto direction = active_direction();
-    status.locked_direction_base.x = direction.x;
-    status.locked_direction_base.y = direction.y;
-    status.locked_direction_base.z = direction.z;
+    status.locked_direction_base.x = locked_direction_.x;
+    status.locked_direction_base.y = locked_direction_.y;
+    status.locked_direction_base.z = locked_direction_.z;
     Vec3 measured_direction;
     status.force_direction_valid = normalize(
       filtered_wrench_, measured_direction, pretension_detect_n_);
@@ -1459,7 +1465,7 @@ private:
       case TractionState::MANUAL_SETUP: status.message = "请用法奥示教器移动，张紧后保持法兰静止"; break;
       case TractionState::CALIBRATING: status.message = "正在采集张紧方向，请保持法兰静止"; break;
       case TractionState::DIRECTION_LOCKED: status.message = "方向已锁定；可以设置目标力并开始牵引"; break;
-      case TractionState::TRACTION: status.message = "恒力牵引中，系统沿锁定方向实时补偿"; break;
+      case TractionState::TRACTION: status.message = "恒力牵引中，正在自适应跟随受力方向"; break;
       case TractionState::RELEASING: status.message = "已停止力控，正在返回牵引起始位置"; break;
       case TractionState::COMPLETED: status.message = "牵引完成"; break;
       case TractionState::FAULT: status.message = "设备故障；确认安全后重新初始校准"; break;
@@ -1472,23 +1478,21 @@ private:
   double control_rate_hz_ = 100.0;
   double status_rate_hz_ = 20.0;
   double force_filter_cutoff_hz_ = 5.0;
-  std::string direction_correction_mode_name_ = "shadow";
+  std::string direction_correction_mode_name_ = "active";
   double direction_fast_cutoff_hz_ = 4.0;
-  double direction_slow_cutoff_hz_ = 0.6;
-  int direction_robust_window_size_ = 7;
+  double direction_slow_cutoff_hz_ = 1.0;
+  int direction_robust_window_size_ = 11;
   double direction_minimum_force_n_ = 0.5;
-  double direction_minimum_forward_cosine_ = 0.20;
-  double direction_change_confirm_s_ = 0.15;
-  double direction_settling_s_ = 0.25;
-  double direction_correction_position_gain_s_inv_ = 0.30;
-  double direction_correction_damping_n_per_m_ = 0.50;
-  double direction_correction_minimum_lateral_force_n_ = 0.03;
-  double direction_correction_max_speed_mps_ = 0.0005;
-  double direction_correction_max_displacement_m_ = 0.003;
-  double direction_j11_n_per_m_ = 6.47;
-  double direction_j12_n_per_m_ = 5.84;
-  double direction_j21_n_per_m_ = 10.79;
-  double direction_j22_n_per_m_ = 0.76;
+  double direction_recovery_confirm_s_ = 0.30;
+  double direction_change_confirm_s_ = 0.20;
+  double direction_settling_s_ = 0.50;
+  double direction_candidate_max_dispersion_deg_ = 8.0;
+  double direction_ambiguity_timeout_s_ = 8.0;
+  double direction_tracking_gain_s_inv_ = 5.0;
+  double direction_tracking_max_rate_deg_s_ = 180.0;
+  double direction_follow_speed_gain_mps_per_rad_ = 0.020;
+  double direction_correction_max_speed_mps_ = 0.020;
+  double direction_follow_max_acceleration_mps2_ = 0.10;
   double pretension_detect_n_ = 1.0;
   double pretension_target_n_ = 3.0;
   double calibration_min_force_n_ = 0.5;
@@ -1507,7 +1511,6 @@ private:
   double force_tolerance_n_ = 1.0;
   double force_deadband_n_ = 0.15;
   double release_timeout_s_ = 60.0;
-  double lateral_force_limit_n_ = 5.0;
   double axial_travel_limit_m_ = 0.050;
   double wrench_timeout_s_ = 0.10;
   double ee_state_timeout_s_ = 0.20;
@@ -1531,10 +1534,10 @@ private:
   std::string pretraction_return_service_name_;
   double pretraction_return_tolerance_m_ = 0.0015;
   std::unique_ptr<DirectionEstimator> direction_estimator_;
-  std::unique_ptr<DampedLateralController> direction_controller_;
+  std::unique_ptr<AdaptiveDirectionFollower> direction_controller_;
   DirectionNoiseProfile direction_noise_profile_;
   DirectionEstimate direction_estimate_;
-  LateralCorrectionResult lateral_correction_result_;
+  AdaptiveFollowResult lateral_correction_result_;
   Vec3 lateral_correction_velocity_base_;
 
   StateMachine state_machine_;

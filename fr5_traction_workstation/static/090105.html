@@ -126,6 +126,8 @@
     }
     .tension-state { margin-top: 8px; font-weight: 700; color: #64748b; }
     .tension-state.tight { color: #15803d; }
+    .direction-state { margin-top: 4px; font-weight: 700; color: #15803d; }
+    .direction-state.following { color: #d97706; }
 
     .control-panel { flex: 0 0 122px; padding: 14px 18px; }
     .control-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; height: 100%; }
@@ -240,6 +242,7 @@
               <div class="vector-direction"><span>受力方向</span><code id="forceDirection">--</code></div>
               <div class="vector-direction"><span>增力方向</span><code id="increaseDirection">--</code></div>
               <div class="tension-state" id="tensionState">牵引带：松</div>
+              <div class="direction-state" id="directionState">方向稳定</div>
             </div>
           </div>
           <div class="round-btn-group">

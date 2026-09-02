@@ -46,7 +46,18 @@ ControllerOutput TractionControllerCore::update(
     reset();
     return result;
   }
-  const double scalar = admittance_.update(target_force_n, metrics.actual_force_n, dt_s);
+  // Once traction has started, the controlled value is the rope's total
+  // tension. A direction change must not make a healthy 5 N rope look like a
+  // smaller force merely because it is no longer parallel to the first
+  // locked direction. PRETENSION keeps the original axial projection because
+  // its direction has not yet been confirmed.
+  const double measured_force_n = mode == ControlMode::TRACTION ?
+    norm(wrench) : metrics.actual_force_n;
+  if (!std::isfinite(measured_force_n)) {
+    reset();
+    return result;
+  }
+  const double scalar = admittance_.update(target_force_n, measured_force_n, dt_s);
   result.scalar_velocity_mps = scalar;
   result.linear_velocity = unit * scalar + lateral_velocity;
   result.valid = finite(result.linear_velocity);

@@ -1,5 +1,6 @@
 #include "fr_traction/direction_correction.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -63,10 +64,10 @@ TEST(DirectionCorrection, OneSampleSpikeIsRejectedButPersistentChangeIsDetected)
   profile.exit_angle_rad = 2.0 * 3.14159265358979323846 / 180.0;
   estimator.set_noise_profile(profile);
 
-  for (int index = 0; index < 20; ++index) {
+  for (int index = 0; index < 40; ++index) {
     const auto estimate = estimator.update({0.0, 0.0, 5.0}, 0.01);
     ASSERT_TRUE(estimate.valid);
-    EXPECT_EQ(estimate.state, DirectionTrackState::STABLE);
+    if (index >= 30) {EXPECT_EQ(estimate.state, DirectionTrackState::STABLE);}
   }
   const auto spike = estimator.update(direction_from_degrees(30.0) * 5.0, 0.01);
   EXPECT_TRUE(spike.valid);
@@ -82,55 +83,111 @@ TEST(DirectionCorrection, OneSampleSpikeIsRejectedButPersistentChangeIsDetected)
   EXPECT_TRUE(correcting_seen);
 }
 
-TEST(DirectionCorrection, LowForceAndReverseForceHoldTheCorrection)
+TEST(DirectionCorrection, LowForceHoldsButLargeDirectionChangesAreAccepted)
 {
   DirectionEstimator estimator({0.0, 0.0, 1.0});
   auto low = estimator.update({0.0, 0.0, 0.1}, 0.01);
   EXPECT_FALSE(low.valid);
   EXPECT_EQ(low.state, DirectionTrackState::SENSOR_HOLD);
-  auto reverse = estimator.update({0.0, 0.0, -5.0}, 0.01);
-  EXPECT_FALSE(reverse.valid);
-  EXPECT_EQ(reverse.state, DirectionTrackState::SENSOR_HOLD);
+
+  DirectionEstimate estimate;
+  for (int index = 0; index < 150; ++index) {
+    estimate = estimator.update(direction_from_degrees(120.0) * 5.0, 0.01);
+  }
+  EXPECT_TRUE(estimate.valid);
+  EXPECT_NE(estimate.state, DirectionTrackState::AMBIGUOUS);
+  EXPECT_GT(dot(estimate.tracked_direction, direction_from_degrees(120.0)), 0.98);
 }
 
-TEST(DirectionCorrection, DampedControllerUsesNegativeFeedbackAndLimitsMotion)
+TEST(DirectionCorrection, DirectionResumesOnlyAfterStableTensionRecovery)
 {
-  // Use a positive diagonal response here so the sign assertion isolates the
-  // controller feedback sign. The measured FR5 matrix is exercised by the
-  // shadow-mode integration configuration, not by this basic algebra test.
-  const LateralResponseJacobian jacobian{true, 5.0, 0.0, 0.0, 5.0};
-  LateralCorrectionConfig config;
-  config.position_gain_s_inv = 0.30;
-  config.damping_n_per_m = 0.50;
-  config.minimum_lateral_force_n = 0.0;
-  config.maximum_speed_mps = 0.0005;
-  config.maximum_total_displacement_m = 0.003;
-  DampedLateralController controller({0.0, 0.0, 1.0}, jacobian, config);
+  DirectionFilterConfig config;
+  config.recovery_confirm_s = 0.30;
+  DirectionEstimator estimator({0.0, 0.0, 1.0}, config);
+  EXPECT_EQ(
+    estimator.update({0.0, 0.0, 0.1}, 0.01).state,
+    DirectionTrackState::SENSOR_HOLD);
+  DirectionEstimate estimate;
+  for (int index = 0; index < 20; ++index) {
+    estimate = estimator.update({0.0, 0.0, 5.0}, 0.01);
+  }
+  EXPECT_EQ(estimate.state, DirectionTrackState::SENSOR_HOLD);
+  for (int index = 0; index < 15; ++index) {
+    estimate = estimator.update({0.0, 0.0, 5.0}, 0.01);
+  }
+  EXPECT_EQ(estimate.state, DirectionTrackState::STABLE);
+}
+
+TEST(DirectionCorrection, NearbyWanderFormsOneEquivalentDirectionWithoutFlapping)
+{
+  DirectionFilterConfig config;
+  config.change_confirm_s = 0.20;
+  config.settling_s = 0.40;
+  DirectionEstimator estimator({0.0, 0.0, 1.0}, config);
+  DirectionEstimate estimate;
+  for (int index = 0; index < 250; ++index) {
+    const double degrees = 25.0 + static_cast<double>((index % 5) - 2);
+    estimate = estimator.update(direction_from_degrees(degrees) * 5.0, 0.01);
+  }
+  EXPECT_TRUE(estimate.valid);
+  EXPECT_FALSE(estimate.ambiguity_timed_out);
+  EXPECT_LT(
+    std::acos(
+      std::clamp(
+        dot(estimate.tracked_direction, direction_from_degrees(25.0)), -1.0, 1.0)),
+    4.0 * 3.14159265358979323846 / 180.0);
+}
+
+TEST(DirectionCorrection, AlternatingIncompatibleDirectionsEventuallyBecomeAmbiguous)
+{
+  DirectionFilterConfig config;
+  config.ambiguity_timeout_s = 1.0;
+  DirectionEstimator estimator({0.0, 0.0, 1.0}, config);
+  DirectionEstimate estimate;
+  for (int index = 0; index < 180; ++index) {
+    estimate = estimator.update(
+      direction_from_degrees(index % 2 == 0 ? 40.0 : -40.0) * 5.0, 0.01);
+  }
+  EXPECT_EQ(estimate.state, DirectionTrackState::AMBIGUOUS);
+  EXPECT_TRUE(estimate.ambiguity_timed_out);
+}
+
+TEST(DirectionCorrection, AdaptiveFollowerIsFastForLargeAnglesAndSlowsNearTarget)
+{
+  AdaptiveFollowConfig config;
+  config.speed_gain_mps_per_rad = 0.020;
+  config.maximum_speed_mps = 0.020;
+  config.maximum_acceleration_mps2 = 1.0;
+  AdaptiveDirectionFollower follower(config);
   DirectionEstimate estimate;
   estimate.valid = true;
-  estimate.locked_direction = {0.0, 0.0, 1.0};
-  estimate.lateral_force_vector = {1.0, 0.0, 0.0};
+  estimate.candidate_confirmed = true;
   estimate.state = DirectionTrackState::CORRECTING;
-  auto result = controller.update(estimate, true, 0.01);
-  ASSERT_TRUE(result.valid);
-  EXPECT_LT(result.velocity_base.x, 0.0);
-  EXPECT_LE(result.applied_speed_mps, config.maximum_speed_mps + 1e-12);
+  estimate.exit_angle_rad = 2.0 * 3.14159265358979323846 / 180.0;
+  estimate.tracked_direction = direction_from_degrees(0.0);
+  estimate.candidate_direction = direction_from_degrees(60.0);
+  const auto large = follower.update(estimate, true, 0.01);
+  ASSERT_TRUE(large.valid);
+  EXPECT_TRUE(large.active);
+  EXPECT_GT(large.applied_speed_mps, 0.0);
 
-  for (int index = 0; index < 2000; ++index) {
-    result = controller.update(estimate, true, 0.01);
-  }
-  EXPECT_LE(
-    result.accumulated_displacement_m,
-    config.maximum_total_displacement_m + 1e-12);
+  follower.reset();
+  estimate.candidate_direction = direction_from_degrees(8.0);
+  const auto small = follower.update(estimate, true, 0.01);
+  ASSERT_TRUE(small.valid);
+  EXPECT_LT(small.requested_speed_mps, large.requested_speed_mps);
+  EXPECT_GT(dot(small.velocity_base, Vec3{1.0, 0.0, 0.0}), 0.0);
 }
 
 TEST(DirectionCorrection, ShadowModeCalculatesButDoesNotMove)
 {
-  const LateralResponseJacobian jacobian{true, 5.0, 0.0, 0.0, 5.0};
-  DampedLateralController controller({0.0, 0.0, 1.0}, jacobian);
+  AdaptiveDirectionFollower controller;
   DirectionEstimate estimate;
   estimate.valid = true;
-  estimate.lateral_force_vector = {0.2, 0.0, 0.0};
+  estimate.candidate_confirmed = true;
+  estimate.exit_angle_rad = 2.0 * 3.14159265358979323846 / 180.0;
+  estimate.tracked_direction = direction_from_degrees(0.0);
+  estimate.candidate_direction = direction_from_degrees(20.0);
   estimate.state = DirectionTrackState::CORRECTING;
   const auto result = controller.update(estimate, false, 0.01);
   ASSERT_TRUE(result.valid);

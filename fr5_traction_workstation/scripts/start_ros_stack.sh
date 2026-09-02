@@ -9,7 +9,7 @@ VERSION_CHOICE="${1:-}"
 
 if [[ -z "$VERSION_CHOICE" ]]; then
   if [[ -t 0 ]]; then
-    echo "请选择版本：1=第一版稳定基线，2=当前方向纠偏版（默认2）"
+    echo "请选择版本：1=第一版稳定基线，2=当前主动方向跟随版（默认2）"
     read -r VERSION_CHOICE
   else
     VERSION_CHOICE=2
@@ -24,7 +24,7 @@ case "$VERSION_CHOICE" in
     ;;
   2)
     ROS_WS="/home/zhj/projects/fr5_platform_ws/runtimes/directional_correction_v1"
-    VERSION_LABEL="版本2：方向纠偏"
+    VERSION_LABEL="版本2：主动方向跟随"
     ;;
   *)
     echo "版本选择无效，请输入 1 或 2。" >&2

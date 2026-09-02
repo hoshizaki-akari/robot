@@ -44,6 +44,17 @@ double median(std::vector<double> values)
   return result;
 }
 
+double percentile(std::vector<double> values, double fraction)
+{
+  if (values.empty()) {return std::numeric_limits<double>::quiet_NaN();}
+  std::sort(values.begin(), values.end());
+  const double index = std::clamp(fraction, 0.0, 1.0) * (values.size() - 1);
+  const auto lower = static_cast<std::size_t>(std::floor(index));
+  const auto upper = static_cast<std::size_t>(std::ceil(index));
+  const double weight = index - static_cast<double>(lower);
+  return values[lower] * (1.0 - weight) + values[upper] * weight;
+}
+
 double safe_alpha(double cutoff_hz, double dt_s)
 {
   if (!std::isfinite(cutoff_hz) || cutoff_hz <= 0.0 ||
@@ -52,6 +63,32 @@ double safe_alpha(double cutoff_hz, double dt_s)
     return 1.0;
   }
   return std::clamp(1.0 - std::exp(-2.0 * kPi * cutoff_hz * dt_s), 0.0, 1.0);
+}
+
+Vec3 move_towards_on_sphere(
+  const Vec3 & current, const Vec3 & target, double maximum_step_rad)
+{
+  Vec3 from;
+  Vec3 to;
+  if (!normalize(current, from) || !normalize(target, to) ||
+    !std::isfinite(maximum_step_rad) || maximum_step_rad <= 0.0)
+  {
+    return from;
+  }
+  const double cosine = std::clamp(dot(from, to), -1.0, 1.0);
+  const double angle = std::acos(cosine);
+  if (!std::isfinite(angle) || angle <= maximum_step_rad) {return to;}
+
+  Vec3 tangent = to - cosine * from;
+  if (!normalize(tangent, tangent)) {
+    DirectionBasis basis;
+    if (!make_tangent_basis(from, basis)) {return from;}
+    tangent = basis.b1;
+  }
+  Vec3 result = std::cos(maximum_step_rad) * from +
+    std::sin(maximum_step_rad) * tangent;
+  Vec3 unit;
+  return normalize(result, unit) ? unit : from;
 }
 
 }  // namespace
@@ -147,6 +184,7 @@ const char * direction_track_state_name(DirectionTrackState state)
     case DirectionTrackState::CORRECTING: return "CORRECTING";
     case DirectionTrackState::SETTLING: return "SETTLING";
     case DirectionTrackState::SENSOR_HOLD: return "SENSOR_HOLD";
+    case DirectionTrackState::AMBIGUOUS: return "AMBIGUOUS";
   }
   return "UNKNOWN";
 }
@@ -160,7 +198,7 @@ DirectionEstimator::DirectionEstimator(
     config_.fast_cutoff_hz = 4.0;
   }
   if (!std::isfinite(config_.slow_cutoff_hz) || config_.slow_cutoff_hz <= 0.0) {
-    config_.slow_cutoff_hz = 0.6;
+    config_.slow_cutoff_hz = 1.0;
   }
   if (config_.slow_cutoff_hz > config_.fast_cutoff_hz) {
     config_.slow_cutoff_hz = config_.fast_cutoff_hz;
@@ -170,16 +208,30 @@ DirectionEstimator::DirectionEstimator(
   if (!std::isfinite(config_.minimum_force_n) || config_.minimum_force_n <= 0.0) {
     config_.minimum_force_n = 0.5;
   }
-  if (!std::isfinite(config_.minimum_forward_cosine) ||
-    config_.minimum_forward_cosine <= 0.0 || config_.minimum_forward_cosine >= 1.0)
-  {
-    config_.minimum_forward_cosine = 0.20;
+  if (!std::isfinite(config_.recovery_confirm_s) || config_.recovery_confirm_s <= 0.0) {
+    config_.recovery_confirm_s = 0.30;
   }
   if (!std::isfinite(config_.change_confirm_s) || config_.change_confirm_s <= 0.0) {
-    config_.change_confirm_s = 0.15;
+    config_.change_confirm_s = 0.20;
   }
   if (!std::isfinite(config_.settling_s) || config_.settling_s <= 0.0) {
-    config_.settling_s = 0.25;
+    config_.settling_s = 0.50;
+  }
+  if (!std::isfinite(config_.candidate_max_dispersion_rad) ||
+    config_.candidate_max_dispersion_rad <= 0.0)
+  {
+    config_.candidate_max_dispersion_rad = 8.0 * kDegree;
+  }
+  if (!std::isfinite(config_.ambiguity_timeout_s) || config_.ambiguity_timeout_s <= 0.0) {
+    config_.ambiguity_timeout_s = 8.0;
+  }
+  if (!std::isfinite(config_.tracking_gain_s_inv) || config_.tracking_gain_s_inv <= 0.0) {
+    config_.tracking_gain_s_inv = 5.0;
+  }
+  if (!std::isfinite(config_.tracking_max_rate_rad_s) ||
+    config_.tracking_max_rate_rad_s <= 0.0)
+  {
+    config_.tracking_max_rate_rad_s = 180.0 * kDegree;
   }
   set_locked_direction(locked_direction);
 }
@@ -214,9 +266,16 @@ void DirectionEstimator::reset()
   direction_window_.clear();
   fast_direction_ = {};
   slow_direction_ = {};
+  candidate_direction_ = locked_direction_;
+  tracked_direction_ = locked_direction_;
   filter_initialized_ = false;
-  change_candidate_s_ = 0.0;
+  candidate_valid_ = false;
+  candidate_confirmed_ = false;
+  candidate_elapsed_s_ = 0.0;
+  ambiguity_elapsed_s_ = 0.0;
+  recovery_elapsed_s_ = 0.0;
   settling_elapsed_s_ = 0.0;
+  recovering_from_hold_ = true;
   state_ = DirectionTrackState::SENSOR_HOLD;
 }
 
@@ -225,8 +284,7 @@ bool DirectionEstimator::valid_direction_sample(
 {
   tension = norm(force);
   if (!normalize(force, unit) || !std::isfinite(tension) ||
-    tension < config_.minimum_force_n ||
-    dot(unit, locked_direction_) < config_.minimum_forward_cosine)
+    tension < config_.minimum_force_n)
   {
     return false;
   }
@@ -253,45 +311,186 @@ Vec3 DirectionEstimator::robust_center() const
   return direction_window_[best_index];
 }
 
-void DirectionEstimator::update_track_state(DirectionEstimate & estimate, double dt_s)
+double DirectionEstimator::robust_dispersion(const Vec3 & center) const
+{
+  std::vector<double> distances;
+  distances.reserve(direction_window_.size());
+  for (const auto & sample : direction_window_) {
+    const double angle = angle_between(sample, center);
+    if (!std::isfinite(angle)) {return std::numeric_limits<double>::quiet_NaN();}
+    distances.push_back(angle);
+  }
+  // The 90th percentile allows an occasional sensor spike while still
+  // rejecting a window that alternates between incompatible directions.
+  return percentile(distances, 0.90);
+}
+
+void DirectionEstimator::update_candidate_and_track(DirectionEstimate & estimate, double dt_s)
 {
   estimate.entry_angle_rad = noise_profile_.valid ? noise_profile_.entry_angle_rad :
     3.0 * kDegree;
   estimate.exit_angle_rad = noise_profile_.valid ? noise_profile_.exit_angle_rad :
     1.5 * kDegree;
   if (!estimate.valid) {
+    if (!recovering_from_hold_) {
+      direction_window_.clear();
+      fast_direction_ = {};
+      slow_direction_ = {};
+      filter_initialized_ = false;
+    }
+    recovering_from_hold_ = true;
+    recovery_elapsed_s_ = 0.0;
     state_ = DirectionTrackState::SENSOR_HOLD;
-    change_candidate_s_ = 0.0;
+    candidate_valid_ = false;
+    candidate_confirmed_ = false;
+    candidate_elapsed_s_ = 0.0;
     settling_elapsed_s_ = 0.0;
+    estimate.tracked_direction = tracked_direction_;
+    estimate.candidate_direction = candidate_direction_;
+    estimate.ambiguity_elapsed_s = ambiguity_elapsed_s_;
     estimate.state = state_;
     return;
   }
 
-  const bool evidence = estimate.fast_angle_rad > estimate.entry_angle_rad ||
-    estimate.fast_slow_angle_rad > estimate.entry_angle_rad;
-  const bool settled = estimate.fast_angle_rad <= estimate.exit_angle_rad &&
-    estimate.fast_slow_angle_rad <= estimate.exit_angle_rad;
   const double safe_dt = std::isfinite(dt_s) && dt_s > 0.0 ? dt_s : 0.0;
-  if (evidence) {
-    change_candidate_s_ += safe_dt;
-    settling_elapsed_s_ = 0.0;
-    state_ = change_candidate_s_ >= config_.change_confirm_s ?
-      DirectionTrackState::CORRECTING : DirectionTrackState::SUSPECT;
-  } else if (settled) {
-    change_candidate_s_ = 0.0;
-    if (state_ == DirectionTrackState::CORRECTING || state_ == DirectionTrackState::SETTLING) {
-      settling_elapsed_s_ += safe_dt;
-      state_ = settling_elapsed_s_ >= config_.settling_s ?
-        DirectionTrackState::STABLE : DirectionTrackState::SETTLING;
+  const double consensus_limit = std::max(
+    config_.candidate_max_dispersion_rad, 1.25 * estimate.entry_angle_rad);
+  const bool consensus_stable =
+    estimate.candidate_dispersion_rad <= consensus_limit;
+  if (recovering_from_hold_) {
+    if (consensus_stable) {
+      recovery_elapsed_s_ += safe_dt;
+      ambiguity_elapsed_s_ = std::max(0.0, ambiguity_elapsed_s_ - safe_dt);
     } else {
-      settling_elapsed_s_ = 0.0;
-      state_ = DirectionTrackState::STABLE;
+      recovery_elapsed_s_ = 0.0;
+      ambiguity_elapsed_s_ += safe_dt;
     }
-  } else {
-    change_candidate_s_ = 0.0;
-    settling_elapsed_s_ = 0.0;
-    state_ = DirectionTrackState::SUSPECT;
+    if (ambiguity_elapsed_s_ >= config_.ambiguity_timeout_s) {
+      state_ = DirectionTrackState::AMBIGUOUS;
+      estimate.tracked_direction = tracked_direction_;
+      estimate.candidate_direction = candidate_direction_;
+      estimate.ambiguity_elapsed_s = ambiguity_elapsed_s_;
+      estimate.ambiguity_timed_out = true;
+      estimate.state = state_;
+      return;
+    }
+    if (recovery_elapsed_s_ < config_.recovery_confirm_s) {
+      state_ = DirectionTrackState::SENSOR_HOLD;
+      estimate.tracked_direction = tracked_direction_;
+      estimate.candidate_direction = candidate_direction_;
+      estimate.ambiguity_elapsed_s = ambiguity_elapsed_s_;
+      estimate.state = state_;
+      return;
+    }
+    recovering_from_hold_ = false;
+    recovery_elapsed_s_ = 0.0;
   }
+  const double robust_error = angle_between(estimate.robust_direction, tracked_direction_);
+  const bool change_evidence = std::isfinite(robust_error) &&
+    robust_error > estimate.entry_angle_rad;
+  bool rejected_confirmed_candidate = false;
+
+  if (candidate_confirmed_) {
+    const double candidate_jump = angle_between(
+      estimate.robust_direction, candidate_direction_);
+    if (!consensus_stable || !std::isfinite(candidate_jump) ||
+      candidate_jump > 2.0 * consensus_limit)
+    {
+      candidate_valid_ = false;
+      candidate_confirmed_ = false;
+      candidate_elapsed_s_ = 0.0;
+      settling_elapsed_s_ = 0.0;
+      ambiguity_elapsed_s_ += safe_dt;
+      state_ = ambiguity_elapsed_s_ >= config_.ambiguity_timeout_s ?
+        DirectionTrackState::AMBIGUOUS : DirectionTrackState::SUSPECT;
+      rejected_confirmed_candidate = true;
+    } else {
+      const double alpha = safe_alpha(config_.slow_cutoff_hz, safe_dt);
+      candidate_direction_ = move_towards_on_sphere(
+        candidate_direction_, estimate.robust_direction,
+        std::max(1e-9, alpha * candidate_jump));
+      const double remaining = angle_between(tracked_direction_, candidate_direction_);
+      const double adaptive_rate = std::min(
+        config_.tracking_max_rate_rad_s,
+        config_.tracking_gain_s_inv * std::max(0.0, remaining));
+      tracked_direction_ = move_towards_on_sphere(
+        tracked_direction_, candidate_direction_, adaptive_rate * safe_dt);
+      const double remaining_after_step = angle_between(
+        tracked_direction_, candidate_direction_);
+      if (remaining_after_step > estimate.exit_angle_rad) {
+        settling_elapsed_s_ = 0.0;
+        state_ = DirectionTrackState::CORRECTING;
+      } else {
+        settling_elapsed_s_ += safe_dt;
+        state_ = DirectionTrackState::SETTLING;
+        if (settling_elapsed_s_ >= config_.settling_s) {
+          state_ = DirectionTrackState::STABLE;
+          candidate_valid_ = false;
+          candidate_confirmed_ = false;
+          candidate_elapsed_s_ = 0.0;
+          ambiguity_elapsed_s_ = 0.0;
+        }
+      }
+    }
+  }
+
+  if (!candidate_confirmed_ && !rejected_confirmed_candidate) {
+    if (change_evidence && consensus_stable) {
+      const double candidate_jump = candidate_valid_ ?
+        angle_between(estimate.robust_direction, candidate_direction_) : 0.0;
+      if (!candidate_valid_ || !std::isfinite(candidate_jump) ||
+        candidate_jump > 2.0 * consensus_limit)
+      {
+        if (candidate_valid_) {ambiguity_elapsed_s_ += safe_dt;}
+        candidate_direction_ = estimate.robust_direction;
+        candidate_elapsed_s_ = safe_dt;
+      } else {
+        const double alpha = safe_alpha(config_.slow_cutoff_hz, safe_dt);
+        candidate_direction_ = move_towards_on_sphere(
+          candidate_direction_, estimate.robust_direction,
+          std::max(1e-9, alpha * candidate_jump));
+        candidate_elapsed_s_ += safe_dt;
+      }
+      candidate_valid_ = true;
+      ambiguity_elapsed_s_ = std::max(0.0, ambiguity_elapsed_s_ - safe_dt);
+      candidate_confirmed_ = candidate_elapsed_s_ >= config_.change_confirm_s;
+      state_ = candidate_confirmed_ ?
+        DirectionTrackState::CORRECTING : DirectionTrackState::SUSPECT;
+    } else if (change_evidence) {
+      candidate_valid_ = false;
+      candidate_elapsed_s_ = 0.0;
+      settling_elapsed_s_ = 0.0;
+      ambiguity_elapsed_s_ += safe_dt;
+      state_ = ambiguity_elapsed_s_ >= config_.ambiguity_timeout_s ?
+        DirectionTrackState::AMBIGUOUS : DirectionTrackState::SUSPECT;
+    } else {
+      candidate_valid_ = false;
+      candidate_elapsed_s_ = 0.0;
+      const double tracked_error = angle_between(estimate.fast_direction, tracked_direction_);
+      if (std::isfinite(tracked_error) && tracked_error <= estimate.exit_angle_rad) {
+        if (state_ == DirectionTrackState::SENSOR_HOLD) {
+          settling_elapsed_s_ = config_.settling_s;
+        } else {
+          settling_elapsed_s_ += safe_dt;
+        }
+        if (settling_elapsed_s_ >= config_.settling_s || state_ == DirectionTrackState::STABLE) {
+          state_ = DirectionTrackState::STABLE;
+          ambiguity_elapsed_s_ = 0.0;
+        } else {
+          state_ = DirectionTrackState::SETTLING;
+        }
+      } else {
+        settling_elapsed_s_ = 0.0;
+        state_ = DirectionTrackState::SUSPECT;
+      }
+    }
+  }
+  estimate.tracked_direction = tracked_direction_;
+  estimate.candidate_direction = candidate_direction_;
+  estimate.candidate_elapsed_s = candidate_elapsed_s_;
+  estimate.ambiguity_elapsed_s = ambiguity_elapsed_s_;
+  estimate.candidate_confirmed = candidate_confirmed_;
+  estimate.ambiguity_timed_out = state_ == DirectionTrackState::AMBIGUOUS;
   estimate.state = state_;
 }
 
@@ -299,6 +498,8 @@ DirectionEstimate DirectionEstimator::update(const Vec3 & force, double dt_s)
 {
   DirectionEstimate estimate;
   estimate.locked_direction = locked_direction_;
+  estimate.tracked_direction = tracked_direction_;
+  estimate.candidate_direction = candidate_direction_;
   estimate.entry_angle_rad = noise_profile_.valid ? noise_profile_.entry_angle_rad :
     3.0 * kDegree;
   estimate.exit_angle_rad = noise_profile_.valid ? noise_profile_.exit_angle_rad :
@@ -306,8 +507,8 @@ DirectionEstimate DirectionEstimator::update(const Vec3 & force, double dt_s)
   estimate.tension_n = norm(force);
   if (finite(force) && std::isfinite(estimate.tension_n) && estimate.tension_n > 1e-12) {
     normalize(force, estimate.raw_direction);
-    estimate.axial_force_n = dot(force, locked_direction_);
-    estimate.lateral_force_vector = force - estimate.axial_force_n * locked_direction_;
+    estimate.axial_force_n = dot(force, tracked_direction_);
+    estimate.lateral_force_vector = force - estimate.axial_force_n * tracked_direction_;
     estimate.lateral_force_n = norm(estimate.lateral_force_vector);
     estimate.angle_to_locked_rad = angle_between(estimate.raw_direction, locked_direction_);
   }
@@ -317,7 +518,7 @@ DirectionEstimate DirectionEstimator::update(const Vec3 & force, double dt_s)
     estimate.valid = false;
     estimate.fast_direction = fast_direction_;
     estimate.slow_direction = slow_direction_;
-    update_track_state(estimate, dt_s);
+    update_candidate_and_track(estimate, dt_s);
     return estimate;
   }
 
@@ -327,10 +528,11 @@ DirectionEstimate DirectionEstimator::update(const Vec3 & force, double dt_s)
   const Vec3 robust = robust_center();
   if (!finite(robust) || norm(robust) < 0.5) {
     estimate.valid = false;
-    update_track_state(estimate, dt_s);
+    update_candidate_and_track(estimate, dt_s);
     return estimate;
   }
   estimate.robust_direction = robust;
+  estimate.candidate_dispersion_rad = robust_dispersion(robust);
   if (filter_initialized_) {
     const double raw_jump = angle_between(raw_unit, previous_fast);
     const double robust_jump = angle_between(robust, previous_fast);
@@ -348,7 +550,7 @@ DirectionEstimate DirectionEstimator::update(const Vec3 & force, double dt_s)
         normalized_fast) || !normalize(slow_direction_, normalized_slow))
     {
       estimate.valid = false;
-      update_track_state(estimate, dt_s);
+      update_candidate_and_track(estimate, dt_s);
       return estimate;
     }
     fast_direction_ = normalized_fast;
@@ -361,147 +563,103 @@ DirectionEstimate DirectionEstimator::update(const Vec3 & force, double dt_s)
   estimate.valid = true;
   estimate.fast_direction = fast_direction_;
   estimate.slow_direction = slow_direction_;
-  estimate.fast_angle_rad = angle_between(fast_direction_, locked_direction_);
+  estimate.fast_angle_rad = angle_between(fast_direction_, tracked_direction_);
   estimate.slow_angle_rad = angle_between(slow_direction_, locked_direction_);
   estimate.fast_slow_angle_rad = angle_between(fast_direction_, slow_direction_);
-  update_track_state(estimate, dt_s);
+  update_candidate_and_track(estimate, dt_s);
+  estimate.fast_angle_rad = angle_between(fast_direction_, estimate.tracked_direction);
+  estimate.axial_force_n = dot(force, estimate.tracked_direction);
+  estimate.lateral_force_vector = force - estimate.axial_force_n * estimate.tracked_direction;
+  estimate.lateral_force_n = norm(estimate.lateral_force_vector);
   return estimate;
 }
 
-DampedLateralController::DampedLateralController(
-  const Vec3 & locked_direction,
-  const LateralResponseJacobian & jacobian,
-  const LateralCorrectionConfig & config)
-: jacobian_(jacobian), config_(config)
+AdaptiveDirectionFollower::AdaptiveDirectionFollower(const AdaptiveFollowConfig & config)
+: config_(config)
 {
-  if (!std::isfinite(config_.position_gain_s_inv) || config_.position_gain_s_inv <= 0.0) {
-    config_.position_gain_s_inv = 0.30;
-  }
-  if (!std::isfinite(config_.damping_n_per_m) || config_.damping_n_per_m <= 0.0) {
-    config_.damping_n_per_m = 0.50;
-  }
-  if (!std::isfinite(config_.minimum_lateral_force_n) || config_.minimum_lateral_force_n < 0.0) {
-    config_.minimum_lateral_force_n = 0.03;
+  if (!std::isfinite(config_.speed_gain_mps_per_rad) ||
+    config_.speed_gain_mps_per_rad <= 0.0)
+  {
+    config_.speed_gain_mps_per_rad = 0.020;
   }
   if (!std::isfinite(config_.maximum_speed_mps) || config_.maximum_speed_mps <= 0.0) {
-    config_.maximum_speed_mps = 0.0005;
+    config_.maximum_speed_mps = 0.020;
   }
-  if (!std::isfinite(config_.maximum_total_displacement_m) ||
-    config_.maximum_total_displacement_m <= 0.0)
+  if (!std::isfinite(config_.maximum_acceleration_mps2) ||
+    config_.maximum_acceleration_mps2 <= 0.0)
   {
-    config_.maximum_total_displacement_m = 0.003;
+    config_.maximum_acceleration_mps2 = 0.10;
   }
-  make_tangent_basis(locked_direction, basis_);
 }
 
-void DampedLateralController::reset()
+void AdaptiveDirectionFollower::reset()
 {
-  accumulated_b1_m_ = 0.0;
-  accumulated_b2_m_ = 0.0;
+  speed_mps_ = 0.0;
+  accumulated_displacement_m_ = 0.0;
 }
 
-bool DampedLateralController::solve_damped(
-  const double e1, const double e2, double & q1, double & q2) const
+AdaptiveFollowResult AdaptiveDirectionFollower::update(
+  const DirectionEstimate & estimate, bool active, double dt_s)
 {
-  if (!jacobian_.valid || !std::isfinite(e1) || !std::isfinite(e2)) {return false;}
-  const double j11 = jacobian_.j11_n_per_m;
-  const double j12 = jacobian_.j12_n_per_m;
-  const double j21 = jacobian_.j21_n_per_m;
-  const double j22 = jacobian_.j22_n_per_m;
-  const double lambda2 = config_.damping_n_per_m * config_.damping_n_per_m;
-  const double a11 = j11 * j11 + j12 * j12 + lambda2;
-  const double a12 = j11 * j21 + j12 * j22;
-  const double a22 = j21 * j21 + j22 * j22 + lambda2;
-  const double determinant = a11 * a22 - a12 * a12;
-  if (!std::isfinite(determinant) || determinant <= 1e-12) {return false;}
-  const double z1 = (a22 * e1 - a12 * e2) / determinant;
-  const double z2 = (-a12 * e1 + a11 * e2) / determinant;
-  q1 = j11 * z1 + j21 * z2;
-  q2 = j12 * z1 + j22 * z2;
-  return std::isfinite(q1) && std::isfinite(q2);
-}
-
-LateralCorrectionResult DampedLateralController::update(
-  const DirectionEstimate & estimate,
-  bool active,
-  double dt_s)
-{
-  LateralCorrectionResult result;
-  result.accumulated_displacement_m =
-    std::hypot(accumulated_b1_m_, accumulated_b2_m_);
-  if (!basis_.valid || !estimate.valid || !std::isfinite(dt_s) || dt_s <= 0.0) {
-    result.reason = !basis_.valid ? "INVALID_TANGENT_BASIS" :
-      (!estimate.valid ? "SENSOR_HOLD" : "INVALID_DT");
+  AdaptiveFollowResult result;
+  result.accumulated_displacement_m = accumulated_displacement_m_;
+  if (!estimate.valid || !finite(estimate.tracked_direction) ||
+    !finite(estimate.candidate_direction) || !std::isfinite(dt_s) || dt_s <= 0.0)
+  {
+    speed_mps_ = 0.0;
+    result.reason = !estimate.valid ? "SENSOR_HOLD" : "INVALID_INPUT";
     return result;
   }
   result.valid = true;
-  result.error_b1_n = dot(estimate.lateral_force_vector, basis_.b1);
-  result.error_b2_n = dot(estimate.lateral_force_vector, basis_.b2);
-  const double error_norm = std::hypot(result.error_b1_n, result.error_b2_n);
-  if (!std::isfinite(error_norm)) {
-    result.valid = false;
-    result.reason = "NONFINITE_LATERAL_ERROR";
-    return result;
-  }
-  if (error_norm <= config_.minimum_lateral_force_n) {
-    result.reason = "LATERAL_DEADBAND";
-    return result;
-  }
-  if (estimate.state != DirectionTrackState::CORRECTING &&
-    estimate.state != DirectionTrackState::SETTLING)
+  if (!estimate.candidate_confirmed ||
+    (estimate.state != DirectionTrackState::CORRECTING &&
+    estimate.state != DirectionTrackState::SETTLING))
   {
-    result.reason = "DIRECTION_NOT_CONFIRMED";
+    speed_mps_ = 0.0;
+    result.reason = estimate.state == DirectionTrackState::AMBIGUOUS ?
+      "DIRECTION_AMBIGUOUS" : "DIRECTION_STABLE_OR_UNCONFIRMED";
     return result;
   }
-  double q1 = 0.0;
-  double q2 = 0.0;
-  if (!solve_damped(result.error_b1_n, result.error_b2_n, q1, q2)) {
-    result.valid = false;
-    result.reason = "INVALID_JACOBIAN";
+
+  result.angle_error_rad = angle_between(
+    estimate.tracked_direction, estimate.candidate_direction);
+  if (!std::isfinite(result.angle_error_rad) ||
+    result.angle_error_rad <= estimate.exit_angle_rad)
+  {
+    speed_mps_ = 0.0;
+    result.reason = "ANGULAR_DEADBAND";
     return result;
   }
-  double v1 = -config_.position_gain_s_inv * q1;
-  double v2 = -config_.position_gain_s_inv * q2;
-  result.requested_speed_mps = std::hypot(v1, v2);
-  if (!std::isfinite(result.requested_speed_mps)) {
-    result.valid = false;
-    result.reason = "NONFINITE_REQUEST";
+
+  Vec3 tangent = estimate.candidate_direction -
+    dot(estimate.candidate_direction, estimate.tracked_direction) *
+    estimate.tracked_direction;
+  Vec3 tangent_unit;
+  if (!normalize(tangent, tangent_unit)) {
+    speed_mps_ = 0.0;
+    result.reason = "TANGENT_UNDEFINED";
     return result;
   }
-  if (result.requested_speed_mps > config_.maximum_speed_mps) {
-    const double scale = config_.maximum_speed_mps / result.requested_speed_mps;
-    v1 *= scale;
-    v2 *= scale;
-    result.limited = true;
-  }
+
+  result.requested_speed_mps = config_.speed_gain_mps_per_rad *
+    std::max(0.0, result.angle_error_rad - estimate.exit_angle_rad);
+  const double bounded_request = std::min(
+    result.requested_speed_mps, config_.maximum_speed_mps);
+  result.limited = result.requested_speed_mps > config_.maximum_speed_mps;
+  const double maximum_delta = config_.maximum_acceleration_mps2 * dt_s;
+  speed_mps_ += std::clamp(bounded_request - speed_mps_, -maximum_delta, maximum_delta);
+  speed_mps_ = std::clamp(speed_mps_, 0.0, config_.maximum_speed_mps);
   if (!active) {
     result.reason = "SHADOW_ONLY";
     return result;
   }
 
-  const double proposed_b1 = accumulated_b1_m_ + v1 * dt_s;
-  const double proposed_b2 = accumulated_b2_m_ + v2 * dt_s;
-  const double proposed_norm = std::hypot(proposed_b1, proposed_b2);
-  if (proposed_norm > config_.maximum_total_displacement_m) {
-    if (proposed_norm > 1e-12) {
-      const double scale = config_.maximum_total_displacement_m / proposed_norm;
-      const double limited_b1 = scale * proposed_b1;
-      const double limited_b2 = scale * proposed_b2;
-      v1 = (limited_b1 - accumulated_b1_m_) / dt_s;
-      v2 = (limited_b2 - accumulated_b2_m_) / dt_s;
-      result.limited = true;
-    } else {
-      v1 = 0.0;
-      v2 = 0.0;
-    }
-  }
-  accumulated_b1_m_ += v1 * dt_s;
-  accumulated_b2_m_ += v2 * dt_s;
-  result.applied_speed_mps = std::hypot(v1, v2);
-  result.accumulated_displacement_m =
-    std::hypot(accumulated_b1_m_, accumulated_b2_m_);
-  result.velocity_base = basis_.b1 * v1 + basis_.b2 * v2;
-  result.reason = result.limited ? "ACTIVE_LIMITED" : "ACTIVE";
+  result.active = true;
+  result.applied_speed_mps = speed_mps_;
+  result.velocity_base = tangent_unit * speed_mps_;
+  accumulated_displacement_m_ += speed_mps_ * dt_s;
+  result.accumulated_displacement_m = accumulated_displacement_m_;
+  result.reason = result.limited ? "ACTIVE_ADAPTIVE_LIMITED" : "ACTIVE_ADAPTIVE";
   return result;
 }
 

@@ -1,5 +1,8 @@
 # 实时方向纠偏 V1.0 开发记录
 
+> 本文是标签 `v1.1-direction-shadow` 的历史留档；当前主动算法见
+> `directional_correction_v2.md`。
+
 ## 当前结论
 
 V1.0 已完成“算法模块 + ROS2 消息链 + shadow 模式”开发。默认配置为

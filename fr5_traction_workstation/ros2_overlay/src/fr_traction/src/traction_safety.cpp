@@ -18,7 +18,6 @@ void SafetyMonitor::set_limits(const SafetyLimits & limits)
 
 void SafetyMonitor::reset()
 {
-  lateral_started_s_ = -1.0;
 }
 
 SafetyFault SafetyMonitor::update(
@@ -46,17 +45,9 @@ SafetyFault SafetyMonitor::update(
   {
     return SafetyFault::WRENCH_INVALID;
   }
-  if (sample.metrics.lateral_force_n >= limits_.lateral_force_n) {
-    if (lateral_started_s_ < 0.0) {
-      lateral_started_s_ = now_s;
-    }
-    if (now_s - lateral_started_s_ >= limits_.lateral_duration_s) {
-      return SafetyFault::LATERAL_FORCE;
-    }
-  } else {
-    lateral_started_s_ = -1.0;
-  }
-
+  // A perpendicular force is direction-change evidence, not an over-force
+  // fault. The adaptive tracker consumes it while hardware health, feedback
+  // freshness, emergency stop and workspace limits remain enforced here.
   if (!std::isfinite(sample.axis_displacement_m) ||
     std::abs(sample.axis_displacement_m) >= limits_.axial_travel_m)
   {

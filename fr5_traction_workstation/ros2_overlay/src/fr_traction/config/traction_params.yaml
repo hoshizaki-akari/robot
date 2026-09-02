@@ -9,7 +9,8 @@ traction_controller:
     force_deadband_n: 0.15
     traction_max_speed_mps: 0.005
     traction_max_acc_mps2: 0.02
-    direction_correction_max_speed_mps: 0.0005
+    direction_correction_max_speed_mps: 0.020
+    combined_max_speed_mps: 0.025
     pretension_speed_mps: 0.002
     # Pause output quickly when feedback/commands stop. The manager below has
     # a longer fault window so one recoverable SDK jitter does not end a run.
@@ -25,28 +26,27 @@ traction_manager:
     control_rate_hz: 100.0
     status_rate_hz: 20.0
     force_filter_cutoff_hz: 5.0
-    # Direction V1 starts in shadow mode: the algorithm calculates and logs
-    # corrections but does not send lateral motion to the real FR5.
-    direction_correction_mode: shadow
+    # Active adaptive direction following. Small direction jitter is ignored;
+    # a sustained direction is accepted as the new rope direction.
+    direction_correction_mode: active
     direction_fast_cutoff_hz: 4.0
-    direction_slow_cutoff_hz: 0.6
-    direction_robust_window_size: 7
+    direction_slow_cutoff_hz: 1.0
+    direction_robust_window_size: 11
     direction_minimum_force_n: 0.5
-    direction_minimum_forward_cosine: 0.20
-    direction_change_confirm_s: 0.15
-    direction_settling_s: 0.25
-    direction_correction_position_gain_s_inv: 0.30
-    direction_correction_damping_n_per_m: 0.50
-    direction_correction_minimum_lateral_force_n: 0.03
-    direction_correction_max_speed_mps: 0.0005
-    direction_correction_max_displacement_m: 0.003
-    # Identified from the 2026-09-02 fixed-target base X/Y sign test.
-    # Units are N/m; the measured values were 0.00647, 0.00584,
-    # 0.01079 and 0.00076 N/mm.
-    direction_j11_n_per_m: 6.47
-    direction_j12_n_per_m: 5.84
-    direction_j21_n_per_m: 10.79
-    direction_j22_n_per_m: 0.76
+    direction_recovery_confirm_s: 0.30
+    direction_change_confirm_s: 0.20
+    direction_settling_s: 0.50
+    direction_candidate_max_dispersion_deg: 8.0
+    direction_ambiguity_timeout_s: 8.0
+    # Angular tracking rate is proportional to remaining angle (fast first,
+    # slow near the target); the maximum is only a numerical guard.
+    direction_tracking_gain_s_inv: 5.0
+    direction_tracking_max_rate_deg_s: 180.0
+    # Cartesian follow speed uses the same fast-then-slow angular law. There
+    # is intentionally no accumulated direction-following distance limit.
+    direction_follow_speed_gain_mps_per_rad: 0.020
+    direction_correction_max_speed_mps: 0.020
+    direction_follow_max_acceleration_mps2: 0.10
     # Fast through the large force error, slow down during the final 1 N.
     target_ramp_fast_nps: 3.0
     target_ramp_slow_nps: 0.5
@@ -71,9 +71,8 @@ traction_manager:
     force_deadband_n: 0.15
     # This timeout covers a bounded 80 mm low-speed return at 2 mm/s.
     release_timeout_s: 60.0
-    lateral_force_limit_n: 5.0
-    # The axial force is regulated to the selected target; it is not a
-    # separate fault condition. Travel and lateral-force guards remain.
+    # Force magnitude and temporary lateral force are control inputs, not
+    # software fault conditions. Hardware and workspace guards remain.
     axial_travel_limit_m: 0.080
     # Two-stage stale-data handling: motion is disabled after 0.25 s, while
     # wrench/pose gaps still fault at 1.2 s. The FR5 SDK health heartbeat is
