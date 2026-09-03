@@ -138,6 +138,33 @@ TEST(DirectionCorrection, NearbyWanderFormsOneEquivalentDirectionWithoutFlapping
     4.0 * 3.14159265358979323846 / 180.0);
 }
 
+TEST(DirectionCorrection, HysteresisBandRemainsStableInsteadOfHoldingForceControl)
+{
+  DirectionFilterConfig config;
+  config.change_confirm_s = 0.20;
+  DirectionEstimator estimator({0.0, 0.0, 1.0}, config);
+  DirectionNoiseProfile profile;
+  profile.valid = true;
+  profile.entry_angle_rad = 6.0 * 3.14159265358979323846 / 180.0;
+  profile.exit_angle_rad = 2.0 * 3.14159265358979323846 / 180.0;
+  estimator.set_noise_profile(profile);
+
+  DirectionEstimate estimate;
+  for (int index = 0; index < 40; ++index) {
+    estimate = estimator.update({0.0, 0.0, 5.0}, 0.01);
+  }
+  ASSERT_EQ(estimate.state, DirectionTrackState::STABLE);
+
+  // Four degrees is outside the tight post-correction exit band but below
+  // the six-degree new-direction entry threshold. It is tolerated noise,
+  // not a reason to stop axial force control.
+  for (int index = 0; index < 300; ++index) {
+    estimate = estimator.update(direction_from_degrees(4.0) * 2.0, 0.01);
+    EXPECT_EQ(estimate.state, DirectionTrackState::STABLE);
+    EXPECT_FALSE(estimate.candidate_confirmed);
+  }
+}
+
 TEST(DirectionCorrection, AlternatingIncompatibleDirectionsEventuallyBecomeAmbiguous)
 {
   DirectionFilterConfig config;

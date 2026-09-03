@@ -76,7 +76,11 @@ def generate_launch_description():
             # base command must be passed through unchanged for the force
             # controller to move in the measured increasing-force direction.
             "base_servo_sign": 1.0,
-            "return_speed_mm_s": 2.0,
+            # Position-driven release uses a bounded trapezoidal profile:
+            # quick cruise for long returns, smooth acceleration/deceleration
+            # around the two endpoints.
+            "return_speed_mm_s": 20.0,
+            "return_acceleration_mm_s2": 100.0,
             # Supports the web-configurable 500 mm traction travel plus a
             # small stopping-distance margin for the position-driven return.
             "return_max_distance_mm": 520.0,

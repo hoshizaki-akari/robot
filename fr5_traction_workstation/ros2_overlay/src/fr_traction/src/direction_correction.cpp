@@ -466,23 +466,16 @@ void DirectionEstimator::update_candidate_and_track(DirectionEstimate & estimate
     } else {
       candidate_valid_ = false;
       candidate_elapsed_s_ = 0.0;
-      const double tracked_error = angle_between(estimate.fast_direction, tracked_direction_);
-      if (std::isfinite(tracked_error) && tracked_error <= estimate.exit_angle_rad) {
-        if (state_ == DirectionTrackState::SENSOR_HOLD) {
-          settling_elapsed_s_ = config_.settling_s;
-        } else {
-          settling_elapsed_s_ += safe_dt;
-        }
-        if (settling_elapsed_s_ >= config_.settling_s || state_ == DirectionTrackState::STABLE) {
-          state_ = DirectionTrackState::STABLE;
-          ambiguity_elapsed_s_ = 0.0;
-        } else {
-          state_ = DirectionTrackState::SETTLING;
-        }
-      } else {
-        settling_elapsed_s_ = 0.0;
-        state_ = DirectionTrackState::SUSPECT;
-      }
+      // The entry/exit thresholds are hysteresis, not a third no-motion
+      // region. A robust direction below the entry threshold is ordinary
+      // tolerated wander, even if the faster filter has not yet returned
+      // inside the tighter exit threshold. The former SUSPECT assignment
+      // could therefore pause force control forever in this band (seen for
+      // 15.8 s in a real run). Exit is only relevant after a confirmed
+      // correction while settling onto the accepted new direction.
+      settling_elapsed_s_ = 0.0;
+      ambiguity_elapsed_s_ = std::max(0.0, ambiguity_elapsed_s_ - safe_dt);
+      state_ = DirectionTrackState::STABLE;
     }
   }
   estimate.tracked_direction = tracked_direction_;

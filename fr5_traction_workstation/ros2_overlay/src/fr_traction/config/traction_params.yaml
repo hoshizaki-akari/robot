@@ -69,8 +69,8 @@ traction_manager:
     # A 0.15 N deadband prevents the former 0.5 N shortfall while remaining
     # wider than the normal sensor noise after filtering.
     force_deadband_n: 0.15
-    # Covers a 500 mm position-driven return at 2 mm/s plus communication
-    # margin. Force control remains disabled throughout the return.
+    # Covers the longest configurable position-driven return plus generous
+    # communication margin. Force control remains disabled throughout it.
     release_timeout_s: 300.0
     # Force magnitude and temporary lateral force are control inputs, not
     # software fault conditions. Hardware and workspace guards remain.

@@ -69,4 +69,21 @@ TEST(TractionMath, RobustCalibrationRejectsOutliersAndWobble)
   EXPECT_FALSE(robust_calibrate_direction(samples, 80, 15.0).success);
 }
 
+TEST(TractionMath, DirectionCalibrationIgnoresChangingTensionMagnitude)
+{
+  std::vector<Vec3> samples;
+  for (int i = 0; i < 100; ++i) {
+    const double magnitude = 9.0 - 3.0 * static_cast<double>(i) / 99.0;
+    const double angle = static_cast<double>((i % 7) - 3) * 0.4 *
+      3.14159265358979323846 / 180.0;
+    samples.push_back({magnitude * std::cos(angle), magnitude * std::sin(angle), 0.0});
+  }
+  const auto result = robust_calibrate_direction(samples, 80, 15.0);
+  ASSERT_TRUE(result.success);
+  EXPECT_GT(result.retained_fraction, 0.95);
+  EXPECT_NEAR(result.direction.x, 1.0, 1e-3);
+  EXPECT_NEAR(result.direction.y, 0.0, 1e-3);
+  EXPECT_LT(result.angle_p95_deg, 2.0);
+}
+
 }  // namespace fr_traction

@@ -80,8 +80,18 @@ class Fr5DirectDriver(Node):
         ):
             raise ValueError("base_servo_sign must be either -1.0 or 1.0")
         self._return_speed_mm_s = float(
-            self.declare_parameter("return_speed_mm_s", 2.0).value
+            self.declare_parameter("return_speed_mm_s", 20.0).value
         )
+        self._return_acceleration_mm_s2 = float(
+            self.declare_parameter("return_acceleration_mm_s2", 100.0).value
+        )
+        if not math.isfinite(self._return_speed_mm_s) or self._return_speed_mm_s <= 0.0:
+            raise ValueError("return_speed_mm_s must be positive")
+        if (
+            not math.isfinite(self._return_acceleration_mm_s2)
+            or self._return_acceleration_mm_s2 <= 0.0
+        ):
+            raise ValueError("return_acceleration_mm_s2 must be positive")
         self.declare_parameter("return_max_distance_mm", 35.0)
         self._tension_search_max_mm = float(
             self.declare_parameter("tension_search_max_mm", 30.0).value
@@ -168,6 +178,9 @@ class Fr5DirectDriver(Node):
         self._return_active = False
         self._return_started_at = 0.0
         self._return_duration_s = 0.0
+        self._return_distance_mm = 0.0
+        self._return_acceleration_time_s = 0.0
+        self._return_cruise_time_s = 0.0
         self._return_start_pose = None
         self._return_target_pose = None
         self._auto_tension_active = False
@@ -343,9 +356,28 @@ class Fr5DirectDriver(Node):
         self._return_started_at = time.monotonic()
         self._return_start_pose = list(self._latest_pose)
         self._return_target_pose = list(target_pose)
-        self._return_duration_s = max(0.5, distance_mm / self._return_speed_mm_s)
+        self._return_distance_mm = distance_mm
+        acceleration_time_s = self._return_speed_mm_s / self._return_acceleration_mm_s2
+        acceleration_distance_mm = (
+            self._return_speed_mm_s * self._return_speed_mm_s
+            / self._return_acceleration_mm_s2
+        )
+        if distance_mm <= acceleration_distance_mm:
+            self._return_acceleration_time_s = math.sqrt(
+                distance_mm / self._return_acceleration_mm_s2
+            )
+            self._return_cruise_time_s = 0.0
+        else:
+            self._return_acceleration_time_s = acceleration_time_s
+            self._return_cruise_time_s = (
+                distance_mm - acceleration_distance_mm
+            ) / self._return_speed_mm_s
+        self._return_duration_s = max(
+            0.08,
+            2.0 * self._return_acceleration_time_s + self._return_cruise_time_s,
+        )
         response.success = True
-        response.message = f"Low-speed return to the {label} has started."
+        response.message = f"Position return to the {label} has started."
         return response
 
     def _on_auto_tension(self, _request, response):
@@ -541,7 +573,28 @@ class Fr5DirectDriver(Node):
                 )
             return
         if self._return_active:
-            alpha = min(1.0, (now - self._return_started_at) / self._return_duration_s)
+            elapsed_s = min(self._return_duration_s, now - self._return_started_at)
+            acceleration_s = self._return_acceleration_time_s
+            cruise_s = self._return_cruise_time_s
+            acceleration = self._return_acceleration_mm_s2
+            peak_speed = acceleration * acceleration_s
+            if elapsed_s < acceleration_s:
+                travelled_mm = 0.5 * acceleration * elapsed_s * elapsed_s
+            elif elapsed_s < acceleration_s + cruise_s:
+                travelled_mm = (
+                    0.5 * acceleration * acceleration_s * acceleration_s
+                    + peak_speed * (elapsed_s - acceleration_s)
+                )
+            elif elapsed_s < self._return_duration_s:
+                remaining_s = self._return_duration_s - elapsed_s
+                travelled_mm = self._return_distance_mm - (
+                    0.5 * acceleration * remaining_s * remaining_s
+                )
+            else:
+                travelled_mm = self._return_distance_mm
+            alpha = 1.0 if self._return_distance_mm <= 1e-9 else min(
+                1.0, max(0.0, travelled_mm / self._return_distance_mm)
+            )
             target = [
                 start + alpha * (target - start)
                 for start, target in zip(self._return_start_pose, self._return_target_pose)

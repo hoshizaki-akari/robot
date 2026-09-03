@@ -218,27 +218,51 @@ CalibrationResult robust_calibrate_direction(
     result.reason = "CALIBRATION_TOO_FEW_SAMPLES";
     return result;
   }
+  // Direction locking must be invariant to tension magnitude. During the
+  // three-second hold the rope can relax by several newtons while still
+  // pointing in one perfectly usable direction. Comparing the raw vectors
+  // made that ordinary magnitude drift look like an outlier cloud.
+  std::vector<Vec3> units;
   std::vector<double> xs, ys, zs;
+  units.reserve(samples.size());
   xs.reserve(samples.size()); ys.reserve(samples.size()); zs.reserve(samples.size());
   for (const auto & sample : samples) {
     if (!finite(sample)) {
       result.reason = "CALIBRATION_NONFINITE_SAMPLE";
       return result;
     }
-    xs.push_back(sample.x); ys.push_back(sample.y); zs.push_back(sample.z);
+    Vec3 unit;
+    if (!normalize(sample, unit)) {
+      result.reason = "CALIBRATION_SAMPLE_FORCE_INVALID";
+      return result;
+    }
+    units.push_back(unit);
+    xs.push_back(unit.x); ys.push_back(unit.y); zs.push_back(unit.z);
   }
-  const Vec3 center{median(xs), median(ys), median(zs)};
+  Vec3 center;
+  if (!normalize({median(xs), median(ys), median(zs)}, center)) {
+    result.reason = "CALIBRATION_MEAN_FORCE_INVALID";
+    return result;
+  }
   std::vector<double> residuals;
   residuals.reserve(samples.size());
-  for (const auto & sample : samples) {
-    residuals.push_back(norm(sample - center));
+  for (const auto & unit : units) {
+    residuals.push_back(std::acos(std::clamp(dot(unit, center), -1.0, 1.0)));
   }
-  const double mad = median(residuals);
-  const double threshold = std::max(0.5, 3.0 * mad);
+  const double residual_center = median(residuals);
+  std::vector<double> residual_deviations;
+  residual_deviations.reserve(residuals.size());
+  for (const double residual : residuals) {
+    residual_deviations.push_back(std::abs(residual - residual_center));
+  }
+  const double mad = median(residual_deviations);
+  constexpr double kMinimumAngularGate = 2.0 * kPi / 180.0;
+  const double threshold = std::max(
+    kMinimumAngularGate, residual_center + 4.0 * 1.4826 * mad);
   std::vector<Vec3> retained;
   retained.reserve(samples.size());
   for (size_t i = 0; i < samples.size(); ++i) {
-    if (residuals[i] <= threshold) {retained.push_back(samples[i]);}
+    if (residuals[i] <= threshold) {retained.push_back(units[i]);}
   }
   result.retained_fraction = static_cast<double>(retained.size()) / samples.size();
   if (retained.size() < minimum_samples || result.retained_fraction < 0.80) {
