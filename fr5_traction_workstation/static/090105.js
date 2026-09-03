@@ -12,7 +12,10 @@ const permissions = {
 let sessionUser = null;
 const TARGET_FORCE_MIN = 1;
 const TARGET_FORCE_MAX = 20;
+const TRAVEL_LIMIT_MIN_MM = 50;
+const TRAVEL_LIMIT_MAX_MM = 500;
 let currentForce = 10;
+let maxTravelMm = 150;
 let actualForce = 0;
 let activeRecord = null;
 let timerHandle = null;
@@ -23,6 +26,7 @@ let lastStateAt = 0;
 let dataOnline = false;
 let directionLocked = false;
 let tractionState = 0;
+let previousDirectionTrackState = 4;
 let pendingStart = false;
 let finishRequested = false;
 let slackZeroAvailable = false;
@@ -81,15 +85,22 @@ function simpleReason(value) {
 function simpleErrorMessage(error) {
   const text = String(error?.message || '');
   if (/target|1 N and 20|1～20/i.test(text)) return '目标牵引力需在1～20N';
+  if (/maximum travel|行程/i.test(text)) return '最大行程只能在牵引停止时设置';
   if (/direction|calibrat/i.test(text)) return '请先完成方向确认';
   if (/state|rejected|not available|unavailable|不可用/i.test(text)) return '当前状态不能执行';
   return /[一-鿿]/.test(text) ? text : '操作失败，请检查设备';
 }
 
 async function postJson(path, body = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (sessionUser) {
+    headers['X-Operator'] = encodeURIComponent(sessionUser.name);
+    headers['X-Role'] = encodeURIComponent(sessionUser.role);
+  }
+  headers['X-Operation-Detail'] = encodeURIComponent(JSON.stringify(body));
   const response = await fetch(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(body)
   });
   const data = await response.json();
@@ -116,8 +127,8 @@ function applyPermissions() {
   const permission = permissions[sessionUser.role];
   $('currentUser').textContent = sessionUser.name;
   $('currentRole').textContent = sessionUser.role;
-  $('settingsBtn').disabled = !permission.settings;
   const motionActive = [6, 7].includes(tractionState) || pendingStart;
+  $('settingsBtn').disabled = !permission.settings || motionActive;
   document.querySelectorAll('.force-adjust').forEach(button => {
     button.disabled = !permission.adjust || motionActive;
   });
@@ -265,8 +276,8 @@ function renderRecords() {
     && (!status || record.status === status)
   );
   $('recordsBody').innerHTML = list.length
-    ? list.map(record => `<tr><td>${record.id}</td><td>${record.start}</td><td>${record.end}</td><td>${record.operator}</td><td>${record.role}</td><td>${record.target}</td><td>${record.average}</td><td>${record.maximum}</td><td>${record.status}</td><td>${record.reason}</td></tr>`).join('')
-    : '<tr><td colspan="10" class="empty">暂无符合条件的牵引记录</td></tr>';
+    ? list.map(record => `<tr><td>${record.id}</td><td>${record.start}</td><td>${record.end}</td><td>${record.operator}</td><td>${record.role}</td><td>${record.target}</td><td>${record.average}</td><td>${record.maximum}</td><td>${record.status}</td><td>${record.reason}</td><td><button class="secondary-btn row-export-btn" data-export-session="${record.id}">导出日志</button></td></tr>`).join('')
+    : '<tr><td colspan="11" class="empty">暂无符合条件的牵引记录</td></tr>';
 }
 
 function builtinTimeText(value) {
@@ -285,8 +296,8 @@ async function refreshHistory() {
         id: summary.session_id || '--',
         start: builtinTimeText(summary.start_time),
         end: builtinTimeText(summary.end_time),
-        operator: '--',
-        role: '系统',
+        operator: summary.operator || '--',
+        role: summary.role || '系统',
         target: Number(summary.target_force_n || 0).toFixed(1),
         average: Number(summary.average_force_n || 0).toFixed(1),
         maximum: Number(summary.max_force_n || 0).toFixed(1),
@@ -304,6 +315,14 @@ function exportRecords() {
   const link = document.createElement('a');
   link.href = '/api/traction/export/latest';
   link.download = `牵引记录_${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+}
+
+function exportSession(sessionId) {
+  if (!sessionId || !sessionId.startsWith('session_')) return toast('记录编号无效');
+  const link = document.createElement('a');
+  link.href = `/api/traction/export/session/${encodeURIComponent(sessionId)}`;
+  link.download = `${sessionId}_完整日志.zip`;
   link.click();
 }
 
@@ -408,9 +427,19 @@ function handleState(state) {
   $('tensionState').textContent = tensionDetected ? '牵引带：紧' : '牵引带：松';
   $('tensionState').classList.toggle('tight', tensionDetected);
   const directionTrackState = Number(traction.direction_track_state ?? 4);
-  const directionFollowing = tractionState === 6 && directionTrackState !== 0;
-  $('directionState').textContent = directionFollowing ? '正在跟随方向' : '方向稳定';
+  const directionWaiting = tractionState === 6 && directionTrackState === 4;
+  const directionFollowing = tractionState === 6 && ![0, 4].includes(directionTrackState);
+  if (tractionState === 6 && directionTrackState === 2 && previousDirectionTrackState !== 2) {
+    toast('新方向已确认');
+  }
+  if (tractionState === 6 && directionTrackState === 0 && [2, 3].includes(previousDirectionTrackState)) {
+    toast('方向校准成功');
+  }
+  $('directionState').textContent = directionWaiting
+    ? '等待张紧'
+    : (directionFollowing ? '正在跟随方向' : '方向稳定');
   $('directionState').classList.toggle('following', directionFollowing);
+  previousDirectionTrackState = directionTrackState;
 
   const vector = Array.isArray(traction.force_vector_n) ? traction.force_vector_n : [];
   ['forceFx', 'forceFy', 'forceFz'].forEach((id, index) => {
@@ -505,26 +534,55 @@ $('recordsBtn').addEventListener('click', () => {
   renderRecords();
   $('recordsModal').classList.remove('hidden');
 });
-$('settingsBtn').addEventListener('click', () => {
+$('settingsBtn').addEventListener('click', async () => {
   if (!sessionUser || !permissions[sessionUser.role].settings) {
     return toast('当前角色无权修改参数');
   }
   $('settingTarget').value = currentForce;
+  $('settingTravelLimit').value = Math.round(maxTravelMm);
   $('settingsModal').classList.remove('hidden');
+  try {
+    const response = await fetch('/api/traction/settings', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || '读取参数失败');
+    const value = Number(data.max_travel_mm);
+    if (Number.isFinite(value)) {
+      maxTravelMm = value;
+      $('settingTravelLimit').value = Math.round(maxTravelMm);
+    }
+  } catch (error) {
+    toast(simpleErrorMessage(error));
+  }
 });
 $('saveSettingsBtn').addEventListener('click', async () => {
   const target = Number($('settingTarget').value);
+  const travelLimit = Number($('settingTravelLimit').value);
   if (target < TARGET_FORCE_MIN || target > TARGET_FORCE_MAX) {
     return toast('目标牵引力必须在 1～20 N');
   }
-  if (await changeTarget(target)) {
-    $('settingsModal').classList.add('hidden');
-    toast('参数已保存');
+  if (!Number.isFinite(travelLimit) || travelLimit < TRAVEL_LIMIT_MIN_MM ||
+      travelLimit > TRAVEL_LIMIT_MAX_MM) {
+    return toast('最大行程请输入 50～500 mm');
   }
+  try {
+    await postJson('/api/traction/settings', { max_travel_mm: travelLimit });
+    maxTravelMm = travelLimit;
+  } catch (error) {
+    return toast(simpleErrorMessage(error));
+  }
+  if (!(await changeTarget(target))) {
+    return;
+  }
+  $('settingsModal').classList.add('hidden');
+  toast('参数已保存');
 });
 $('recordSearch').addEventListener('input', renderRecords);
 $('recordStatusFilter').addEventListener('change', renderRecords);
 $('exportBtn').addEventListener('click', exportRecords);
+$('recordsBody').addEventListener('click', event => {
+  const button = event.target.closest('[data-export-session]');
+  if (button) exportSession(button.dataset.exportSession);
+});
 document.querySelectorAll('[data-close]').forEach(button => {
   button.addEventListener('click', () => $(button.dataset.close).classList.add('hidden'));
 });

@@ -14,6 +14,7 @@
   <depend>controller_manager_msgs</depend>
   <depend>fairino_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>rcl_interfaces</depend>
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>

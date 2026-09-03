@@ -7,7 +7,7 @@ traction_controller:
     virtual_mass: 10.0
     virtual_damping: 80.0
     force_deadband_n: 0.15
-    traction_max_speed_mps: 0.005
+    traction_max_speed_mps: 0.020
     traction_max_acc_mps2: 0.02
     direction_correction_max_speed_mps: 0.020
     combined_max_speed_mps: 0.025
@@ -69,11 +69,14 @@ traction_manager:
     # A 0.15 N deadband prevents the former 0.5 N shortfall while remaining
     # wider than the normal sensor noise after filtering.
     force_deadband_n: 0.15
-    # This timeout covers a bounded 80 mm low-speed return at 2 mm/s.
-    release_timeout_s: 60.0
+    # Covers a 500 mm position-driven return at 2 mm/s plus communication
+    # margin. Force control remains disabled throughout the return.
+    release_timeout_s: 300.0
     # Force magnitude and temporary lateral force are control inputs, not
     # software fault conditions. Hardware and workspace guards remain.
-    axial_travel_limit_m: 0.080
+    # Maximum straight-line TCP distance from the pose captured when traction
+    # starts. The web settings page may change it between 0.05 and 0.50 m.
+    axial_travel_limit_m: 0.150
     # Two-stage stale-data handling: motion is disabled after 0.25 s, while
     # wrench/pose gaps still fault at 1.2 s. The FR5 SDK health heartbeat is
     # emitted by the same timer as ServoCart; a measured 0.607 s RPC gap needs

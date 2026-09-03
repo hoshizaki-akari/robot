@@ -27,6 +27,7 @@
 #include "fr_traction/msg/traction_status.hpp"
 #include "fr_traction/srv/set_target_force.hpp"
 #include "geometry_msgs/msg/wrench_stamped.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "std_msgs/msg/bool.hpp"
@@ -89,8 +90,8 @@ public:
     force_deadband_n_ = declare_parameter("force_deadband_n", 0.15);
     // The timeout now covers the direct, low-speed position return. It is not
     // a force-unloading timeout because RELEASING no longer runs force control.
-    release_timeout_s_ = declare_parameter("release_timeout_s", 60.0);
-    axial_travel_limit_m_ = declare_parameter("axial_travel_limit_m", 0.050);
+    release_timeout_s_ = declare_parameter("release_timeout_s", 300.0);
+    axial_travel_limit_m_ = declare_parameter("axial_travel_limit_m", 0.150);
     wrench_timeout_s_ = declare_parameter("wrench_timeout_s", 0.10);
     ee_state_timeout_s_ = declare_parameter("ee_state_timeout_s", 0.20);
     motion_pause_timeout_s_ = declare_parameter("motion_pause_timeout_s", 0.10);
@@ -128,6 +129,10 @@ public:
     SafetyLimits safety_limits;
     safety_limits.axial_travel_m = axial_travel_limit_m_;
     safety_monitor_.set_limits(safety_limits);
+    travel_limit_parameter_callback_ = add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter> & parameters) {
+        return update_runtime_parameters(parameters);
+      });
     force_filter_.set_cutoff(force_filter_cutoff_hz_);
     std::filesystem::create_directories(data_directory_);
 
@@ -240,6 +245,49 @@ public:
   }
 
 private:
+  rcl_interfaces::msg::SetParametersResult update_runtime_parameters(
+    const std::vector<rclcpp::Parameter> & parameters)
+  {
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful = true;
+    double requested_travel_limit_m = axial_travel_limit_m_;
+    bool travel_limit_requested = false;
+    for (const auto & parameter : parameters) {
+      if (parameter.get_name() != "axial_travel_limit_m") {continue;}
+      if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE) {
+        result.successful = false;
+        result.reason = "axial_travel_limit_m must be a floating-point value";
+        return result;
+      }
+      requested_travel_limit_m = parameter.as_double();
+      travel_limit_requested = true;
+    }
+    if (!travel_limit_requested) {return result;}
+    if (!std::isfinite(requested_travel_limit_m) || requested_travel_limit_m < 0.050 ||
+      requested_travel_limit_m > 0.500)
+    {
+      result.successful = false;
+      result.reason = "maximum travel must be between 0.05 and 0.50 m";
+      return result;
+    }
+    const auto state = state_machine_.state();
+    if (state == TractionState::PRETENSION || state == TractionState::CALIBRATING ||
+      state == TractionState::TRACTION || state == TractionState::RELEASING)
+    {
+      result.successful = false;
+      result.reason = "maximum travel can only be changed while traction is stopped";
+      return result;
+    }
+    axial_travel_limit_m_ = requested_travel_limit_m;
+    SafetyLimits safety_limits;
+    safety_limits.axial_travel_m = axial_travel_limit_m_;
+    safety_monitor_.set_limits(safety_limits);
+    RCLCPP_INFO(
+      get_logger(), "Maximum traction travel updated to %.1f mm.",
+      axial_travel_limit_m_ * 1000.0);
+    return result;
+  }
+
   void validate_parameters()
   {
     if (direction_correction_mode_name_ != "off" &&
@@ -271,7 +319,8 @@ private:
       std::isfinite(target_ramp_slow_window_n_) && target_ramp_slow_window_n_ > 0.0 &&
       std::isfinite(force_tolerance_n_) &&
       std::isfinite(release_timeout_s_) && release_timeout_s_ > 0.0 &&
-      std::isfinite(axial_travel_limit_m_) && axial_travel_limit_m_ > 0.0 &&
+      std::isfinite(axial_travel_limit_m_) && axial_travel_limit_m_ >= 0.050 &&
+      axial_travel_limit_m_ <= 0.500 &&
       std::isfinite(wrench_timeout_s_) && wrench_timeout_s_ > 0.0 &&
       std::isfinite(ee_state_timeout_s_) && ee_state_timeout_s_ > 0.0 &&
       std::isfinite(motion_pause_timeout_s_) && motion_pause_timeout_s_ > 0.0 &&
@@ -753,7 +802,7 @@ private:
       "raw_dir_x,raw_dir_y,raw_dir_z,robust_dir_x,robust_dir_y,robust_dir_z,"
       "filtered_dir_x,filtered_dir_y,filtered_dir_z,"
       "candidate_dir_x,candidate_dir_y,candidate_dir_z,"
-      "ee_x,ee_y,ee_z,axis_displacement_m,"
+      "ee_x,ee_y,ee_z,axis_displacement_m,total_travel_m,"
       "velocity_cmd_mps,direction_track_state,direction_error_rad,"
       "direction_fast_slow_error_rad,direction_candidate_dispersion_rad,"
       "direction_candidate_elapsed_s,direction_ambiguity_elapsed_s,"
@@ -866,6 +915,12 @@ private:
     return dot(latest_ee_position_ - origin, direction);
   }
 
+  double total_travel_distance() const
+  {
+    if (!finite(latest_ee_position_) || !finite(session_start_position_)) {return 0.0;}
+    return norm(latest_ee_position_ - session_start_position_);
+  }
+
   void publish_command(
     uint8_t mode,
     const Vec3 & direction,
@@ -907,6 +962,9 @@ private:
     transition(TractionState::FAULT);
     publish_disabled();
     request_controller_stop();
+    // Preserve the terminal state and reason before finalize_session() closes
+    // the detailed CSV stream.
+    write_record_sample(now());
     finalize_session();
     RCLCPP_ERROR(get_logger(), "Traction fault latched: %s (%s).", code.c_str(), reason.c_str());
   }
@@ -981,7 +1039,10 @@ private:
     sample.ui_heartbeat_fresh = fresh(last_ui_heartbeat_steady_at_, ui_heartbeat_timeout_s_);
     sample.raw_wrench = latest_wrench_;
     sample.metrics = current_metrics();
-    sample.axis_displacement_m = axis_displacement();
+    // During traction, maximum travel is the straight-line TCP distance from
+    // the pose captured at start. It remains intuitive when direction changes.
+    sample.axis_displacement_m = state == TractionState::TRACTION ?
+      total_travel_distance() : axis_displacement();
     if (!sample.wrench_fresh || !sample.ee_fresh) {
       RCLCPP_ERROR(
         get_logger(),
@@ -1227,7 +1288,6 @@ private:
           publish_disabled();
           break;
         }
-        current_command_target_n_ = ramped_command_target(dt_s);
         update_direction_correction(dt_s);
         if (direction_estimate_.ambiguity_timed_out) {
           enter_fault(
@@ -1235,6 +1295,25 @@ private:
             "The measured direction remained mutually inconsistent for too long.");
           break;
         }
+        // Direction changes are repeatable sub-cycles within one traction run:
+        // wait for a stable candidate, correct laterally, settle, then resume
+        // axial force control. Temporary slack or an uncertain transition is
+        // a zero-motion hold rather than a fault or stale-direction movement.
+        if (direction_estimate_.state == DirectionTrackState::SENSOR_HOLD ||
+          direction_estimate_.state == DirectionTrackState::SUSPECT ||
+          direction_estimate_.state == DirectionTrackState::SETTLING ||
+          direction_estimate_.state == DirectionTrackState::AMBIGUOUS)
+        {
+          publish_disabled();
+          break;
+        }
+        if (direction_estimate_.state == DirectionTrackState::CORRECTING) {
+          publish_command(
+            msg::TractionCommand::RELEASING, active_direction(), current_command_target_n_,
+            direction_correction_command_mode(), lateral_correction_velocity_base_);
+          break;
+        }
+        current_command_target_n_ = ramped_command_target(dt_s);
         publish_command(
           msg::TractionCommand::TRACTION, active_direction(), current_command_target_n_,
           direction_correction_command_mode(), lateral_correction_velocity_base_);
@@ -1278,7 +1357,8 @@ private:
       direction_estimate_.candidate_direction.z << ','
                    << latest_ee_position_.x << ',' << latest_ee_position_.y << ',' <<
       latest_ee_position_.z << ','
-                   << axis_displacement() << ',' << velocity_command_mps_ << ','
+                   << axis_displacement() << ',' << total_travel_distance() << ','
+                   << velocity_command_mps_ << ','
                    << static_cast<int>(direction_estimate_.state) << ','
                    << direction_estimate_.fast_angle_rad << ','
                    << direction_estimate_.fast_slow_angle_rad << ','
@@ -1510,8 +1590,8 @@ private:
   double validated_target_max_n_ = 20.0;
   double force_tolerance_n_ = 1.0;
   double force_deadband_n_ = 0.15;
-  double release_timeout_s_ = 60.0;
-  double axial_travel_limit_m_ = 0.050;
+  double release_timeout_s_ = 300.0;
+  double axial_travel_limit_m_ = 0.150;
   double wrench_timeout_s_ = 0.10;
   double ee_state_timeout_s_ = 0.20;
   double motion_pause_timeout_s_ = 0.10;
@@ -1621,6 +1701,8 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr emergency_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_fault_service_;
   rclcpp::Service<srv::SetTargetForce>::SharedPtr target_force_service_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
+    travel_limit_parameter_callback_;
   rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedPtr switch_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr pretraction_return_client_;
   rclcpp::TimerBase::SharedPtr control_timer_;

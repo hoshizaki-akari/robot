@@ -169,6 +169,7 @@
     .toolbar-left, .toolbar-right { display: flex; gap: 9px; }
     .toolbar input, .toolbar select { padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 7px; }
     .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 9px; }
+    .row-export-btn { padding: 6px 10px; white-space: nowrap; }
     table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 14px; }
     th, td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: center; }
     th { position: sticky; top: 0; background: #f1f5f9; color: #334155; }
@@ -283,10 +284,10 @@
       <div class="modal-body">
         <div class="toolbar">
           <div class="toolbar-left"><input id="recordSearch" placeholder="搜索编号或操作人员"><select id="recordStatusFilter"><option value="">全部状态</option><option value="已完成">已完成</option><option value="异常终止">异常终止</option></select></div>
-          <div class="toolbar-right"><button class="secondary-btn" id="exportBtn">导出 CSV</button></div>
+          <div class="toolbar-right"><button class="secondary-btn" id="exportBtn">导出全部摘要</button></div>
         </div>
         <div class="table-wrap">
-          <table><thead><tr><th>记录编号</th><th>开始时间</th><th>结束时间</th><th>操作人员</th><th>角色</th><th>目标力(N)</th><th>平均力(N)</th><th>最大力(N)</th><th>状态</th><th>原因</th></tr></thead><tbody id="recordsBody"></tbody></table>
+          <table><thead><tr><th>记录编号</th><th>开始时间</th><th>结束时间</th><th>操作人员</th><th>角色</th><th>目标力(N)</th><th>平均力(N)</th><th>最大力(N)</th><th>状态</th><th>原因</th><th>导出</th></tr></thead><tbody id="recordsBody"></tbody></table>
         </div>
       </div>
     </div>
@@ -297,6 +298,7 @@
       <div class="modal-header"><h2>牵引参数设置</h2><button class="close-btn" data-close="settingsModal">×</button></div>
       <div class="modal-body">
         <div class="form-item"><label>默认目标牵引力（N）</label><input id="settingTarget" type="number" min="1" max="20" step="0.1"></div>
+        <div class="form-item"><label>最大行程（mm）</label><input id="settingTravelLimit" type="number" min="50" max="500" step="10"></div>
         <button class="primary-btn" id="saveSettingsBtn">保存参数</button>
       </div>
     </div>

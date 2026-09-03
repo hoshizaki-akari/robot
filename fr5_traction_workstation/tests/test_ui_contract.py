@@ -33,6 +33,11 @@ class UiContractTest(unittest.TestCase):
         self.assertNotIn("Math.random()", script)
         self.assertNotIn("actualForce +=", script)
         self.assertIn("previousForce", script)
+        self.assertIn("导出全部摘要", page)
+        self.assertIn("data-export-session", script)
+        self.assertIn("/api/traction/export/session/", script)
+        self.assertIn("等待张紧", script)
+        self.assertIn("方向校准成功", script)
 
     def test_no_old_platform_b_dependency(self):
         page = (ROOT / "static" / "090105.html").read_text(encoding="utf-8")

@@ -40,6 +40,7 @@ class RosBridge:
         self._executor: Any = None
         self._thread: threading.Thread | None = None
         self._clients: dict[str, Any] = {}
+        self._parameter_clients: dict[str, Any] = {}
         self._heartbeat_publisher: Any = None
         self._started = False
         self._last_joint_at = 0.0
@@ -68,6 +69,7 @@ class RosBridge:
             import rclpy
             from fr_traction.msg import TractionHistory, TractionStatus
             from fr_traction.srv import SetTargetForce
+            from rcl_interfaces.srv import GetParameters, SetParametersAtomically
             from sensor_msgs.msg import JointState
             from std_msgs.msg import Empty
             from std_srvs.srv import Trigger
@@ -116,6 +118,19 @@ class RosBridge:
                 SetTargetForce, "/traction/set_target_force"
             ),
         }
+        self._parameter_clients = {
+            "get_manager": self._node.create_client(
+                GetParameters, "/traction_manager/get_parameters"
+            ),
+            "set_manager": self._node.create_client(
+                SetParametersAtomically,
+                "/traction_manager/set_parameters_atomically",
+            ),
+            "set_driver": self._node.create_client(
+                SetParametersAtomically,
+                "/fr5_direct_driver/set_parameters_atomically",
+            ),
+        }
         from rclpy.executors import MultiThreadedExecutor
 
         self._executor = MultiThreadedExecutor(num_threads=2)
@@ -132,6 +147,7 @@ class RosBridge:
             self._node.destroy_node()
         self._executor = None
         self._node = None
+        self._parameter_clients = {}
 
     @staticmethod
     def _stamp_seconds(message: Any) -> float:
@@ -343,6 +359,85 @@ class RosBridge:
         if not response.success:
             raise RosBridgeError(response.message)
         return {"success": True, "message": response.message, "snapshot": self.snapshot()}
+
+    @staticmethod
+    def _wait_for_future(future: Any, timeout_s: float, operation: str) -> Any:
+        event = threading.Event()
+        future.add_done_callback(lambda _: event.set())
+        if not event.wait(timeout=timeout_s):
+            raise RosBridgeError(f"{operation}超时")
+        try:
+            return future.result()
+        except Exception as error:
+            raise RosBridgeError(f"{operation}失败：{error}") from error
+
+    def get_motion_settings(self) -> dict[str, Any]:
+        if not self._started or self._node is None:
+            raise RosBridgeError("ROS2牵引系统不可用，请先启动FR5牵引系统")
+        client = self._parameter_clients.get("get_manager")
+        if client is None or not client.wait_for_service(timeout_sec=0.8):
+            raise RosBridgeError("牵引参数服务不可用")
+        request = client.srv_type.Request()
+        request.names = ["axial_travel_limit_m"]
+        response = self._wait_for_future(
+            client.call_async(request), 2.0, "读取牵引参数"
+        )
+        if not response.values:
+            raise RosBridgeError("未读取到最大行程参数")
+        return {
+            "success": True,
+            "max_travel_mm": float(response.values[0].double_value) * 1000.0,
+        }
+
+    def set_max_travel_mm(self, max_travel_mm: float) -> dict[str, Any]:
+        if not self._started or self._node is None:
+            raise RosBridgeError("ROS2牵引系统不可用，请先启动FR5牵引系统")
+        from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+
+        manager_client = self._parameter_clients.get("set_manager")
+        driver_client = self._parameter_clients.get("set_driver")
+        if manager_client is None or not manager_client.wait_for_service(timeout_sec=0.8):
+            raise RosBridgeError("牵引参数服务不可用")
+        if driver_client is None or not driver_client.wait_for_service(timeout_sec=0.8):
+            raise RosBridgeError("机械臂返回参数服务不可用")
+        driver_request = driver_client.srv_type.Request()
+        driver_request.parameters = [
+            Parameter(
+                name="return_max_distance_mm",
+                value=ParameterValue(
+                    type=ParameterType.PARAMETER_DOUBLE,
+                    double_value=float(max_travel_mm) + 20.0,
+                ),
+            )
+        ]
+        driver_response = self._wait_for_future(
+            driver_client.call_async(driver_request), 2.0, "保存返回行程"
+        )
+        if not driver_response.result.successful:
+            reason = driver_response.result.reason or "返回行程设置失败"
+            raise RosBridgeError(reason)
+        manager_request = manager_client.srv_type.Request()
+        manager_request.parameters = [
+            Parameter(
+                name="axial_travel_limit_m",
+                value=ParameterValue(
+                    type=ParameterType.PARAMETER_DOUBLE,
+                    double_value=float(max_travel_mm) / 1000.0,
+                ),
+            )
+        ]
+        response = self._wait_for_future(
+            manager_client.call_async(manager_request), 2.0, "保存最大行程"
+        )
+        if not response.result.successful:
+            reason = response.result.reason or "当前状态不能修改最大行程"
+            raise RosBridgeError(reason)
+        return {
+            "success": True,
+            "message": "最大行程已保存",
+            "max_travel_mm": float(max_travel_mm),
+            "snapshot": self.snapshot(),
+        }
 
 
 def _finite(value: float) -> bool:

@@ -98,4 +98,17 @@ TEST(TractionControllerCore, TractionControlsTotalRopeTensionAfterDirectionChang
   EXPECT_DOUBLE_EQ(output.scalar_velocity_mps, 0.0);
 }
 
+TEST(TractionControllerCore, DirectionCorrectionIsLateralOnly)
+{
+  TractionControllerCore core(10.0, 80.0, 0.15, 0.020, 0.02);
+  const Vec3 lateral{0.0, 0.004, -0.003};
+  const auto output = core.update(
+    ControlMode::RELEASING, {1.0, 0.0, 0.0}, 10.0, {2.0, 0.0, 0.0}, 0.01, lateral);
+  ASSERT_TRUE(output.valid);
+  EXPECT_DOUBLE_EQ(output.scalar_velocity_mps, 0.0);
+  EXPECT_DOUBLE_EQ(output.linear_velocity.x, 0.0);
+  EXPECT_DOUBLE_EQ(output.linear_velocity.y, lateral.y);
+  EXPECT_DOUBLE_EQ(output.linear_velocity.z, lateral.z);
+}
+
 }  // namespace fr_traction

@@ -12,6 +12,7 @@ find_package(builtin_interfaces REQUIRED)
 find_package(controller_manager_msgs REQUIRED)
 find_package(fairino_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -48,7 +49,7 @@ ament_target_dependencies(traction_controller_node
 add_executable(traction_manager_node src/traction_manager_node.cpp)
 target_link_libraries(traction_manager_node fr_traction_core)
 ament_target_dependencies(traction_manager_node
-  builtin_interfaces controller_manager_msgs fairino_msgs geometry_msgs rclcpp sensor_msgs std_msgs std_srvs
+  builtin_interfaces controller_manager_msgs fairino_msgs geometry_msgs rcl_interfaces rclcpp sensor_msgs std_msgs std_srvs
 )
 
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")

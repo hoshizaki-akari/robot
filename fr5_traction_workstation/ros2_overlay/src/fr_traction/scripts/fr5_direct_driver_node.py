@@ -65,7 +65,7 @@ class Fr5DirectDriver(Node):
             self.declare_parameter("command_timeout_s", 0.10).value
         )
         self._max_speed = float(
-            self.declare_parameter("max_linear_speed_mps", 0.005).value
+            self.declare_parameter("max_linear_speed_mps", 0.025).value
         )
         # The installed FR5 SDK reports the commanded incremental base pose
         # with the opposite sign to GetActualTCPPose on this controller. Keep

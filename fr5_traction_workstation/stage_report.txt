@@ -7,18 +7,30 @@ algorithm:
 11-sample spherical medoid + adaptive MAD threshold + 0.2 s consensus
 dynamic spherical tracking + fast-then-slow Cartesian follow
 total rope tension control using norm(F)
+repeatable direction cycle: hold -> confirm -> lateral-only correction -> settle -> force control
 
 safety changes:
 lateral force is no longer a software fault
 no accumulated direction-follow displacement limit
 feedback, controller health, emergency stop and workspace guards retained
 direction ambiguity faults only after 8 s without consensus
+temporary slack pauses motion without fault; 50-500 mm spatial travel guard retained
+
+latest fault analysis:
+session_1788404222024 ended at 150.86 mm with AXIAL_TRAVEL_LIMIT
+tension had fallen below 0.5 N while stale-direction axial motion remained at 20 mm/s
+stale-direction motion is now disabled during sensor hold and direction transitions
+
+record export:
+full 100 Hz force/direction/pose/control CSV retained per session
+single-session ZIP export adds summary.json and operations.csv
+new operator actions include user, role, action details and result
 
 automatic verification:
-ROS2 build passed; 83 checks, 0 failures
+ROS2 build passed; 84 checks, 0 failures
 direction noise/spike/large-turn/wander/ambiguity tests passed
 total-tension and combined force-direction pipeline tests passed
 real robot movement not performed by user request
 
 status:
-WAITING_FOR_OPERATOR_TRACTION_RECORD
+WAITING_FOR_OPERATOR_DIRECTION_CHANGE_RECORD

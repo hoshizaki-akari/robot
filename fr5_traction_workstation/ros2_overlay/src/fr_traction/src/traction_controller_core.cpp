@@ -38,6 +38,14 @@ ControllerOutput TractionControllerCore::update(
     result.valid = true;
     return result;
   }
+  if (mode == ControlMode::RELEASING) {
+    // Direction correction is deliberately lateral-only. Axial force control
+    // is reset and resumes after the new rope direction has settled.
+    reset();
+    result.linear_velocity = lateral_velocity;
+    result.valid = finite(result.linear_velocity);
+    return result;
+  }
   Vec3 unit;
   ForceMetrics metrics;
   if (!normalize(direction, unit) || !project_force(wrench, unit, metrics) ||

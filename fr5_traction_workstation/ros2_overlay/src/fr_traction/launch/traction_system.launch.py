@@ -67,15 +67,19 @@ def generate_launch_description():
             "motion_rate_hz": 25.0,
             # Reject a velocity command left behind by a blocked feedback RPC.
             "command_timeout_s": 0.25,
-            "max_linear_speed_mps": 0.005,
+            # The controller bounds axial traction at 20 mm/s and the active
+            # direction follower at 20 mm/s. Allow their already-bounded
+            # vector sum through the direct driver without clipping it back
+            # to the former 5 mm/s limit.
+            "max_linear_speed_mps": 0.025,
             # On this FR5, the live Y- tension search showed that a positive
             # base command must be passed through unchanged for the force
             # controller to move in the measured increasing-force direction.
             "base_servo_sign": 1.0,
             "return_speed_mm_s": 2.0,
-            # A real setup may need 30-100 mm from slack to tension. Keep the
-            # search bounded while allowing the matching slack-zero return.
-            "return_max_distance_mm": 120.0,
+            # Supports the web-configurable 500 mm traction travel plus a
+            # small stopping-distance margin for the position-driven return.
+            "return_max_distance_mm": 520.0,
             "tension_search_max_mm": 100.0,
             "auto_set_zero_on_start": True,
             "use_sim_time": use_sim_time,

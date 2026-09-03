@@ -23,7 +23,7 @@ public:
   TractionControllerNode()
   : Node("traction_controller"),
     force_filter_(5.0),
-    core_(10.0, 80.0, 0.15, 0.005, 0.02)
+    core_(10.0, 80.0, 0.15, 0.020, 0.02)
   {
     control_rate_hz_ = declare_parameter("control_rate_hz", 100.0);
     force_filter_cutoff_hz_ = declare_parameter("force_filter_cutoff_hz", 5.0);
@@ -32,7 +32,7 @@ public:
     virtual_mass_ = declare_parameter("virtual_mass", 10.0);
     virtual_damping_ = declare_parameter("virtual_damping", 80.0);
     force_deadband_n_ = declare_parameter("force_deadband_n", 0.15);
-    max_speed_mps_ = declare_parameter("traction_max_speed_mps", 0.005);
+    max_speed_mps_ = declare_parameter("traction_max_speed_mps", 0.020);
     max_acceleration_mps2_ = declare_parameter("traction_max_acc_mps2", 0.02);
     direction_correction_max_speed_mps_ = declare_parameter(
       "direction_correction_max_speed_mps", 0.020);
@@ -202,7 +202,7 @@ private:
     const Vec3 filtered_wrench = force_filter_.update(latest_wrench_, dt_s);
     const auto mode = static_cast<ControlMode>(command_.mode);
     Vec3 lateral_velocity;
-    if (mode == ControlMode::TRACTION &&
+    if ((mode == ControlMode::TRACTION || mode == ControlMode::RELEASING) &&
       command_.direction_correction_mode == msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE)
     {
       lateral_velocity = vector_from_message(command_.lateral_velocity_base);
@@ -237,7 +237,7 @@ private:
         bounded_output.linear_velocity = unit * bounded_output.scalar_velocity_mps;
       }
     }
-    if (mode == ControlMode::TRACTION) {
+    if (mode == ControlMode::TRACTION || mode == ControlMode::RELEASING) {
       const double combined_speed = norm(bounded_output.linear_velocity);
       if (combined_speed > combined_max_speed_mps_) {
         const double scale = combined_max_speed_mps_ / combined_speed;
@@ -256,7 +256,7 @@ private:
   double virtual_mass_ = 10.0;
   double virtual_damping_ = 80.0;
   double force_deadband_n_ = 0.15;
-  double max_speed_mps_ = 0.005;
+  double max_speed_mps_ = 0.020;
   double max_acceleration_mps2_ = 0.02;
   double direction_correction_max_speed_mps_ = 0.020;
   double combined_max_speed_mps_ = 0.025;
