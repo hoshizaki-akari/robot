@@ -15,6 +15,8 @@ drag records did not contain the actual XYZ controller velocity
 
 implemented:
 invert assisted-drag motion only; constant/position traction signs unchanged
+calibrate assisted-drag axes: command direction = [-Fx, -Fy, +Fz]
+X/Y keep the previously validated direction; Z is reversed from the old behavior
 bound FR5 command RPC to 1.5 s and retry ServoMoveEnd once on a fresh connection
 allow return-zero service response up to 8 s
 record actual controller command_vx/command_vy/command_vz for every new session
@@ -28,4 +30,4 @@ Python backend/UI checks passed
 real ROS stack started; FR5 driver connected; traction state READY
 
 status:
-OFFLINE_FIX_COMPLETE_WAITING_FOR_BRIEF_REAL_DRAG_AND_RETURN_CHECK
+OFFLINE_FIX_COMPLETE_WAITING_FOR_REAL_DRAG_AXIS_CHECK
