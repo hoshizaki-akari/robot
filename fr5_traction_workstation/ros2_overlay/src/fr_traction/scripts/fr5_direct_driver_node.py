@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import types
+import xmlrpc.client
 
 import rclpy
 from controller_manager_msgs.srv import SwitchController
@@ -44,6 +45,21 @@ def _quaternion_from_rpy_degrees(roll, pitch, yaw):
     )
 
 
+class _TimeoutTransport(xmlrpc.client.Transport):
+    """Apply a real socket timeout to the vendor SDK's command connection."""
+
+    def __init__(self, timeout_s):
+        super().__init__()
+        self._timeout_s = timeout_s
+
+    def make_connection(self, host):
+        connection = super().make_connection(host)
+        connection.timeout = self._timeout_s
+        if connection.sock is not None:
+            connection.sock.settimeout(self._timeout_s)
+        return connection
+
+
 class Fr5DirectDriver(Node):
     """Own the FR SDK connection and expose the existing ROS interface."""
 
@@ -64,6 +80,14 @@ class Fr5DirectDriver(Node):
         self._command_timeout = float(
             self.declare_parameter("command_timeout_s", 0.10).value
         )
+        self._command_rpc_timeout_s = float(
+            self.declare_parameter("command_rpc_timeout_s", 1.5).value
+        )
+        if (
+            not math.isfinite(self._command_rpc_timeout_s)
+            or self._command_rpc_timeout_s <= 0.0
+        ):
+            raise ValueError("command_rpc_timeout_s must be positive")
         self._max_speed = float(
             self.declare_parameter("max_linear_speed_mps", 0.025).value
         )
@@ -123,7 +147,13 @@ class Fr5DirectDriver(Node):
             raise ValueError("realtime_state_timeout_s must be positive")
 
         robot_module = _load_robot_sdk(str(sdk_path))
-        self._robot = robot_module.RPC(str(robot_ip))
+        self._robot_ip = str(robot_ip)
+        self._robot = robot_module.RPC(self._robot_ip)
+        # The vendor constructor restores an XML-RPC proxy with no timeout.
+        # A lost ServoMoveEnd response can then block every ROS service in this
+        # node indefinitely. Replace only the command proxy; the independent
+        # realtime-state socket remains owned by the vendor SDK.
+        self._reset_command_proxy()
         rcs_code = self._robot.FT_SetRCS(1, [0.0] * 6)
         if rcs_code != 0:
             raise RuntimeError(f"FT_SetRCS(base_link) failed: {rcs_code}")
@@ -227,6 +257,32 @@ class Fr5DirectDriver(Node):
         message.data = self._healthy
         self._health_pub.publish(message)
 
+    def _reset_command_proxy(self):
+        self._robot.robot = xmlrpc.client.ServerProxy(
+            f"http://{self._robot_ip}:20003",
+            transport=_TimeoutTransport(self._command_rpc_timeout_s),
+        )
+
+    def _end_servo(self, context):
+        """End servo mode with one fresh-connection retry and bounded latency."""
+        for attempt in range(2):
+            try:
+                code = self._robot.ServoMoveEnd()
+            except Exception as error:  # noqa: BLE001 - vendor transport exceptions vary.
+                self.get_logger().warning(
+                    f"ServoMoveEnd during {context} failed on attempt {attempt + 1}: {error}"
+                )
+                self._reset_command_proxy()
+                continue
+            if code == 0:
+                return 0
+            self.get_logger().warning(
+                f"ServoMoveEnd during {context} returned {code} on attempt {attempt + 1}."
+            )
+            if attempt == 0:
+                self._reset_command_proxy()
+        return -4
+
     def _on_twist(self, message):
         values = (
             message.linear.x,
@@ -254,16 +310,22 @@ class Fr5DirectDriver(Node):
             response.ok = False
             return response
         if "cartesian_velocity_controller" in deactivate and self._servo_enabled:
-            code = self._robot.ServoMoveEnd()
+            code = self._end_servo("controller deactivation")
+            if code != 0:
+                response.ok = False
+                return response
             self._servo_enabled = False
             self._return_active = False
             self._return_target_pose = None
             self._auto_tension_active = False
-            if code != 0:
+        if "cartesian_velocity_controller" in activate and not self._servo_enabled:
+            try:
+                code = self._robot.ServoMoveStart()
+            except Exception as error:  # noqa: BLE001 - always return a ROS response.
+                self.get_logger().error(f"ServoMoveStart failed: {error}")
+                self._reset_command_proxy()
                 response.ok = False
                 return response
-        if "cartesian_velocity_controller" in activate and not self._servo_enabled:
-            code = self._robot.ServoMoveStart()
             if code != 0:
                 response.ok = False
                 return response
@@ -327,7 +389,14 @@ class Fr5DirectDriver(Node):
         distance_mm = math.sqrt(
             sum((target_pose[i] - self._latest_pose[i]) ** 2 for i in range(3))
         )
-        code = self._robot.ServoMoveStart()
+        try:
+            code = self._robot.ServoMoveStart()
+        except Exception as error:  # noqa: BLE001 - always return a ROS response.
+            self.get_logger().error(f"Return ServoMoveStart failed: {error}")
+            self._reset_command_proxy()
+            response.success = False
+            response.message = "Return rejected: FR5 command connection timed out."
+            return response
         if code != 0:
             response.success = False
             response.message = f"ServoMoveStart failed: {code}."
@@ -385,7 +454,14 @@ class Fr5DirectDriver(Node):
             response.success = False
             response.message = "Auto tension rejected: servo is busy or feedback is stale."
             return response
-        code = self._robot.ServoMoveStart()
+        try:
+            code = self._robot.ServoMoveStart()
+        except Exception as error:  # noqa: BLE001 - always return a ROS response.
+            self.get_logger().error(f"Auto-tension ServoMoveStart failed: {error}")
+            self._reset_command_proxy()
+            response.success = False
+            response.message = "Auto tension rejected: FR5 command connection timed out."
+            return response
         if code != 0:
             response.success = False
             response.message = f"ServoMoveStart failed: {code}."
@@ -506,7 +582,7 @@ class Fr5DirectDriver(Node):
             else:
                 force_increase = 0.0
             if force_increase >= 10.0:
-                self._robot.ServoMoveEnd()
+                self._end_servo("auto-tension force limit")
                 self._servo_enabled = False
                 self._auto_tension_active = False
                 self.get_logger().warning(
@@ -517,7 +593,7 @@ class Fr5DirectDriver(Node):
                 if self._auto_tension_since is None:
                     self._auto_tension_since = now
                 elif now - self._auto_tension_since >= 0.2:
-                    self._robot.ServoMoveEnd()
+                    self._end_servo("auto-tension completion")
                     self._servo_enabled = False
                     self._auto_tension_active = False
                     self.get_logger().info(
@@ -528,7 +604,7 @@ class Fr5DirectDriver(Node):
             else:
                 self._auto_tension_since = None
             if travel_mm >= self._tension_search_max_mm:
-                self._robot.ServoMoveEnd()
+                self._end_servo("auto-tension travel limit")
                 self._servo_enabled = False
                 self._auto_tension_active = False
                 self.get_logger().warning(
@@ -553,7 +629,7 @@ class Fr5DirectDriver(Node):
             ]
             code = self._servo_cart(0, target)
             if alpha >= 1.0:
-                self._robot.ServoMoveEnd()
+                self._end_servo("position return completion")
                 self._servo_enabled = False
                 self._return_active = False
                 self._return_target_pose = None
@@ -596,7 +672,7 @@ class Fr5DirectDriver(Node):
             except Exception as error:  # noqa: BLE001  # Hardware faults must latch health loss.
                 self.get_logger().error(str(error))
                 if self._servo_enabled:
-                    self._robot.ServoMoveEnd()
+                    self._end_servo("feedback fault")
                 self._servo_enabled = False
                 self._return_active = False
                 self._return_target_pose = None
@@ -615,7 +691,7 @@ class Fr5DirectDriver(Node):
         except Exception as error:  # noqa: BLE001  # Hardware faults must latch health loss.
             self.get_logger().error(str(error))
             if self._servo_enabled:
-                self._robot.ServoMoveEnd()
+                self._end_servo("motion fault")
             self._servo_enabled = False
             self._return_active = False
             self._return_target_pose = None
@@ -628,7 +704,7 @@ class Fr5DirectDriver(Node):
         if self._feedback_thread.is_alive():
             self._feedback_thread.join(timeout=1.0)
         if self._servo_enabled:
-            self._robot.ServoMoveEnd()
+            self._end_servo("driver shutdown")
         self._robot.CloseRPC()
         return super().destroy_node()
 

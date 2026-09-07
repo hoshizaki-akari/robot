@@ -55,6 +55,8 @@ public:
       "cartesian_command_topic", std::string("/cartesian_velocity_controller/command_cart_vel"));
     velocity_command_topic_ = declare_parameter(
       "velocity_command_topic", std::string("/traction/controller_velocity_cmd"));
+    velocity_vector_topic_ = declare_parameter(
+      "velocity_vector_topic", std::string("/traction/controller_velocity_vector"));
 
     if (!std::isfinite(control_rate_hz_) || control_rate_hz_ <= 0.0 ||
       !std::isfinite(force_filter_cutoff_hz_) || force_filter_cutoff_hz_ <= 0.0 ||
@@ -88,6 +90,8 @@ public:
       cartesian_command_topic_, rclcpp::QoS(10).reliable());
     velocity_publisher_ = create_publisher<std_msgs::msg::Float64>(
       velocity_command_topic_, rclcpp::QoS(10).reliable());
+    velocity_vector_publisher_ = create_publisher<geometry_msgs::msg::Twist>(
+      velocity_vector_topic_, rclcpp::QoS(10).reliable());
     health_publisher_ = create_publisher<std_msgs::msg::Bool>(
       "~/healthy", rclcpp::QoS(1).transient_local().reliable());
 
@@ -150,6 +154,7 @@ private:
     twist.linear.z = output.linear_velocity.z;
     // Angular velocity is intentionally always zero for this controller.
     twist_publisher_->publish(twist);
+    velocity_vector_publisher_->publish(twist);
     std_msgs::msg::Float64 scalar;
     scalar.data = output.scalar_velocity_mps;
     velocity_publisher_->publish(scalar);
@@ -289,6 +294,7 @@ private:
   std::string command_topic_;
   std::string cartesian_command_topic_;
   std::string velocity_command_topic_;
+  std::string velocity_vector_topic_;
 
   msg::TractionCommand command_;
   Vec3 latest_wrench_;
@@ -308,6 +314,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr wrench_subscription_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr twist_publisher_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr velocity_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr velocity_vector_publisher_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr health_publisher_;
   rclcpp::TimerBase::SharedPtr timer_;
 };

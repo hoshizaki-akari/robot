@@ -144,7 +144,11 @@ ControllerOutput TractionControllerCore::update(
     if (drag_active_ && force_n > 1e-12) {
       const double speed = std::min(
         drag_max_speed_mps_, drag_gain_mps_per_n_ * std::max(0.0, force_n - drag_release_force_n_));
-      desired_velocity = wrench * (speed / force_n);
+      // The wrist sensor reports the reaction load applied to the flange.
+      // A compliant hand-guiding motion must therefore move opposite that
+      // measured reaction vector.  This sign belongs only to assisted drag;
+      // the independently verified traction-control sign is unchanged.
+      desired_velocity = wrench * (-speed / force_n);
     }
     result.linear_velocity = smooth_velocity(desired_velocity, dt_s);
     result.scalar_velocity_mps = norm(result.linear_velocity);

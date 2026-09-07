@@ -27,6 +27,7 @@
 #include "fr_traction/msg/traction_status.hpp"
 #include "fr_traction/srv/set_target_force.hpp"
 #include "fr_traction/srv/set_operation_mode.hpp"
+#include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/wrench_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
@@ -128,6 +129,8 @@ public:
       "hardware_health_topic", std::string("/controller_manager/healthy"));
     velocity_command_topic_ = declare_parameter(
       "velocity_command_topic", std::string("/traction/controller_velocity_cmd"));
+    velocity_vector_topic_ = declare_parameter(
+      "velocity_vector_topic", std::string("/traction/controller_velocity_vector"));
     corrected_wrench_topic_ = declare_parameter(
       "corrected_wrench_topic", std::string("/traction/corrected_wrench"));
     ui_heartbeat_topic_ = declare_parameter(
@@ -192,6 +195,12 @@ public:
       velocity_command_topic_, rclcpp::QoS(10).reliable(),
       [this](const std_msgs::msg::Float64::SharedPtr message) {
         if (std::isfinite(message->data)) {velocity_command_mps_ = message->data;}
+      });
+    velocity_vector_subscription_ = create_subscription<geometry_msgs::msg::Twist>(
+      velocity_vector_topic_, rclcpp::QoS(10).reliable(),
+      [this](const geometry_msgs::msg::Twist::SharedPtr message) {
+        const Vec3 velocity{message->linear.x, message->linear.y, message->linear.z};
+        if (finite(velocity)) {controller_velocity_base_ = velocity;}
       });
     heartbeat_subscription_ = create_subscription<std_msgs::msg::Empty>(
       ui_heartbeat_topic_, rclcpp::QoS(10).reliable(),
@@ -884,6 +893,7 @@ private:
       "direction_candidate_confirmed,direction_correction_requested_velocity_mps,"
       "direction_correction_velocity_mps,combined_velocity_mps,"
       "direction_correction_displacement_m,direction_vx,direction_vy,direction_vz,"
+      "command_vx,command_vy,command_vz,"
       "stop_reason\n";
     record_stream_ << std::setprecision(10);
     session_active_ = true;
@@ -1460,8 +1470,7 @@ private:
     if (!session_active_ || !record_stream_) {return;}
     const auto metrics = current_metrics();
     const auto direction = active_direction();
-    const Vec3 combined_velocity = direction * velocity_command_mps_ +
-      lateral_correction_velocity_base_;
+    const Vec3 combined_velocity = controller_velocity_base_;
     const double elapsed = (current_time - session_start_at_).seconds();
     record_stream_ << std::fixed << current_time.seconds() << ',' << elapsed << ','
                    << state_name(state_machine_.state()) << ',' << operation_mode_name(
@@ -1498,7 +1507,9 @@ private:
                    << lateral_correction_result_.accumulated_displacement_m << ','
                    << lateral_correction_velocity_base_.x << ','
                    << lateral_correction_velocity_base_.y << ','
-                   << lateral_correction_velocity_base_.z << ',' << stop_reason_ << '\n';
+                   << lateral_correction_velocity_base_.z << ','
+                   << controller_velocity_base_.x << ',' << controller_velocity_base_.y << ','
+                   << controller_velocity_base_.z << ',' << stop_reason_ << '\n';
     session_force_sum_ += metrics.actual_force_n;
     session_force_max_ = std::max(session_force_max_, metrics.actual_force_n);
     ++session_sample_count_;
@@ -1751,6 +1762,7 @@ private:
   std::string controller_health_topic_;
   std::string hardware_health_topic_;
   std::string velocity_command_topic_;
+  std::string velocity_vector_topic_;
   std::string corrected_wrench_topic_;
   std::string ui_heartbeat_topic_;
   std::string slack_calibration_topic_;
@@ -1817,6 +1829,7 @@ private:
   OperationMode operation_mode_ = OperationMode::CONSTANT_FORCE;
   double current_command_target_n_ = 0.0;
   double velocity_command_mps_ = 0.0;
+  Vec3 controller_velocity_base_;
   std::string fault_code_;
   std::string stop_reason_;
 
@@ -1842,6 +1855,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr health_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr hardware_health_subscription_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr velocity_subscription_;
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr velocity_vector_subscription_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr heartbeat_subscription_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr prepare_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr calibrate_service_;

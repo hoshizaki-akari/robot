@@ -67,6 +67,9 @@ def generate_launch_description():
             "motion_rate_hz": 50.0,
             # Reject a velocity command left behind by a blocked feedback RPC.
             "command_timeout_s": 0.25,
+            # Bound vendor XML-RPC calls so a lost ServoMoveEnd reply cannot
+            # occupy the driver's ROS service thread indefinitely.
+            "command_rpc_timeout_s": 1.5,
             # The controller bounds axial traction at 20 mm/s and the active
             # direction follower at 20 mm/s. Allow their already-bounded
             # vector sum through the direct driver without clipping it back

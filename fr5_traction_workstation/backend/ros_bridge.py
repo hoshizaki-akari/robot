@@ -32,6 +32,13 @@ STATE_NAMES = {
     12: "POSITION_HOLD",
 }
 
+# Most manager services respond immediately.  Return-zero is served by the
+# hardware driver and can legitimately wait behind the preceding ServoMoveEnd
+# RPC when the operator clicks Stop and Return in quick succession.
+SERVICE_RESPONSE_TIMEOUT_S = {
+    "return_zero_pose": 8.0,
+}
+
 
 class RosBridge:
     """Thread-safe snapshots and service calls backed by one rclpy node."""
@@ -352,7 +359,8 @@ class RosBridge:
         future = client.call_async(request)
         event = threading.Event()
         future.add_done_callback(lambda _: event.set())
-        if not event.wait(timeout=2.0):
+        response_timeout_s = SERVICE_RESPONSE_TIMEOUT_S.get(name, 2.0)
+        if not event.wait(timeout=response_timeout_s):
             raise RosBridgeError(f"牵引服务超时：/traction/{name}")
         try:
             response = future.result()

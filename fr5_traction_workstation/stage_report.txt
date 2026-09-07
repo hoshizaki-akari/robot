@@ -1,19 +1,23 @@
-===== MULTI-MODE TRACTION =====
+===== ASSISTED DRAG / RETURN-ZERO FIX =====
 
 source_record:
-session_1788744263807
-fault = AXIAL_TRAVEL_LIMIT
-total_travel_m = 0.1504697543
+session_1788749659043
+mode = ASSISTED_DRAG
+maximum_force_n = 87.0376
+measured_peak_vector_n = [-28.6368, 7.6867, -82.0647]
+ee_displacement_m = [-0.0577, 0.0283, -0.1213]
+
+root_causes:
+drag command followed the sensor reaction vector instead of opposing it
+unbounded vendor XML-RPC ServoMoveEnd could occupy the driver service thread
+web return-zero timeout was shorter than the stop-to-return handoff
+drag records did not contain the actual XYZ controller velocity
 
 implemented:
-software traction and return-distance limits removed
-assisted drag = XYZ admittance, fixed orientation, 1.0/0.6 N hysteresis, 50 mm/s maximum
-position traction = fixed direction, target +/-0.2 N for 0.5 s, then position hold
-constant traction = adaptive direction following retained
-50 Hz motion output, soft force deadband, acceleration/jerk limiting
-minimum-jerk position return
-fixed return-zero pose recorded on 2026-09-07
-mode included in status, detailed CSV and history
+invert assisted-drag motion only; constant/position traction signs unchanged
+bound FR5 command RPC to 1.5 s and retry ServoMoveEnd once on a fresh connection
+allow return-zero service response up to 8 s
+record actual controller command_vx/command_vy/command_vz for every new session
 
 automatic_verification:
 ROS2 build passed
@@ -21,4 +25,4 @@ ROS2 build passed
 Python backend/UI checks passed
 
 status:
-OFFLINE_DEVELOPMENT_COMPLETE_REAL_ROBOT_TEST_NOT_REQUESTED
+OFFLINE_FIX_COMPLETE_WAITING_FOR_BRIEF_REAL_DRAG_AND_RETURN_CHECK

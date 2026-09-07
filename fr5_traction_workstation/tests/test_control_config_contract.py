@@ -24,6 +24,13 @@ class ControlConfigurationContractTest(unittest.TestCase):
         self.assertIn("500.7035522460938", launch)
         self.assertIn("fixed zero pose unchanged", driver)
 
+    def test_driver_bounds_command_rpc_and_return_waits_for_stop_handoff(self):
+        driver = (ROS / "scripts" / "fr5_direct_driver_node.py").read_text(encoding="utf-8")
+        bridge = (ROOT / "backend" / "ros_bridge.py").read_text(encoding="utf-8")
+        self.assertIn("command_rpc_timeout_s", driver)
+        self.assertIn("_TimeoutTransport", driver)
+        self.assertIn('"return_zero_pose": 8.0', bridge)
+
     def test_all_three_modes_have_ros_interfaces(self):
         service = (ROS / "srv" / "SetOperationMode.srv").read_text(encoding="utf-8")
         status = (ROS / "msg" / "TractionStatus.msg").read_text(encoding="utf-8")
