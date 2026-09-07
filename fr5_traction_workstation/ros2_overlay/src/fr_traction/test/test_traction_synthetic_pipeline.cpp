@@ -72,7 +72,9 @@ TEST(TractionSyntheticPipeline, DirectionChangeFollowsWhileTotalTensionStaysCont
       fr_traction::ControlMode::TRACTION, estimate.tracked_direction, 5.0,
       changed_force, 0.01, follow.velocity_base);
     ASSERT_TRUE(output.valid);
-    EXPECT_DOUBLE_EQ(output.scalar_velocity_mps, 0.0);
+    // The common acceleration/jerk smoother may retain a minute axial
+    // transient while the lateral direction command changes.
+    EXPECT_NEAR(output.scalar_velocity_mps, 0.0, 2e-4);
     follow_motion_seen = follow_motion_seen || fr_traction::norm(follow.velocity_base) > 0.0;
   }
   EXPECT_TRUE(follow_motion_seen);

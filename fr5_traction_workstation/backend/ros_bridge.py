@@ -28,6 +28,8 @@ STATE_NAMES = {
     8: "COMPLETED",
     9: "FAULT",
     10: "EMERGENCY_STOP",
+    11: "DRAGGING",
+    12: "POSITION_HOLD",
 }
 
 
@@ -68,8 +70,7 @@ class RosBridge:
         try:
             import rclpy
             from fr_traction.msg import TractionHistory, TractionStatus
-            from fr_traction.srv import SetTargetForce
-            from rcl_interfaces.srv import GetParameters, SetParametersAtomically
+            from fr_traction.srv import SetOperationMode, SetTargetForce
             from sensor_msgs.msg import JointState
             from std_msgs.msg import Empty
             from std_srvs.srv import Trigger
@@ -117,18 +118,8 @@ class RosBridge:
             "set_target_force": self._node.create_client(
                 SetTargetForce, "/traction/set_target_force"
             ),
-        }
-        self._parameter_clients = {
-            "get_manager": self._node.create_client(
-                GetParameters, "/traction_manager/get_parameters"
-            ),
-            "set_manager": self._node.create_client(
-                SetParametersAtomically,
-                "/traction_manager/set_parameters_atomically",
-            ),
-            "set_driver": self._node.create_client(
-                SetParametersAtomically,
-                "/fr5_direct_driver/set_parameters_atomically",
+            "set_operation_mode": self._node.create_client(
+                SetOperationMode, "/traction/set_operation_mode"
             ),
         }
         from rclpy.executors import MultiThreadedExecutor
@@ -235,6 +226,8 @@ class RosBridge:
                 "valid": True,
                 "state": int(message.state),
                 "state_name": STATE_NAMES.get(int(message.state), "UNKNOWN"),
+                "operation_mode": int(getattr(message, "operation_mode", 0)),
+                "position_reached": bool(getattr(message, "position_reached", False)),
                 "ready": bool(message.ready),
                 "target_force_n": float(message.target_force_n),
                 "actual_force_n": float(message.actual_force_n),
@@ -275,6 +268,7 @@ class RosBridge:
     def _summary_to_dict(summary: Any) -> dict[str, Any]:
         return {
             "session_id": summary.session_id,
+            "operation_mode": int(getattr(summary, "operation_mode", 0)),
             "start_time": {
                 "sec": summary.start_time.sec,
                 "nanosec": summary.start_time.nanosec,
@@ -360,6 +354,21 @@ class RosBridge:
             raise RosBridgeError(response.message)
         return {"success": True, "message": response.message, "snapshot": self.snapshot()}
 
+    def set_operation_mode(self, mode: int) -> dict[str, Any]:
+        if not self._started or self._node is None:
+            raise RosBridgeError("ROS2牵引系统不可用，请先启动FR5牵引系统")
+        client = self._clients.get("set_operation_mode")
+        if client is None or not client.wait_for_service(timeout_sec=0.8):
+            raise RosBridgeError("工作模式服务不可用")
+        request = client.srv_type.Request()
+        request.mode = int(mode)
+        response = self._wait_for_future(
+            client.call_async(request), 2.0, "切换工作模式"
+        )
+        if not response.success:
+            raise RosBridgeError(response.message)
+        return {"success": True, "message": response.message, "snapshot": self.snapshot()}
+
     @staticmethod
     def _wait_for_future(future: Any, timeout_s: float, operation: str) -> Any:
         event = threading.Event()
@@ -370,75 +379,6 @@ class RosBridge:
             return future.result()
         except Exception as error:
             raise RosBridgeError(f"{operation}失败：{error}") from error
-
-    def get_motion_settings(self) -> dict[str, Any]:
-        if not self._started or self._node is None:
-            raise RosBridgeError("ROS2牵引系统不可用，请先启动FR5牵引系统")
-        client = self._parameter_clients.get("get_manager")
-        if client is None or not client.wait_for_service(timeout_sec=0.8):
-            raise RosBridgeError("牵引参数服务不可用")
-        request = client.srv_type.Request()
-        request.names = ["axial_travel_limit_m"]
-        response = self._wait_for_future(
-            client.call_async(request), 2.0, "读取牵引参数"
-        )
-        if not response.values:
-            raise RosBridgeError("未读取到最大行程参数")
-        return {
-            "success": True,
-            "max_travel_mm": float(response.values[0].double_value) * 1000.0,
-        }
-
-    def set_max_travel_mm(self, max_travel_mm: float) -> dict[str, Any]:
-        if not self._started or self._node is None:
-            raise RosBridgeError("ROS2牵引系统不可用，请先启动FR5牵引系统")
-        from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
-
-        manager_client = self._parameter_clients.get("set_manager")
-        driver_client = self._parameter_clients.get("set_driver")
-        if manager_client is None or not manager_client.wait_for_service(timeout_sec=0.8):
-            raise RosBridgeError("牵引参数服务不可用")
-        if driver_client is None or not driver_client.wait_for_service(timeout_sec=0.8):
-            raise RosBridgeError("机械臂返回参数服务不可用")
-        driver_request = driver_client.srv_type.Request()
-        driver_request.parameters = [
-            Parameter(
-                name="return_max_distance_mm",
-                value=ParameterValue(
-                    type=ParameterType.PARAMETER_DOUBLE,
-                    double_value=float(max_travel_mm) + 20.0,
-                ),
-            )
-        ]
-        driver_response = self._wait_for_future(
-            driver_client.call_async(driver_request), 2.0, "保存返回行程"
-        )
-        if not driver_response.result.successful:
-            reason = driver_response.result.reason or "返回行程设置失败"
-            raise RosBridgeError(reason)
-        manager_request = manager_client.srv_type.Request()
-        manager_request.parameters = [
-            Parameter(
-                name="axial_travel_limit_m",
-                value=ParameterValue(
-                    type=ParameterType.PARAMETER_DOUBLE,
-                    double_value=float(max_travel_mm) / 1000.0,
-                ),
-            )
-        ]
-        response = self._wait_for_future(
-            manager_client.call_async(manager_request), 2.0, "保存最大行程"
-        )
-        if not response.result.successful:
-            reason = response.result.reason or "当前状态不能修改最大行程"
-            raise RosBridgeError(reason)
-        return {
-            "success": True,
-            "message": "最大行程已保存",
-            "max_travel_mm": float(max_travel_mm),
-            "snapshot": self.snapshot(),
-        }
-
 
 def _finite(value: float) -> bool:
     import math

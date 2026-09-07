@@ -92,13 +92,27 @@ class Fr5DirectDriver(Node):
             or self._return_acceleration_mm_s2 <= 0.0
         ):
             raise ValueError("return_acceleration_mm_s2 must be positive")
-        self.declare_parameter("return_max_distance_mm", 35.0)
         self._tension_search_max_mm = float(
             self.declare_parameter("tension_search_max_mm", 30.0).value
         )
-        self._auto_set_zero = bool(
-            self.declare_parameter("auto_set_zero_on_start", True).value
+        fixed_zero_pose = list(
+            self.declare_parameter(
+                "fixed_zero_pose_mm_deg",
+                [
+                    500.7035522460938,
+                    -371.84417724609375,
+                    276.12460327148436,
+                    -93.77832794189455,
+                    1.9229726791381836,
+                    -133.9364776611328,
+                ],
+            ).value
         )
+        if len(fixed_zero_pose) != 6 or not all(
+            math.isfinite(float(value)) for value in fixed_zero_pose
+        ):
+            raise ValueError("fixed_zero_pose_mm_deg must contain six finite values")
+        self._fixed_zero_pose = [float(value) for value in fixed_zero_pose]
         self._realtime_state_timeout_s = float(
             self.declare_parameter("realtime_state_timeout_s", 0.5).value
         )
@@ -178,9 +192,6 @@ class Fr5DirectDriver(Node):
         self._return_active = False
         self._return_started_at = 0.0
         self._return_duration_s = 0.0
-        self._return_distance_mm = 0.0
-        self._return_acceleration_time_s = 0.0
-        self._return_cruise_time_s = 0.0
         self._return_start_pose = None
         self._return_target_pose = None
         self._auto_tension_active = False
@@ -195,9 +206,7 @@ class Fr5DirectDriver(Node):
         self._latest_wrench = None
         self._last_realtime_state = None
         self._last_realtime_state_at = 0.0
-        self._zero_pose = None
-        self._zero_joints = None
-        self._slack_calibration_pending = False
+        self._zero_pose = list(self._fixed_zero_pose)
         self._pretraction_pose = None
         self._pretraction_joints = None
         self._healthy = True
@@ -269,19 +278,8 @@ class Fr5DirectDriver(Node):
         return response
 
     def _on_set_zero(self, _request, response):
-        if (
-            self._servo_enabled
-            or self._hardware_fault_latched
-            or self._latest_pose is None
-            or self._latest_joints is None
-        ):
-            response.success = False
-            response.message = "Zero rejected: stop traction and wait for fresh FR5 feedback."
-            return response
-        self._zero_pose = list(self._latest_pose)
-        self._zero_joints = list(self._latest_joints)
-        response.success = True
-        response.message = "Current slack pose stored as zero."
+        response.success = False
+        response.message = "The return-zero pose is fixed by the project configuration."
         return response
 
     def _on_slack_calibration(self, message):
@@ -295,20 +293,15 @@ class Fr5DirectDriver(Node):
                 "Slack calibration ignored because FR5 motion or feedback is active."
             )
             return
-        if self._latest_pose is None or self._latest_joints is None:
-            self._slack_calibration_pending = True
-            return
-        self._zero_pose = list(self._latest_pose)
-        self._zero_joints = list(self._latest_joints)
-        self._slack_calibration_pending = False
-        self.get_logger().info("Slack calibration pose stored as the only return-zero pose.")
+        # Initial force calibration updates the sensor baseline in the manager,
+        # but must never redefine the fixed return-zero pose.
+        self.get_logger().info("Slack force calibration received; fixed zero pose unchanged.")
 
     def _on_return_zero(self, _request, response):
         return self._start_return_to_pose(
             response,
             self._zero_pose,
             "stored slack zero",
-            float(self.get_parameter("return_max_distance_mm").value),
         )
 
     def _on_return_pretraction(self, _request, response):
@@ -316,10 +309,9 @@ class Fr5DirectDriver(Node):
             response,
             self._pretraction_pose,
             "pre-traction pose",
-            float(self.get_parameter("return_max_distance_mm").value),
         )
 
-    def _start_return_to_pose(self, response, target_pose, label, max_distance_mm):
+    def _start_return_to_pose(self, response, target_pose, label):
         if target_pose is None:
             response.success = False
             response.message = f"Return rejected: {label} is not stored."
@@ -335,16 +327,6 @@ class Fr5DirectDriver(Node):
         distance_mm = math.sqrt(
             sum((target_pose[i] - self._latest_pose[i]) ** 2 for i in range(3))
         )
-        if not math.isfinite(max_distance_mm) or max_distance_mm <= 0.0:
-            response.success = False
-            response.message = "Return rejected: return_max_distance_mm is invalid."
-            return response
-        if distance_mm > max_distance_mm:
-            response.success = False
-            response.message = (
-                f"Return rejected: {label} is more than {max_distance_mm:.0f} mm away."
-            )
-            return response
         code = self._robot.ServoMoveStart()
         if code != 0:
             response.success = False
@@ -356,25 +338,14 @@ class Fr5DirectDriver(Node):
         self._return_started_at = time.monotonic()
         self._return_start_pose = list(self._latest_pose)
         self._return_target_pose = list(target_pose)
-        self._return_distance_mm = distance_mm
-        acceleration_time_s = self._return_speed_mm_s / self._return_acceleration_mm_s2
-        acceleration_distance_mm = (
-            self._return_speed_mm_s * self._return_speed_mm_s
-            / self._return_acceleration_mm_s2
+        # Quintic minimum-jerk position profile. 1.875 and 5.774 are the peak
+        # first/second derivatives of 10s^3-15s^4+6s^5 on [0, 1].
+        speed_limited_duration = 1.875 * distance_mm / self._return_speed_mm_s
+        acceleration_limited_duration = math.sqrt(
+            5.774 * distance_mm / self._return_acceleration_mm_s2
         )
-        if distance_mm <= acceleration_distance_mm:
-            self._return_acceleration_time_s = math.sqrt(
-                distance_mm / self._return_acceleration_mm_s2
-            )
-            self._return_cruise_time_s = 0.0
-        else:
-            self._return_acceleration_time_s = acceleration_time_s
-            self._return_cruise_time_s = (
-                distance_mm - acceleration_distance_mm
-            ) / self._return_speed_mm_s
         self._return_duration_s = max(
-            0.08,
-            2.0 * self._return_acceleration_time_s + self._return_cruise_time_s,
+            0.10, speed_limited_duration, acceleration_limited_duration
         )
         response.success = True
         response.message = f"Position return to the {label} has started."
@@ -574,27 +545,8 @@ class Fr5DirectDriver(Node):
             return
         if self._return_active:
             elapsed_s = min(self._return_duration_s, now - self._return_started_at)
-            acceleration_s = self._return_acceleration_time_s
-            cruise_s = self._return_cruise_time_s
-            acceleration = self._return_acceleration_mm_s2
-            peak_speed = acceleration * acceleration_s
-            if elapsed_s < acceleration_s:
-                travelled_mm = 0.5 * acceleration * elapsed_s * elapsed_s
-            elif elapsed_s < acceleration_s + cruise_s:
-                travelled_mm = (
-                    0.5 * acceleration * acceleration_s * acceleration_s
-                    + peak_speed * (elapsed_s - acceleration_s)
-                )
-            elif elapsed_s < self._return_duration_s:
-                remaining_s = self._return_duration_s - elapsed_s
-                travelled_mm = self._return_distance_mm - (
-                    0.5 * acceleration * remaining_s * remaining_s
-                )
-            else:
-                travelled_mm = self._return_distance_mm
-            alpha = 1.0 if self._return_distance_mm <= 1e-9 else min(
-                1.0, max(0.0, travelled_mm / self._return_distance_mm)
-            )
+            phase = min(1.0, max(0.0, elapsed_s / self._return_duration_s))
+            alpha = 10.0 * phase**3 - 15.0 * phase**4 + 6.0 * phase**5
             target = [
                 start + alpha * (target - start)
                 for start, target in zip(self._return_start_pose, self._return_target_pose)
@@ -635,16 +587,6 @@ class Fr5DirectDriver(Node):
                     joints, pose, speeds, wrench = state_snapshot
                     self._latest_joints, self._latest_pose = list(joints), list(pose)
                     self._latest_wrench = list(wrench)
-                    if self._slack_calibration_pending and not self._servo_enabled:
-                        self._zero_pose = list(pose)
-                        self._zero_joints = list(joints)
-                        self._slack_calibration_pending = False
-                        self.get_logger().info(
-                            "Pending slack calibration pose stored after FR5 feedback "
-                            "became ready."
-                        )
-                    if self._auto_set_zero and self._zero_pose is None:
-                        self._zero_pose, self._zero_joints = list(pose), list(joints)
                     self._publish_feedback(
                         self.get_clock().now().to_msg(), joints, speeds, wrench, pose
                     )

@@ -1,0 +1,36 @@
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+ROS = ROOT / "ros2_overlay" / "src" / "fr_traction"
+
+
+class ControlConfigurationContractTest(unittest.TestCase):
+    def test_software_travel_limits_are_removed(self):
+        manager = (ROS / "src" / "traction_manager_node.cpp").read_text(encoding="utf-8")
+        safety = (ROS / "src" / "traction_safety.cpp").read_text(encoding="utf-8")
+        driver = (ROS / "scripts" / "fr5_direct_driver_node.py").read_text(encoding="utf-8")
+        parameters = (ROS / "config" / "traction_params.yaml").read_text(encoding="utf-8")
+        self.assertNotIn("axial_travel_limit_m", manager + safety + parameters)
+        self.assertNotIn("return_max_distance_mm", driver)
+        self.assertIn("pretension_max_travel_m", manager)
+        self.assertIn("tension_search_max_mm", driver)
+
+    def test_fixed_zero_and_motion_rate_are_configured(self):
+        launch = (ROS / "launch" / "traction_system.launch.py").read_text(encoding="utf-8")
+        driver = (ROS / "scripts" / "fr5_direct_driver_node.py").read_text(encoding="utf-8")
+        self.assertIn('"motion_rate_hz": 50.0', launch)
+        self.assertIn('"fixed_zero_pose_mm_deg"', launch)
+        self.assertIn("500.7035522460938", launch)
+        self.assertIn("fixed zero pose unchanged", driver)
+
+    def test_all_three_modes_have_ros_interfaces(self):
+        service = (ROS / "srv" / "SetOperationMode.srv").read_text(encoding="utf-8")
+        status = (ROS / "msg" / "TractionStatus.msg").read_text(encoding="utf-8")
+        for name in ("CONSTANT_FORCE", "POSITION_TRACTION", "ASSISTED_DRAG"):
+            self.assertIn(name, service)
+            self.assertIn(name, status)
+
+
+if __name__ == "__main__":
+    unittest.main()

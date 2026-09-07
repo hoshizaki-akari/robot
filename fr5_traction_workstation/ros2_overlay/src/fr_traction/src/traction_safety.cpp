@@ -45,14 +45,10 @@ SafetyFault SafetyMonitor::update(
   {
     return SafetyFault::WRENCH_INVALID;
   }
-  // A perpendicular force is direction-change evidence, not an over-force
-  // fault. The adaptive tracker consumes it while hardware health, feedback
-  // freshness, emergency stop and workspace limits remain enforced here.
-  if (!std::isfinite(sample.axis_displacement_m) ||
-    std::abs(sample.axis_displacement_m) >= limits_.axial_travel_m)
-  {
-    return SafetyFault::AXIAL_TRAVEL_LIMIT;
-  }
+  // Force magnitude, lateral force and software travel are control/diagnostic
+  // inputs. The robot controller's native reach protection remains in force;
+  // this layer only latches invalid/stale feedback, controller health and the
+  // optional UI heartbeat.
   if (require_ui_heartbeat && !sample.ui_heartbeat_fresh) {
     return SafetyFault::UI_HEARTBEAT_TIMEOUT;
   }
@@ -69,7 +65,6 @@ const char * SafetyMonitor::code(SafetyFault fault)
     case SafetyFault::HARD_OVERFORCE: return "HARD_OVERFORCE";
     case SafetyFault::OVERFORCE: return "OVERFORCE";
     case SafetyFault::LATERAL_FORCE: return "LATERAL_FORCE";
-    case SafetyFault::AXIAL_TRAVEL_LIMIT: return "AXIAL_TRAVEL_LIMIT";
     case SafetyFault::UI_HEARTBEAT_TIMEOUT: return "UI_HEARTBEAT_TIMEOUT";
     case SafetyFault::NONE: return "NONE";
   }

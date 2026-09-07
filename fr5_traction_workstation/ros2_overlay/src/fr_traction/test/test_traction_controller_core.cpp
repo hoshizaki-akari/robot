@@ -54,7 +54,7 @@ TEST(TractionControllerCore, NarrowDeadbandContinuesTowardFiveNewtonTarget)
   EXPECT_GT(output.scalar_velocity_mps, 0.0);
 }
 
-TEST(TractionControllerCore, TargetBandBrakesResidualVelocityBeforeItOvershoots)
+TEST(TractionControllerCore, TargetBandBrakesResidualVelocitySmoothly)
 {
   TractionControllerCore core(10.0, 80.0, 0.5, 0.005, 0.02);
   const Vec3 direction{1.0, 0.0, 0.0};
@@ -64,13 +64,13 @@ TEST(TractionControllerCore, TargetBandBrakesResidualVelocityBeforeItOvershoots)
   }
   ASSERT_GT(output.scalar_velocity_mps, 0.0);
 
+  const double velocity_before_band = output.scalar_velocity_mps;
   output = core.update(ControlMode::TRACTION, direction, 15.0, {14.7, 0.0, 0.0}, 0.01);
-  EXPECT_DOUBLE_EQ(output.scalar_velocity_mps, 0.0);
-  EXPECT_DOUBLE_EQ(output.linear_velocity.x, 0.0);
+  EXPECT_GE(output.scalar_velocity_mps, 0.0);
+  EXPECT_LE(output.scalar_velocity_mps, velocity_before_band);
 
   output = core.update(ControlMode::TRACTION, direction, 15.0, {16.0, 0.0, 0.0}, 0.01);
-  EXPECT_LT(output.scalar_velocity_mps, 0.0);
-  EXPECT_LT(output.linear_velocity.x, 0.0);
+  EXPECT_LE(output.scalar_velocity_mps, velocity_before_band);
 
   core.reset();
   output = core.update(ControlMode::TRACTION, direction, 5.0, {30.0, 0.0, 0.0}, 0.01);
@@ -102,13 +102,65 @@ TEST(TractionControllerCore, DirectionCorrectionIsLateralOnly)
 {
   TractionControllerCore core(10.0, 80.0, 0.15, 0.020, 0.02);
   const Vec3 lateral{0.0, 0.004, -0.003};
-  const auto output = core.update(
+  auto output = core.update(
     ControlMode::RELEASING, {1.0, 0.0, 0.0}, 10.0, {2.0, 0.0, 0.0}, 0.01, lateral);
   ASSERT_TRUE(output.valid);
   EXPECT_DOUBLE_EQ(output.scalar_velocity_mps, 0.0);
   EXPECT_DOUBLE_EQ(output.linear_velocity.x, 0.0);
-  EXPECT_DOUBLE_EQ(output.linear_velocity.y, lateral.y);
-  EXPECT_DOUBLE_EQ(output.linear_velocity.z, lateral.z);
+  EXPECT_GT(output.linear_velocity.y, 0.0);
+  EXPECT_LT(output.linear_velocity.z, 0.0);
+  EXPECT_LE(norm(output.linear_velocity), norm(lateral));
+  const double first_speed = norm(output.linear_velocity);
+  for (int step = 0; step < 20; ++step) {
+    output = core.update(
+      ControlMode::RELEASING, {1.0, 0.0, 0.0}, 10.0, {2.0, 0.0, 0.0}, 0.01, lateral);
+  }
+  EXPECT_GT(norm(output.linear_velocity), first_speed);
+}
+
+TEST(TractionControllerCore, AssistedDragUsesThreeAxisForceAndReleaseHysteresis)
+{
+  TractionControllerCore core(10.0, 80.0, 0.15, 0.020, 0.02);
+  auto output = core.update(ControlMode::DRAGGING, {}, 0.0, {0.7, 0.0, 0.0}, 0.01);
+  EXPECT_TRUE(output.valid);
+  EXPECT_DOUBLE_EQ(norm(output.linear_velocity), 0.0);
+
+  for (int step = 0; step < 50; ++step) {
+    output = core.update(ControlMode::DRAGGING, {}, 0.0, {2.0, -1.0, 0.5}, 0.01);
+  }
+  EXPECT_GT(output.linear_velocity.x, 0.0);
+  EXPECT_LT(output.linear_velocity.y, 0.0);
+  EXPECT_GT(output.linear_velocity.z, 0.0);
+  EXPECT_LE(norm(output.linear_velocity), 0.050);
+
+  for (int step = 0; step < 100; ++step) {
+    output = core.update(ControlMode::DRAGGING, {}, 0.0, {0.0, 0.0, 0.0}, 0.01);
+  }
+  EXPECT_NEAR(norm(output.linear_velocity), 0.0, 1e-9);
+}
+
+TEST(TractionControllerCore, ForceReversalRespectsAccelerationAndJerkLimits)
+{
+  constexpr double dt = 0.01;
+  constexpr double maximum_acceleration = 0.30;
+  constexpr double maximum_jerk = 3.0;
+  TractionControllerCore core(
+    10.0, 80.0, 0.15, 0.020, 0.02, 0.25, 3.0,
+    1.0, 0.6, 0.15, 0.00625, 0.050, maximum_acceleration, maximum_jerk);
+  double previous_velocity = 0.0;
+  double previous_acceleration = 0.0;
+  for (int step = 0; step < 500; ++step) {
+    const Vec3 wrench = step < 250 ? Vec3{0.0, 0.0, 0.0} : Vec3{30.0, 0.0, 0.0};
+    const auto output = core.update(
+      ControlMode::TRACTION, {1.0, 0.0, 0.0}, 10.0, wrench, dt);
+    ASSERT_TRUE(output.valid);
+    const double acceleration = (output.scalar_velocity_mps - previous_velocity) / dt;
+    EXPECT_LE(std::abs(acceleration), maximum_acceleration + 1e-9);
+    EXPECT_LE(
+      std::abs(acceleration - previous_acceleration), maximum_jerk * dt + 1e-8);
+    previous_velocity = output.scalar_velocity_mps;
+    previous_acceleration = acceleration;
+  }
 }
 
 }  // namespace fr_traction

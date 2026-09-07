@@ -12,10 +12,8 @@ const permissions = {
 let sessionUser = null;
 const TARGET_FORCE_MIN = 1;
 const TARGET_FORCE_MAX = 20;
-const TRAVEL_LIMIT_MIN_MM = 50;
-const TRAVEL_LIMIT_MAX_MM = 500;
 let currentForce = 10;
-let maxTravelMm = 150;
+let operationMode = 0;
 let actualForce = 0;
 let activeRecord = null;
 let timerHandle = null;
@@ -29,7 +27,7 @@ let tractionState = 0;
 let previousDirectionTrackState = 4;
 let pendingStart = false;
 let finishRequested = false;
-let slackZeroAvailable = false;
+const MODE_LABELS = { 0: '恒力牵引', 1: '位置牵引', 2: '省力拖拽' };
 
 const TRACTION_STATE_LABELS = {
   0: '连接中',
@@ -42,7 +40,9 @@ const TRACTION_STATE_LABELS = {
   7: '正在结束',
   8: '牵引停止',
   9: '故障',
-  10: '已急停'
+  10: '已急停',
+  11: '拖拽中',
+  12: '已到位'
 };
 const ACTION_SUCCESS_MESSAGES = {
   '/api/traction/prepare': '初始校准完成',
@@ -53,7 +53,6 @@ const ACTION_SUCCESS_MESSAGES = {
   '/api/traction/return-zero': '正在回零'
 };
 const REASON_LABELS = {
-  AXIAL_TRAVEL_LIMIT: '达到行程上限',
   WRENCH_TIMEOUT: '力数据超时',
   EE_STATE_TIMEOUT: '位置数据超时',
   ROS2_CONTROL_ERROR: '运动控制异常',
@@ -85,7 +84,7 @@ function simpleReason(value) {
 function simpleErrorMessage(error) {
   const text = String(error?.message || '');
   if (/target|1 N and 20|1～20/i.test(text)) return '目标牵引力需在1～20N';
-  if (/maximum travel|行程/i.test(text)) return '最大行程只能在牵引停止时设置';
+  if (/mode|模式/i.test(text)) return '当前状态不能切换模式';
   if (/direction|calibrat/i.test(text)) return '请先完成方向确认';
   if (/state|rejected|not available|unavailable|不可用/i.test(text)) return '当前状态不能执行';
   return /[一-鿿]/.test(text) ? text : '操作失败，请检查设备';
@@ -127,18 +126,24 @@ function applyPermissions() {
   const permission = permissions[sessionUser.role];
   $('currentUser').textContent = sessionUser.name;
   $('currentRole').textContent = sessionUser.role;
-  const motionActive = [6, 7].includes(tractionState) || pendingStart;
+  const motionActive = [6, 7, 11, 12].includes(tractionState) || pendingStart;
   $('settingsBtn').disabled = !permission.settings || motionActive;
   document.querySelectorAll('.force-adjust').forEach(button => {
-    button.disabled = !permission.adjust || motionActive;
+    button.disabled = !permission.adjust || motionActive || operationMode === 2;
   });
-  $('targetForceVal').disabled = !permission.adjust || motionActive;
-  $('startBtn').disabled = !permission.operate || tractionState !== 5 || !dataOnline || pendingStart;
-  $('stopBtn').disabled = !permission.operate || tractionState !== 6 || !dataOnline;
+  $('targetForceVal').disabled = !permission.adjust || motionActive || operationMode === 2;
+  $('startBtn').disabled = !permission.operate || operationMode === 2 || tractionState !== 5 || !dataOnline || pendingStart;
+  $('stopBtn').disabled = !permission.operate || ![6, 11, 12].includes(tractionState) || !dataOnline;
   if ($('prepareBtn')) $('prepareBtn').disabled = !permission.operate || !dataOnline || ![1, 2, 5, 8, 9, 10].includes(tractionState);
-  if ($('calibrateBtn')) $('calibrateBtn').disabled = !permission.operate || !dataOnline || tractionState !== 2;
+  if ($('calibrateBtn')) $('calibrateBtn').disabled = !permission.operate || !dataOnline || operationMode === 2 || tractionState !== 2;
   if ($('emergencyBtn')) $('emergencyBtn').disabled = !permission.operate || !dataOnline || tractionState === 10;
-  if ($('returnZeroBtn')) $('returnZeroBtn').disabled = !permission.operate || !dataOnline || motionActive || !slackZeroAvailable || ![2, 5, 8].includes(tractionState);
+  if ($('returnZeroBtn')) $('returnZeroBtn').disabled = !permission.operate || !dataOnline || motionActive || ![1, 2, 5, 8].includes(tractionState);
+  document.querySelectorAll('.mode-btn').forEach(button => {
+    button.disabled = !permission.operate || !dataOnline || motionActive || ![1, 2, 5, 8].includes(tractionState);
+    button.classList.toggle('active', Number(button.dataset.mode) === operationMode);
+  });
+  $('startBtn').textContent = operationMode === 1 ? '开始位置牵引' : '开始牵引';
+  $('stopBtn').textContent = operationMode === 2 ? '结束拖拽' : '结束牵引';
   $('recordsBtn').disabled = !permission.records;
 }
 
@@ -184,6 +189,7 @@ async function startTraction() {
   if (!sessionUser || !permissions[sessionUser.role].operate) return;
   if (pendingStart) return toast('正在等待控制器接管');
   if (!dataOnline) return toast('设备未连接');
+  if (operationMode === 2) return toast('省力拖拽请点击初始校准后直接操作');
   const requestedTarget = Number($('targetForceVal').value);
   if (!Number.isFinite(requestedTarget) || requestedTarget < TARGET_FORCE_MIN || requestedTarget > TARGET_FORCE_MAX) {
     return toast('目标牵引力请输入 1～20 N');
@@ -214,10 +220,10 @@ async function startTraction() {
 }
 
 function beginLocalRecord() {
-  if (activeRecord || !pendingStart) return;
+  if (activeRecord) return;
   pendingStart = false;
   activeRecord = { startedAt: Date.now() };
-  $('workStatus').textContent = '牵引中';
+  $('workStatus').textContent = operationMode === 2 ? '拖拽中' : '牵引中';
   $('workStatus').classList.add('running');
   const startAt = Date.now();
   timerHandle = setInterval(() => {
@@ -242,7 +248,7 @@ function saveFinishedRecord(status) {
 }
 
 async function finishTraction(status = '已完成') {
-  if (tractionState !== 6) return toast('当前不在恒力牵引状态');
+  if (![6, 11, 12].includes(tractionState)) return toast('当前没有正在执行的任务');
   try {
     await postJson('/api/traction/stop');
   } catch (error) {
@@ -252,7 +258,7 @@ async function finishTraction(status = '已完成') {
   $('workStatus').textContent = '正在结束';
   $('workStatus').classList.add('running');
   applyPermissions();
-  toast(status === '已完成' ? '正在结束牵引' : '正在停止');
+  toast(status === '已完成' ? (operationMode === 2 ? '结束拖拽' : '正在结束牵引') : '正在停止');
 }
 
 async function emergencyStop() {
@@ -276,8 +282,8 @@ function renderRecords() {
     && (!status || record.status === status)
   );
   $('recordsBody').innerHTML = list.length
-    ? list.map(record => `<tr><td>${record.id}</td><td>${record.start}</td><td>${record.end}</td><td>${record.operator}</td><td>${record.role}</td><td>${record.target}</td><td>${record.average}</td><td>${record.maximum}</td><td>${record.status}</td><td>${record.reason}</td><td><button class="secondary-btn row-export-btn" data-export-session="${record.id}">导出日志</button></td></tr>`).join('')
-    : '<tr><td colspan="11" class="empty">暂无符合条件的牵引记录</td></tr>';
+    ? list.map(record => `<tr><td>${record.id}</td><td>${record.mode}</td><td>${record.start}</td><td>${record.end}</td><td>${record.operator}</td><td>${record.role}</td><td>${record.target}</td><td>${record.average}</td><td>${record.maximum}</td><td>${record.status}</td><td>${record.reason}</td><td><button class="secondary-btn row-export-btn" data-export-session="${record.id}">导出日志</button></td></tr>`).join('')
+    : '<tr><td colspan="12" class="empty">暂无符合条件的牵引记录</td></tr>';
 }
 
 function builtinTimeText(value) {
@@ -294,6 +300,7 @@ async function refreshHistory() {
       .filter(summary => summary.stop_reason !== 'PREPARE_RESTARTED_AFTER_BASELINE_RESET')
       .map(summary => ({
         id: summary.session_id || '--',
+        mode: MODE_LABELS[Number(summary.operation_mode || 0)] || '恒力牵引',
         start: builtinTimeText(summary.start_time),
         end: builtinTimeText(summary.end_time),
         operator: summary.operator || '--',
@@ -389,7 +396,7 @@ function handleState(state) {
   lastStateAt = Date.now();
   const traction = state.traction || {};
   tractionState = Number(traction.state || 0);
-  if ([2, 3, 4, 5, 6, 7, 8].includes(tractionState)) slackZeroAvailable = true;
+  operationMode = Number(traction.operation_mode || 0);
   const rosTargetForce = Number(traction.target_force_n);
   if (!activeRecord && document.activeElement !== $('targetForceVal') &&
       Number.isFinite(rosTargetForce) &&
@@ -397,8 +404,8 @@ function handleState(state) {
     currentForce = Math.round(rosTargetForce * 10) / 10;
     updateForceDisplay();
   }
-  if (tractionState === 6) beginLocalRecord();
-  if (finishRequested && [5, 8].includes(tractionState) && activeRecord) {
+  if ([6, 11].includes(tractionState)) beginLocalRecord();
+  if (finishRequested && [1, 5, 8].includes(tractionState) && activeRecord) {
     saveFinishedRecord('已完成');
   }
   if (activeRecord && [9, 10].includes(tractionState) && !pendingStart) {
@@ -420,19 +427,20 @@ function handleState(state) {
     window.updateAG95(state.ag95.position_raw);
   }
 
-  directionLocked = [5, 6, 7].includes(tractionState);
+  directionLocked = [5, 6, 7, 12].includes(tractionState);
   actualForce = Number(traction.actual_force_n || 0);
   $('actualForceVal').textContent = actualForce.toFixed(1);
   const tensionDetected = actualForce >= 1.0;
   $('tensionState').textContent = tensionDetected ? '牵引带：紧' : '牵引带：松';
   $('tensionState').classList.toggle('tight', tensionDetected);
   const directionTrackState = Number(traction.direction_track_state ?? 4);
-  const directionWaiting = tractionState === 6 && directionTrackState === 4;
-  const directionFollowing = tractionState === 6 && ![0, 4].includes(directionTrackState);
-  if (tractionState === 6 && directionTrackState === 2 && previousDirectionTrackState !== 2) {
+  const adaptiveTraction = tractionState === 6 && operationMode === 0;
+  const directionWaiting = adaptiveTraction && directionTrackState === 4;
+  const directionFollowing = adaptiveTraction && ![0, 4].includes(directionTrackState);
+  if (adaptiveTraction && directionTrackState === 2 && previousDirectionTrackState !== 2) {
     toast('新方向已确认');
   }
-  if (tractionState === 6 && directionTrackState === 0 && [2, 3].includes(previousDirectionTrackState)) {
+  if (adaptiveTraction && directionTrackState === 0 && [2, 3].includes(previousDirectionTrackState)) {
     toast('方向校准成功');
   }
   $('directionState').textContent = directionWaiting
@@ -461,8 +469,8 @@ function handleState(state) {
       ? '正在结束'
       // The controller may still report the previous stop reason while a new
       // run is active. The live traction state always takes priority.
-      : (tractionState === 6
-        ? '牵引中'
+      : ([6, 11, 12].includes(tractionState)
+        ? TRACTION_STATE_LABELS[tractionState]
         : (simpleReason(traction.fault_code || traction.stop_reason) || '牵引中'));
     $('workStatus').classList.add('running');
   } else if (!dataOnline) {
@@ -474,7 +482,7 @@ function handleState(state) {
   }
 
   dataPoints.shift();
-  dataPoints.push(directionLocked ? actualForce : 0);
+  dataPoints.push(activeRecord ? actualForce : 0);
   drawCurve();
   if (sessionUser) applyPermissions();
 }
@@ -534,41 +542,17 @@ $('recordsBtn').addEventListener('click', () => {
   renderRecords();
   $('recordsModal').classList.remove('hidden');
 });
-$('settingsBtn').addEventListener('click', async () => {
+$('settingsBtn').addEventListener('click', () => {
   if (!sessionUser || !permissions[sessionUser.role].settings) {
     return toast('当前角色无权修改参数');
   }
   $('settingTarget').value = currentForce;
-  $('settingTravelLimit').value = Math.round(maxTravelMm);
   $('settingsModal').classList.remove('hidden');
-  try {
-    const response = await fetch('/api/traction/settings', { cache: 'no-store' });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || '读取参数失败');
-    const value = Number(data.max_travel_mm);
-    if (Number.isFinite(value)) {
-      maxTravelMm = value;
-      $('settingTravelLimit').value = Math.round(maxTravelMm);
-    }
-  } catch (error) {
-    toast(simpleErrorMessage(error));
-  }
 });
 $('saveSettingsBtn').addEventListener('click', async () => {
   const target = Number($('settingTarget').value);
-  const travelLimit = Number($('settingTravelLimit').value);
   if (target < TARGET_FORCE_MIN || target > TARGET_FORCE_MAX) {
     return toast('目标牵引力必须在 1～20 N');
-  }
-  if (!Number.isFinite(travelLimit) || travelLimit < TRAVEL_LIMIT_MIN_MM ||
-      travelLimit > TRAVEL_LIMIT_MAX_MM) {
-    return toast('最大行程请输入 50～500 mm');
-  }
-  try {
-    await postJson('/api/traction/settings', { max_travel_mm: travelLimit });
-    maxTravelMm = travelLimit;
-  } catch (error) {
-    return toast(simpleErrorMessage(error));
   }
   if (!(await changeTarget(target))) {
     return;
@@ -601,7 +585,6 @@ const callTraction = async path => {
     if (traction) {
       tractionState = Number(traction.state || 0);
       dataOnline = traction.valid === true;
-      if (path === '/api/traction/prepare') slackZeroAvailable = true;
       applyPermissions();
     }
     toast(ACTION_SUCCESS_MESSAGES[path] || '操作完成');
@@ -616,6 +599,21 @@ if ($('calibrateBtn')) {
   $('calibrateBtn').addEventListener('click', () => callTraction('/api/traction/calibrate-direction'));
 }
 if ($('returnZeroBtn')) $('returnZeroBtn').addEventListener('click', () => callTraction('/api/traction/return-zero'));
+document.querySelectorAll('.mode-btn').forEach(button => {
+  button.addEventListener('click', async () => {
+    const requestedMode = Number(button.dataset.mode);
+    try {
+      await postJson('/api/traction/mode', { mode: requestedMode });
+      operationMode = requestedMode;
+      pendingStart = false;
+      finishRequested = false;
+      applyPermissions();
+      toast(`已切换为${MODE_LABELS[operationMode]}`);
+    } catch (error) {
+      toast(simpleErrorMessage(error));
+    }
+  });
+});
 setInterval(() => { fetch('/api/traction/heartbeat', {method: 'POST', body: '{}'}).catch(() => {}); }, 500);
 const savedSession = sessionStorage.getItem('tractionSession');
 if (savedSession) {

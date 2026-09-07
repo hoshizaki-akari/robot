@@ -38,12 +38,11 @@ OPERATION_NAMES = {
     "/api/traction/prepare": "初始校准",
     "/api/traction/calibrate-direction": "方向确定",
     "/api/traction/target": "设置目标力",
-    "/api/traction/settings": "设置最大行程",
+    "/api/traction/mode": "切换工作模式",
     "/api/traction/start": "开始牵引",
     "/api/traction/stop": "结束牵引",
     "/api/traction/emergency-stop": "急停",
     "/api/traction/reset-fault": "故障复位",
-    "/api/traction/set-zero": "设置零点",
     "/api/traction/return-zero": "回零",
 }
 
@@ -159,8 +158,8 @@ class TargetRequest(BaseModel):
     target_force_n: float = Field(ge=1.0, le=20.0)
 
 
-class MotionSettingsRequest(BaseModel):
-    max_travel_mm: float = Field(ge=50.0, le=500.0)
+class OperationModeRequest(BaseModel):
+    mode: int = Field(ge=0, le=2)
 
 
 @app.get("/")
@@ -204,14 +203,6 @@ def history() -> dict:
     return result
 
 
-@app.get("/api/traction/settings")
-def motion_settings() -> dict:
-    try:
-        return bridge.get_motion_settings()
-    except RosBridgeError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-
-
 def _call(name: str, target_force_n: float | None = None) -> dict:
     try:
         return bridge.call(name, target_force_n)
@@ -234,10 +225,10 @@ def set_target(request: TargetRequest) -> dict:
     return _call("set_target_force", request.target_force_n)
 
 
-@app.post("/api/traction/settings")
-def set_motion_settings(request: MotionSettingsRequest) -> dict:
+@app.post("/api/traction/mode")
+def set_operation_mode(request: OperationModeRequest) -> dict:
     try:
-        return bridge.set_max_travel_mm(request.max_travel_mm)
+        return bridge.set_operation_mode(request.mode)
     except RosBridgeError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 
@@ -262,11 +253,6 @@ def reset_fault() -> dict:
     return _call("reset_fault")
 
 
-@app.post("/api/traction/set-zero")
-def set_zero() -> dict:
-    return _call("set_zero_pose")
-
-
 @app.post("/api/traction/return-zero")
 def return_zero() -> dict:
     return _call("return_zero_pose")
@@ -284,12 +270,13 @@ def export_latest() -> Response:
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(
-        ["session_id", "start_time", "end_time", "operator", "role", "operation_count", "target_force_n", "average_force_n", "max_force_n", "final_state", "stop_reason", "record_path"]
+        ["session_id", "operation_mode", "start_time", "end_time", "operator", "role", "operation_count", "target_force_n", "average_force_n", "max_force_n", "final_state", "stop_reason", "record_path"]
     )
     for item in summaries:
         writer.writerow(
             [
                 item.get("session_id", ""),
+                item.get("operation_mode", 0),
                 item.get("start_time", ""),
                 item.get("end_time", ""),
                 item.get("operator", ""),

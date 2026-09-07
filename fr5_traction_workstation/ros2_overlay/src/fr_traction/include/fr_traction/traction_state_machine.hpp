@@ -19,7 +19,9 @@ enum class TractionState : uint8_t
   RELEASING = 7,
   COMPLETED = 8,
   FAULT = 9,
-  EMERGENCY_STOP = 10
+  EMERGENCY_STOP = 10,
+  DRAGGING = 11,
+  POSITION_HOLD = 12
 };
 
 const char * state_name(TractionState state);

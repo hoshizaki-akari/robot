@@ -34,6 +34,14 @@ public:
     force_deadband_n_ = declare_parameter("force_deadband_n", 0.15);
     max_speed_mps_ = declare_parameter("traction_max_speed_mps", 0.020);
     max_acceleration_mps2_ = declare_parameter("traction_max_acc_mps2", 0.02);
+    drag_start_force_n_ = declare_parameter("drag_start_force_n", 1.0);
+    drag_release_force_n_ = declare_parameter("drag_release_force_n", 0.6);
+    drag_release_confirm_s_ = declare_parameter("drag_release_confirm_s", 0.15);
+    drag_gain_mps_per_n_ = declare_parameter("drag_gain_mps_per_n", 0.00625);
+    drag_max_speed_mps_ = declare_parameter("drag_max_speed_mps", 0.050);
+    smoothing_max_acceleration_mps2_ = declare_parameter(
+      "smoothing_max_acceleration_mps2", 0.30);
+    smoothing_max_jerk_mps3_ = declare_parameter("smoothing_max_jerk_mps3", 3.0);
     direction_correction_max_speed_mps_ = declare_parameter(
       "direction_correction_max_speed_mps", 0.020);
     combined_max_speed_mps_ = declare_parameter("combined_max_speed_mps", 0.025);
@@ -63,7 +71,10 @@ public:
     force_filter_.set_cutoff(force_filter_cutoff_hz_);
     core_ = TractionControllerCore(
       virtual_mass_, virtual_damping_, force_deadband_n_, max_speed_mps_,
-      max_acceleration_mps2_, integral_gain_s_inv_, integral_limit_n_);
+      max_acceleration_mps2_, integral_gain_s_inv_, integral_limit_n_,
+      drag_start_force_n_, drag_release_force_n_, drag_release_confirm_s_,
+      drag_gain_mps_per_n_, drag_max_speed_mps_, smoothing_max_acceleration_mps2_,
+      smoothing_max_jerk_mps3_);
 
     command_subscription_ = create_subscription<msg::TractionCommand>(
       command_topic_, rclcpp::QoS(10).reliable(),
@@ -105,7 +116,7 @@ private:
     last_command_at_ = now();
     last_command_steady_at_ = std::chrono::steady_clock::now();
     ++command_generation_;
-    command_valid_ = message.mode <= msg::TractionCommand::RELEASING &&
+    command_valid_ = message.mode <= msg::TractionCommand::DRAG &&
       message.direction_correction_mode <= msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE &&
       std::isfinite(message.target_force_n) && message.target_force_n >= 0.0 &&
       finite(vector_from_message(message.locked_direction_base)) &&
@@ -237,10 +248,14 @@ private:
         bounded_output.linear_velocity = unit * bounded_output.scalar_velocity_mps;
       }
     }
-    if (mode == ControlMode::TRACTION || mode == ControlMode::RELEASING) {
+    if (mode == ControlMode::TRACTION || mode == ControlMode::RELEASING ||
+      mode == ControlMode::DRAGGING)
+    {
       const double combined_speed = norm(bounded_output.linear_velocity);
-      if (combined_speed > combined_max_speed_mps_) {
-        const double scale = combined_max_speed_mps_ / combined_speed;
+      const double mode_speed_limit = mode == ControlMode::DRAGGING ?
+        drag_max_speed_mps_ : combined_max_speed_mps_;
+      if (combined_speed > mode_speed_limit) {
+        const double scale = mode_speed_limit / combined_speed;
         bounded_output.linear_velocity = bounded_output.linear_velocity * scale;
         bounded_output.scalar_velocity_mps *= scale;
       }
@@ -258,6 +273,13 @@ private:
   double force_deadband_n_ = 0.15;
   double max_speed_mps_ = 0.020;
   double max_acceleration_mps2_ = 0.02;
+  double drag_start_force_n_ = 1.0;
+  double drag_release_force_n_ = 0.6;
+  double drag_release_confirm_s_ = 0.15;
+  double drag_gain_mps_per_n_ = 0.00625;
+  double drag_max_speed_mps_ = 0.050;
+  double smoothing_max_acceleration_mps2_ = 0.30;
+  double smoothing_max_jerk_mps3_ = 3.0;
   double direction_correction_max_speed_mps_ = 0.020;
   double combined_max_speed_mps_ = 0.025;
   double pretension_speed_mps_ = 0.002;

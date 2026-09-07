@@ -27,6 +27,7 @@ done
 echo "关键服务："
 for service in /traction/set_zero_pose /traction/return_zero_pose /traction/prepare \
   /traction/calibrate_direction /traction/set_target_force /traction/start \
+  /traction/set_operation_mode \
   /traction/stop /traction/emergency_stop /traction/reset_fault \
   /traction/auto_tension_tool_y_minus; do
   if ros2 service list | grep -Fxq "$service"; then

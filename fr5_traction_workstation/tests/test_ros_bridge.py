@@ -27,6 +27,8 @@ class FakePoint(FakeVector):
 class FakeTraction:
     header = FakeHeader()
     state = 6
+    operation_mode = 1
+    position_reached = False
     ready = True
     target_force_n = 10.0
     actual_force_n = 9.5
@@ -55,6 +57,7 @@ class BridgeTest(unittest.TestCase):
         bridge._on_traction(FakeTraction())
         snapshot = bridge.snapshot()
         self.assertEqual(STATE_NAMES[6], snapshot["traction"]["state_name"])
+        self.assertEqual(1, snapshot["traction"]["operation_mode"])
         self.assertTrue(snapshot["fr5"]["valid"])
         self.assertAlmostEqual(math.degrees(0.1), snapshot["fr5"]["joint_velocity_deg_s"][0])
 

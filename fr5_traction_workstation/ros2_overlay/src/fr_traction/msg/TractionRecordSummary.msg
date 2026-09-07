@@ -1,5 +1,6 @@
 std_msgs/Header header
 string session_id
+uint8 operation_mode
 builtin_interfaces/Time start_time
 builtin_interfaces/Time end_time
 float64 target_force_n

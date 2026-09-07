@@ -18,14 +18,10 @@ enum class SafetyFault : unsigned char
   HARD_OVERFORCE,
   OVERFORCE,
   LATERAL_FORCE,
-  AXIAL_TRAVEL_LIMIT,
   UI_HEARTBEAT_TIMEOUT
 };
 
-struct SafetyLimits
-{
-  double axial_travel_m = 0.050;
-};
+struct SafetyLimits {};
 
 struct SafetySample
 {
@@ -36,7 +32,6 @@ struct SafetySample
   bool ui_heartbeat_fresh = false;
   Vec3 raw_wrench;
   ForceMetrics metrics;
-  double axis_displacement_m = 0.0;
 };
 
 class SafetyMonitor

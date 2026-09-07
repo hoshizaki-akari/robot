@@ -61,31 +61,35 @@ def generate_launch_description():
         parameters=[{
             "robot_ip": robot_ip,
             "sdk_python_path": sdk_python_path,
-            # The FR5 SDK exposes four feedback RPCs. 25 Hz keeps the real
-            # hardware feedback continuous instead of queueing 100 Hz calls.
+            # Feedback remains 25 Hz, while small motion increments are sent
+            # at 50 Hz to remove the former perceptible stepping.
             "update_rate_hz": 25.0,
-            "motion_rate_hz": 25.0,
+            "motion_rate_hz": 50.0,
             # Reject a velocity command left behind by a blocked feedback RPC.
             "command_timeout_s": 0.25,
             # The controller bounds axial traction at 20 mm/s and the active
             # direction follower at 20 mm/s. Allow their already-bounded
             # vector sum through the direct driver without clipping it back
             # to the former 5 mm/s limit.
-            "max_linear_speed_mps": 0.025,
+            "max_linear_speed_mps": 0.050,
             # On this FR5, the live Y- tension search showed that a positive
             # base command must be passed through unchanged for the force
             # controller to move in the measured increasing-force direction.
             "base_servo_sign": 1.0,
-            # Position-driven release uses a bounded trapezoidal profile:
-            # quick cruise for long returns, smooth acceleration/deceleration
-            # around the two endpoints.
+            # Position returns use a quintic minimum-jerk profile.
             "return_speed_mm_s": 20.0,
             "return_acceleration_mm_s2": 100.0,
-            # Supports the web-configurable 500 mm traction travel plus a
-            # small stopping-distance margin for the position-driven return.
-            "return_max_distance_mm": 520.0,
             "tension_search_max_mm": 100.0,
-            "auto_set_zero_on_start": True,
+            # Fixed slack pose recorded on 2026-09-07. Force calibration does
+            # not overwrite this durable return-zero destination.
+            "fixed_zero_pose_mm_deg": [
+                500.7035522460938,
+                -371.84417724609375,
+                276.12460327148436,
+                -93.77832794189455,
+                1.9229726791381836,
+                -133.9364776611328,
+            ],
             "use_sim_time": use_sim_time,
         }],
     )

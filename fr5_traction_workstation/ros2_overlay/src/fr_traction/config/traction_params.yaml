@@ -9,6 +9,13 @@ traction_controller:
     force_deadband_n: 0.15
     traction_max_speed_mps: 0.020
     traction_max_acc_mps2: 0.02
+    drag_start_force_n: 1.0
+    drag_release_force_n: 0.6
+    drag_release_confirm_s: 0.15
+    drag_gain_mps_per_n: 0.00625
+    drag_max_speed_mps: 0.050
+    smoothing_max_acceleration_mps2: 0.30
+    smoothing_max_jerk_mps3: 3.0
     direction_correction_max_speed_mps: 0.020
     combined_max_speed_mps: 0.025
     pretension_speed_mps: 0.002
@@ -72,11 +79,10 @@ traction_manager:
     # Covers the longest configurable position-driven return plus generous
     # communication margin. Force control remains disabled throughout it.
     release_timeout_s: 300.0
-    # Force magnitude and temporary lateral force are control inputs, not
-    # software fault conditions. Hardware and workspace guards remain.
-    # Maximum straight-line TCP distance from the pose captured when traction
-    # starts. The web settings page may change it between 0.05 and 0.50 m.
-    axial_travel_limit_m: 0.150
+    # Position traction stops once total rope tension stays within ±0.2 N for
+    # 0.5 s. Later force changes do not restart control in this mode.
+    position_reached_tolerance_n: 0.20
+    position_reached_confirm_s: 0.50
     # Two-stage stale-data handling: motion is disabled after 0.25 s, while
     # wrench/pose gaps still fault at 1.2 s. The FR5 SDK health heartbeat is
     # emitted by the same timer as ServoCart; a measured 0.607 s RPC gap needs

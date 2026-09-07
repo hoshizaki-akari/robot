@@ -17,6 +17,8 @@ const char * state_name(TractionState state)
     case TractionState::COMPLETED: return "COMPLETED";
     case TractionState::FAULT: return "FAULT";
     case TractionState::EMERGENCY_STOP: return "EMERGENCY_STOP";
+    case TractionState::DRAGGING: return "DRAGGING";
+    case TractionState::POSITION_HOLD: return "POSITION_HOLD";
   }
   return "UNKNOWN";
 }
@@ -24,7 +26,7 @@ const char * state_name(TractionState state)
 bool is_motion_state(TractionState state)
 {
   return state == TractionState::PRETENSION || state == TractionState::TRACTION ||
-         state == TractionState::RELEASING;
+         state == TractionState::RELEASING || state == TractionState::DRAGGING;
 }
 
 bool can_transition(TractionState from, TractionState to)
@@ -45,17 +47,24 @@ bool can_transition(TractionState from, TractionState to)
   }
   switch (from) {
     case TractionState::INITIALIZING: return to == TractionState::READY;
-    case TractionState::READY: return to == TractionState::MANUAL_SETUP;
+    case TractionState::READY:
+      return to == TractionState::MANUAL_SETUP || to == TractionState::DRAGGING;
     // Manual teach-pendant setup can lock a direction directly from the
     // measured force; the legacy automatic pretension path remains available.
     case TractionState::MANUAL_SETUP:
-      return to == TractionState::PRETENSION || to == TractionState::CALIBRATING;
+      return to == TractionState::PRETENSION || to == TractionState::CALIBRATING ||
+             to == TractionState::READY || to == TractionState::DRAGGING;
     case TractionState::PRETENSION: return to == TractionState::CALIBRATING;
     case TractionState::CALIBRATING: return to == TractionState::DIRECTION_LOCKED;
     case TractionState::DIRECTION_LOCKED:
-      return to == TractionState::TRACTION || to == TractionState::MANUAL_SETUP;
-    case TractionState::TRACTION: return to == TractionState::RELEASING;
+      return to == TractionState::TRACTION || to == TractionState::MANUAL_SETUP ||
+             to == TractionState::READY;
+    case TractionState::TRACTION:
+      return to == TractionState::RELEASING || to == TractionState::POSITION_HOLD ||
+             to == TractionState::COMPLETED;
     case TractionState::RELEASING: return to == TractionState::COMPLETED;
+    case TractionState::DRAGGING: return to == TractionState::COMPLETED;
+    case TractionState::POSITION_HOLD: return to == TractionState::COMPLETED;
     case TractionState::COMPLETED:
       return to == TractionState::READY || to == TractionState::DIRECTION_LOCKED;
     case TractionState::FAULT:

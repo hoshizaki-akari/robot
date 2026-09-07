@@ -5,11 +5,12 @@ set -eo pipefail
 # active. Source the ROS environments without nounset, then restore strict
 # mode for the actual launch and parameter handling below.
 source /opt/ros/humble/setup.bash
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION_CHOICE="${1:-}"
 
 if [[ -z "$VERSION_CHOICE" ]]; then
   if [[ -t 0 ]]; then
-    echo "请选择版本：1=第一版稳定基线，2=当前主动方向跟随版（默认2）"
+    echo "请选择版本：1=第一版稳定基线，2=当前三模式版（默认2）"
     read -r VERSION_CHOICE
   else
     VERSION_CHOICE=2
@@ -23,8 +24,8 @@ case "$VERSION_CHOICE" in
     VERSION_LABEL="版本1：稳定基线"
     ;;
   2)
-    ROS_WS="/home/zhj/projects/fr5_platform_ws/runtimes/directional_correction_v1"
-    VERSION_LABEL="版本2：主动方向跟随"
+    ROS_WS="$PROJECT_DIR/ros2_overlay"
+    VERSION_LABEL="版本2：三模式牵引与主动方向跟随"
     ;;
   *)
     echo "版本选择无效，请输入 1 或 2。" >&2

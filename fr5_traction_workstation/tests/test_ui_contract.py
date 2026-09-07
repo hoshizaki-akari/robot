@@ -18,6 +18,10 @@ class UiContractTest(unittest.TestCase):
         self.assertIn("开始牵引", page)
         self.assertIn("结束牵引", page)
         self.assertIn("急停", page)
+        self.assertIn("省力拖拽", page)
+        self.assertIn("位置牵引", page)
+        self.assertIn("恒力牵引", page)
+        self.assertIn("/api/traction/mode", script)
         self.assertIn("方向稳定", page)
         self.assertIn("正在跟随方向", script)
         self.assertEqual(len(re.findall(r'class="action-btn', page)), 6)
@@ -38,6 +42,8 @@ class UiContractTest(unittest.TestCase):
         self.assertIn("/api/traction/export/session/", script)
         self.assertIn("等待张紧", script)
         self.assertIn("方向校准成功", script)
+        self.assertNotIn("最大行程", page)
+        self.assertNotIn("settingTravelLimit", script)
 
     def test_no_old_platform_b_dependency(self):
         page = (ROOT / "static" / "090105.html").read_text(encoding="utf-8")

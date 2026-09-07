@@ -11,8 +11,16 @@ uint8 RELEASING=7
 uint8 COMPLETED=8
 uint8 FAULT=9
 uint8 EMERGENCY_STOP=10
+uint8 DRAGGING=11
+uint8 POSITION_HOLD=12
+
+uint8 CONSTANT_FORCE=0
+uint8 POSITION_TRACTION=1
+uint8 ASSISTED_DRAG=2
 
 uint8 state
+uint8 operation_mode
+bool position_reached
 bool ready
 float64 target_force_n
 float64 actual_force_n

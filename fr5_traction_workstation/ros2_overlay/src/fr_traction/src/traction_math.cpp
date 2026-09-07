@@ -148,22 +148,19 @@ double OneDimensionalAdmittance::update(double target_force_n, double actual_for
     reset();
     return 0.0;
   }
-  const double error = target_force_n - actual_force_n;
-  // A compliant rope can change force much faster than the velocity ramp can
-  // decelerate. Carrying the old velocity through the force deadband caused
-  // the real FR5 to repeatedly cross a 15 N target and eventually overshoot
-  // the old force fault. Hold immediately once the target band is reached.
-  if (std::abs(error) <= deadband_n_) {
-    integral_state_n_s_ = 0.0;
-    velocity_mps_ = 0.0;
-    return 0.0;
+  const double raw_error = target_force_n - actual_force_n;
+  // Use a continuous soft deadband. Inside the tolerance the desired force
+  // term becomes zero and damping decelerates the command naturally instead
+  // of switching velocity abruptly between a finite value and zero.
+  const double error = std::copysign(
+    std::max(0.0, std::abs(raw_error) - deadband_n_), raw_error);
+  if (std::abs(error) <= 1e-12) {
+    integral_state_n_s_ *= std::exp(-4.0 * dt_s);
   }
-  // If the force error has changed sign, the previous velocity is now moving
-  // in the wrong direction. Drop that stale momentum before accelerating back
-  // toward the target; this is a one-axis force controller, not a free mass.
+  // On reversal, remove only accumulated bias. Physical/virtual momentum is
+  // decelerated through the acceleration limit, avoiding a palpable notch.
   if (error * velocity_mps_ < 0.0) {
     integral_state_n_s_ = 0.0;
-    velocity_mps_ = 0.0;
   }
   const bool saturated_positive = velocity_mps_ >= max_speed_mps_ && error > 0.0;
   const bool saturated_negative = velocity_mps_ <= -max_speed_mps_ && error < 0.0;

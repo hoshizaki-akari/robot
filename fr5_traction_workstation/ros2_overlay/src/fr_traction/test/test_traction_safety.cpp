@@ -18,7 +18,6 @@ fr_traction::SafetySample nominal_sample()
   sample.raw_wrench = {0.0, 0.0, -10.0};
   sample.metrics.actual_force_n = 10.0;
   sample.metrics.lateral_force_n = 0.0;
-  sample.axis_displacement_m = 0.0;
   return sample;
 }
 
@@ -62,13 +61,10 @@ TEST(TractionSafety, AxialForceDoesNotLatchAnOverforceFault)
   EXPECT_EQ(monitor.update(sample, 20.0, false), fr_traction::SafetyFault::NONE);
 }
 
-TEST(TractionSafety, ChecksTravelAndOptionalUiHeartbeat)
+TEST(TractionSafety, ChecksOptionalUiHeartbeatWithoutSoftwareTravelLimit)
 {
   fr_traction::SafetyMonitor monitor;
   auto sample = nominal_sample();
-  sample.axis_displacement_m = 0.050;
-  EXPECT_EQ(monitor.update(sample, 0.0, false), fr_traction::SafetyFault::AXIAL_TRAVEL_LIMIT);
-  sample = nominal_sample();
   sample.ui_heartbeat_fresh = false;
   EXPECT_EQ(monitor.update(sample, 0.0, true), fr_traction::SafetyFault::UI_HEARTBEAT_TIMEOUT);
   EXPECT_STREQ(fr_traction::SafetyMonitor::code(fr_traction::SafetyFault::OVERFORCE), "OVERFORCE");

@@ -62,4 +62,22 @@ TEST(TractionStateMachine, CompletedRunReturnsToDirectionLockedIdleState)
   EXPECT_TRUE(can_transition(TractionState::DIRECTION_LOCKED, TractionState::MANUAL_SETUP));
 }
 
+TEST(TractionStateMachine, SupportsAssistedDragAndPositionHoldFlows)
+{
+  StateMachine drag;
+  EXPECT_TRUE(drag.transition(TractionState::READY));
+  EXPECT_TRUE(drag.transition(TractionState::DRAGGING));
+  EXPECT_TRUE(drag.transition(TractionState::COMPLETED));
+  EXPECT_TRUE(drag.transition(TractionState::READY));
+
+  StateMachine position;
+  for (const auto next : {TractionState::READY, TractionState::MANUAL_SETUP,
+      TractionState::CALIBRATING, TractionState::DIRECTION_LOCKED,
+      TractionState::TRACTION, TractionState::POSITION_HOLD,
+      TractionState::COMPLETED, TractionState::DIRECTION_LOCKED})
+  {
+    EXPECT_TRUE(position.transition(next));
+  }
+}
+
 }  // namespace fr_traction
