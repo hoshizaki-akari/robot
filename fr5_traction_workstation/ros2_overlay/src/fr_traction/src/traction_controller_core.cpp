@@ -20,7 +20,10 @@ TractionControllerCore::TractionControllerCore(
   double drag_gain_mps_per_n,
   double drag_max_speed_mps,
   double smoothing_max_acceleration_mps2,
-  double smoothing_max_jerk_mps3)
+  double smoothing_max_jerk_mps3,
+  double drag_sign_x,
+  double drag_sign_y,
+  double drag_sign_z)
 : admittance_(
     virtual_mass, virtual_damping, deadband_n, max_speed_mps, max_acceleration_mps2,
     integral_gain_s_inv, integral_limit_n),
@@ -29,6 +32,9 @@ TractionControllerCore::TractionControllerCore(
   drag_release_confirm_s_(drag_release_confirm_s),
   drag_gain_mps_per_n_(drag_gain_mps_per_n),
   drag_max_speed_mps_(drag_max_speed_mps),
+  drag_sign_x_(drag_sign_x),
+  drag_sign_y_(drag_sign_y),
+  drag_sign_z_(drag_sign_z),
   smoothing_max_acceleration_mps2_(smoothing_max_acceleration_mps2),
   smoothing_max_jerk_mps3_(smoothing_max_jerk_mps3)
 {
@@ -48,6 +54,15 @@ TractionControllerCore::TractionControllerCore(
   }
   if (!std::isfinite(drag_max_speed_mps_) || drag_max_speed_mps_ <= 0.0) {
     drag_max_speed_mps_ = 0.050;
+  }
+  if (!std::isfinite(drag_sign_x_) || std::abs(std::abs(drag_sign_x_) - 1.0) > 1e-9) {
+    drag_sign_x_ = 1.0;
+  }
+  if (!std::isfinite(drag_sign_y_) || std::abs(std::abs(drag_sign_y_) - 1.0) > 1e-9) {
+    drag_sign_y_ = 1.0;
+  }
+  if (!std::isfinite(drag_sign_z_) || std::abs(std::abs(drag_sign_z_) - 1.0) > 1e-9) {
+    drag_sign_z_ = 1.0;
   }
   if (!std::isfinite(smoothing_max_acceleration_mps2_) ||
     smoothing_max_acceleration_mps2_ <= 0.0)
@@ -144,10 +159,11 @@ ControllerOutput TractionControllerCore::update(
     if (drag_active_ && force_n > 1e-12) {
       const double speed = std::min(
         drag_max_speed_mps_, drag_gain_mps_per_n_ * std::max(0.0, force_n - drag_release_force_n_));
-      // Apply the independently verified physical sign for each tool axis.
-      // This mapping belongs only to assisted-drag mode; traction and
-      // position-hold control signs remain unchanged.
-      const Vec3 calibrated_drag_direction{-wrench.x, wrench.y, -wrench.z};
+      // The input has already been converted into tool coordinates by the
+      // node.  Each tool force component therefore drives only its matching
+      // tool axis; signs are independently configurable for physical checks.
+      const Vec3 calibrated_drag_direction{
+        drag_sign_x_ * wrench.x, drag_sign_y_ * wrench.y, drag_sign_z_ * wrench.z};
       desired_velocity = calibrated_drag_direction * (speed / force_n);
     }
     result.linear_velocity = smooth_velocity(desired_velocity, dt_s);

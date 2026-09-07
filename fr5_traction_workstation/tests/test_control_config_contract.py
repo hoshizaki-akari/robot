@@ -36,6 +36,23 @@ class ControlConfigurationContractTest(unittest.TestCase):
         self.assertIn('"allow_existing_force_reference": True', launch)
         self.assertIn('"return_zero_pose": 8.0', bridge)
 
+    def test_assisted_drag_uses_tool_frame_commands_and_independent_signs(self):
+        driver = (ROS / "scripts" / "fr5_direct_driver_node.py").read_text(encoding="utf-8")
+        controller = (ROS / "src" / "traction_controller_node.cpp").read_text(encoding="utf-8")
+        core = (ROS / "src" / "traction_controller_core.cpp").read_text(encoding="utf-8")
+        parameters = (ROS / "config" / "traction_params.yaml").read_text(encoding="utf-8")
+        self.assertIn("TractionCommand.DRAG", driver)
+        self.assertIn("servo_mode = 2 if", driver)
+        self.assertIn("command_sign = self._base_servo_sign if servo_mode == 1 else 1.0", driver)
+        self.assertIn("rotate_base_to_tool", controller)
+        self.assertIn("drag_sign_x/y/z", controller)
+        self.assertIn("drag_sign_x_ * wrench.x", core)
+        self.assertIn("drag_sign_y_ * wrench.y", core)
+        self.assertIn("drag_sign_z_ * wrench.z", core)
+        self.assertIn("drag_sign_x: 1.0", parameters)
+        self.assertIn("drag_sign_y: 1.0", parameters)
+        self.assertIn("drag_sign_z: 1.0", parameters)
+
     def test_all_three_modes_have_ros_interfaces(self):
         service = (ROS / "srv" / "SetOperationMode.srv").read_text(encoding="utf-8")
         status = (ROS / "msg" / "TractionStatus.msg").read_text(encoding="utf-8")

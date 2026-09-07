@@ -15,8 +15,8 @@ drag records did not contain the actual XYZ controller velocity
 
 implemented:
 invert assisted-drag motion only; constant/position traction signs unchanged
-calibrate assisted-drag axes after physical verification: command direction = [-Fx, +Fy, -Fz]
-X is reversed after the latest physical check; Y/Z retain their verified directions
+assisted-drag input is converted from base_link force into tool coordinates
+command direction defaults to [Fx, Fy, Fz]; drag_sign_x/y/z allow independent physical correction
 bound FR5 command RPC to 1.5 s and retry ServoMoveEnd once on a fresh connection
 allow return-zero service response up to 8 s
 record actual controller command_vx/command_vy/command_vz for every new session

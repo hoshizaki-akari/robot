@@ -11,6 +11,7 @@ import xmlrpc.client
 import rclpy
 from controller_manager_msgs.srv import SwitchController
 from fairino_msgs.msg import PoseTwist
+from fr_traction.msg import TractionCommand
 from geometry_msgs.msg import Twist, WrenchStamped
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -203,6 +204,9 @@ class Fr5DirectDriver(Node):
         self.create_subscription(
             Twist, "/controller_manager/command_cart_vel", self._on_twist, 10
         )
+        self.create_subscription(
+            TractionCommand, "/traction/command", self._on_traction_command, 10
+        )
         self.create_service(
             SwitchController,
             "/controller_manager/switch_controller",
@@ -243,6 +247,7 @@ class Fr5DirectDriver(Node):
         )
 
         self._twist = Twist()
+        self._traction_mode = TractionCommand.DISABLED
         self._last_command_at = 0.0
         self._last_motion_at = 0.0
         self._servo_enabled = False
@@ -323,6 +328,16 @@ class Fr5DirectDriver(Node):
         if all(math.isfinite(value) for value in values):
             self._twist = message
             self._last_command_at = time.monotonic()
+
+    def _on_traction_command(self, message):
+        if message.mode in (
+            TractionCommand.DISABLED,
+            TractionCommand.PRETENSION,
+            TractionCommand.TRACTION,
+            TractionCommand.RELEASING,
+            TractionCommand.DRAG,
+        ):
+            self._traction_mode = message.mode
 
     @staticmethod
     def _switch_lists(request):
@@ -672,11 +687,15 @@ class Fr5DirectDriver(Node):
             linear = [0.0, 0.0, 0.0]
         elif magnitude > self._max_speed and magnitude > 0.0:
             linear = [value * self._max_speed / magnitude for value in linear]
+        # Assisted drag is generated in tool coordinates by the controller;
+        # all other velocity commands remain base-coordinate increments.
+        servo_mode = 2 if self._traction_mode == TractionCommand.DRAG else 1
+        command_sign = self._base_servo_sign if servo_mode == 1 else 1.0
         increment = [
-            self._base_servo_sign * value * motion_dt * 1000.0
+            command_sign * value * motion_dt * 1000.0
             for value in linear
         ]
-        code = self._servo_cart(1, increment + [0.0, 0.0, 0.0])
+        code = self._servo_cart(servo_mode, increment + [0.0, 0.0, 0.0])
         if code != 0:
             raise RuntimeError(f"ServoCart traction failed: {code}")
 

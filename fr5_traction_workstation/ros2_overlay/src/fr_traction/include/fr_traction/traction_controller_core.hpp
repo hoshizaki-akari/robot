@@ -39,7 +39,10 @@ public:
     double drag_gain_mps_per_n = 0.00625,
     double drag_max_speed_mps = 0.050,
     double smoothing_max_acceleration_mps2 = 0.30,
-    double smoothing_max_jerk_mps3 = 3.0);
+    double smoothing_max_jerk_mps3 = 3.0,
+    double drag_sign_x = 1.0,
+    double drag_sign_y = 1.0,
+    double drag_sign_z = 1.0);
 
   void reset();
   ControllerOutput update(
@@ -59,6 +62,9 @@ private:
   double drag_release_confirm_s_;
   double drag_gain_mps_per_n_;
   double drag_max_speed_mps_;
+  double drag_sign_x_;
+  double drag_sign_y_;
+  double drag_sign_z_;
   double smoothing_max_acceleration_mps2_;
   double smoothing_max_jerk_mps3_;
   bool drag_active_ = false;

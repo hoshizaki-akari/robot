@@ -8,6 +8,7 @@
 #include <string>
 
 #include "fr_traction/msg/traction_command.hpp"
+#include "fairino_msgs/msg/pose_twist.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/wrench_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -39,6 +40,9 @@ public:
     drag_release_confirm_s_ = declare_parameter("drag_release_confirm_s", 0.15);
     drag_gain_mps_per_n_ = declare_parameter("drag_gain_mps_per_n", 0.00625);
     drag_max_speed_mps_ = declare_parameter("drag_max_speed_mps", 0.050);
+    drag_sign_x_ = declare_parameter("drag_sign_x", 1.0);
+    drag_sign_y_ = declare_parameter("drag_sign_y", 1.0);
+    drag_sign_z_ = declare_parameter("drag_sign_z", 1.0);
     smoothing_max_acceleration_mps2_ = declare_parameter(
       "smoothing_max_acceleration_mps2", 0.30);
     smoothing_max_jerk_mps3_ = declare_parameter("smoothing_max_jerk_mps3", 3.0);
@@ -57,6 +61,8 @@ public:
       "velocity_command_topic", std::string("/traction/controller_velocity_cmd"));
     velocity_vector_topic_ = declare_parameter(
       "velocity_vector_topic", std::string("/traction/controller_velocity_vector"));
+    ee_state_topic_ = declare_parameter(
+      "ee_state_topic", std::string("/controller_manager/ee_state"));
 
     if (!std::isfinite(control_rate_hz_) || control_rate_hz_ <= 0.0 ||
       !std::isfinite(force_filter_cutoff_hz_) || force_filter_cutoff_hz_ <= 0.0 ||
@@ -69,6 +75,12 @@ public:
     {
       throw std::runtime_error("invalid traction controller timing parameters");
     }
+    if (!std::isfinite(drag_sign_x_) || std::abs(std::abs(drag_sign_x_) - 1.0) > 1e-9 ||
+      !std::isfinite(drag_sign_y_) || std::abs(std::abs(drag_sign_y_) - 1.0) > 1e-9 ||
+      !std::isfinite(drag_sign_z_) || std::abs(std::abs(drag_sign_z_) - 1.0) > 1e-9)
+    {
+      throw std::runtime_error("drag_sign_x/y/z must be either -1.0 or 1.0");
+    }
 
     force_filter_.set_cutoff(force_filter_cutoff_hz_);
     core_ = TractionControllerCore(
@@ -76,7 +88,7 @@ public:
       max_acceleration_mps2_, integral_gain_s_inv_, integral_limit_n_,
       drag_start_force_n_, drag_release_force_n_, drag_release_confirm_s_,
       drag_gain_mps_per_n_, drag_max_speed_mps_, smoothing_max_acceleration_mps2_,
-      smoothing_max_jerk_mps3_);
+      smoothing_max_jerk_mps3_, drag_sign_x_, drag_sign_y_, drag_sign_z_);
 
     command_subscription_ = create_subscription<msg::TractionCommand>(
       command_topic_, rclcpp::QoS(10).reliable(),
@@ -86,6 +98,9 @@ public:
       // QoS so the force loop does not silently lose a feedback burst.
       wrench_topic_, rclcpp::QoS(10).reliable(),
       [this](const geometry_msgs::msg::WrenchStamped::SharedPtr message) {on_wrench(*message);});
+    ee_state_subscription_ = create_subscription<fairino_msgs::msg::PoseTwist>(
+      ee_state_topic_, rclcpp::QoS(10).reliable(),
+      [this](const fairino_msgs::msg::PoseTwist::SharedPtr message) {on_ee_state(*message);});
     twist_publisher_ = create_publisher<geometry_msgs::msg::Twist>(
       cartesian_command_topic_, rclcpp::QoS(10).reliable());
     velocity_publisher_ = create_publisher<std_msgs::msg::Float64>(
@@ -114,6 +129,36 @@ private:
     return {message.wrench.force.x, message.wrench.force.y, message.wrench.force.z};
   }
 
+  static bool rotate_base_to_tool(
+    const Vec3 & base_vector,
+    const geometry_msgs::msg::Quaternion & orientation,
+    Vec3 & tool_vector)
+  {
+    const double quaternion_norm = std::sqrt(
+      orientation.x * orientation.x + orientation.y * orientation.y +
+      orientation.z * orientation.z + orientation.w * orientation.w);
+    if (!std::isfinite(quaternion_norm) || quaternion_norm <= 1e-12) {
+      return false;
+    }
+    const double x = orientation.x / quaternion_norm;
+    const double y = orientation.y / quaternion_norm;
+    const double z = orientation.z / quaternion_norm;
+    const double w = orientation.w / quaternion_norm;
+    // The pose quaternion maps tool vectors into base_link. Its transpose
+    // maps the measured base_link wrench into tool coordinates.
+    tool_vector = {
+      (1.0 - 2.0 * (y * y + z * z)) * base_vector.x +
+      2.0 * (x * y + w * z) * base_vector.y +
+      2.0 * (x * z - w * y) * base_vector.z,
+      2.0 * (x * y - w * z) * base_vector.x +
+      (1.0 - 2.0 * (x * x + z * z)) * base_vector.y +
+      2.0 * (y * z + w * x) * base_vector.z,
+      2.0 * (x * z + w * y) * base_vector.x +
+      2.0 * (y * z - w * x) * base_vector.y +
+      (1.0 - 2.0 * (x * x + y * y)) * base_vector.z};
+    return finite(tool_vector);
+  }
+
   void on_command(const msg::TractionCommand & message)
   {
     command_ = message;
@@ -135,6 +180,18 @@ private:
     wrench_valid_ = message.header.frame_id == "base_link" && finite(latest_wrench_) &&
       std::isfinite(message.wrench.torque.x) && std::isfinite(message.wrench.torque.y) &&
       std::isfinite(message.wrench.torque.z);
+  }
+
+  void on_ee_state(const fairino_msgs::msg::PoseTwist & message)
+  {
+    latest_ee_orientation_ = message.pose.orientation;
+    const double quaternion_norm = std::sqrt(
+      latest_ee_orientation_.x * latest_ee_orientation_.x +
+      latest_ee_orientation_.y * latest_ee_orientation_.y +
+      latest_ee_orientation_.z * latest_ee_orientation_.z +
+      latest_ee_orientation_.w * latest_ee_orientation_.w);
+    ee_orientation_valid_ = message.header.frame_id == "base_link" &&
+      std::isfinite(quaternion_norm) && quaternion_norm > 1e-12;
   }
 
   void publish_health(bool healthy)
@@ -217,6 +274,16 @@ private:
 
     const Vec3 filtered_wrench = force_filter_.update(latest_wrench_, dt_s);
     const auto mode = static_cast<ControlMode>(command_.mode);
+    Vec3 controller_wrench = filtered_wrench;
+    if (mode == ControlMode::DRAGGING) {
+      if (!ee_orientation_valid_ ||
+        !rotate_base_to_tool(filtered_wrench, latest_ee_orientation_, controller_wrench))
+      {
+        publish_zero();
+        publish_health(true);
+        return;
+      }
+    }
     Vec3 lateral_velocity;
     if ((mode == ControlMode::TRACTION || mode == ControlMode::RELEASING) &&
       command_.direction_correction_mode == msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE)
@@ -229,7 +296,7 @@ private:
     }
     const ControllerOutput output = core_.update(
       mode, vector_from_message(command_.locked_direction_base), command_.target_force_n,
-      filtered_wrench, dt_s, lateral_velocity);
+      controller_wrench, dt_s, lateral_velocity);
     if (!output.valid) {
       RCLCPP_ERROR(
         get_logger(),
@@ -283,6 +350,9 @@ private:
   double drag_release_confirm_s_ = 0.15;
   double drag_gain_mps_per_n_ = 0.00625;
   double drag_max_speed_mps_ = 0.050;
+  double drag_sign_x_ = 1.0;
+  double drag_sign_y_ = 1.0;
+  double drag_sign_z_ = 1.0;
   double smoothing_max_acceleration_mps2_ = 0.30;
   double smoothing_max_jerk_mps3_ = 3.0;
   double direction_correction_max_speed_mps_ = 0.020;
@@ -295,11 +365,14 @@ private:
   std::string cartesian_command_topic_;
   std::string velocity_command_topic_;
   std::string velocity_vector_topic_;
+  std::string ee_state_topic_;
 
   msg::TractionCommand command_;
   Vec3 latest_wrench_;
+  geometry_msgs::msg::Quaternion latest_ee_orientation_;
   bool command_valid_ = false;
   bool wrench_valid_ = false;
+  bool ee_orientation_valid_ = false;
   uint64_t command_generation_ = 0;
   uint64_t blocked_generation_ = 0;
   rclcpp::Time last_command_at_{0, 0, RCL_ROS_TIME};
@@ -312,6 +385,7 @@ private:
 
   rclcpp::Subscription<msg::TractionCommand>::SharedPtr command_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr wrench_subscription_;
+  rclcpp::Subscription<fairino_msgs::msg::PoseTwist>::SharedPtr ee_state_subscription_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr twist_publisher_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr velocity_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr velocity_vector_publisher_;

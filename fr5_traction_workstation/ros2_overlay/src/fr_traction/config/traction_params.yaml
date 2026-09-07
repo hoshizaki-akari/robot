@@ -14,6 +14,12 @@ traction_controller:
     drag_release_confirm_s: 0.15
     drag_gain_mps_per_n: 0.00625
     drag_max_speed_mps: 0.050
+    # Assisted drag consumes force in tool coordinates and sends tool-frame
+    # Cartesian increments. Change only the individual sign if a physical
+    # axis check proves that one sensor axis is inverted.
+    drag_sign_x: 1.0
+    drag_sign_y: 1.0
+    drag_sign_z: 1.0
     smoothing_max_acceleration_mps2: 0.30
     smoothing_max_jerk_mps3: 3.0
     direction_correction_max_speed_mps: 0.020
@@ -28,6 +34,7 @@ traction_controller:
     cartesian_command_topic: /controller_manager/command_cart_vel
     velocity_command_topic: /traction/controller_velocity_cmd
     velocity_vector_topic: /traction/controller_velocity_vector
+    ee_state_topic: /controller_manager/ee_state
 
 traction_manager:
   ros__parameters:

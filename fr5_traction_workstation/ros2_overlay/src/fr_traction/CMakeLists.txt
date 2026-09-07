@@ -43,7 +43,7 @@ target_include_directories(fr_traction_core PUBLIC
 add_executable(traction_controller_node src/traction_controller_node.cpp)
 target_link_libraries(traction_controller_node fr_traction_core)
 ament_target_dependencies(traction_controller_node
-  geometry_msgs rclcpp std_msgs
+  fairino_msgs geometry_msgs rclcpp std_msgs
 )
 
 add_executable(traction_manager_node src/traction_manager_node.cpp)
