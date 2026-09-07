@@ -67,8 +67,8 @@ bash run_workstation.sh
 也可以直接运行 `./scripts/start_ros_stack.sh 2`。它会先正常结束残留的旧控制栈，
 再启动所选版本。
 
-启动脚本默认使用现有 FR5 基础工作区；如果现场工作区位置不同，先设置
-`FR5_ROS_WS=/实际路径`。ROS 启动后可在另一个终端执行
+版本2的启动、网页和预检脚本默认加载本项目 `ros2_overlay`，确保三模式消息和服务
+版本完全一致；如需为版本1启动旧网页接口，可显式设置其归档运行时路径。ROS启动后可在另一个终端执行
 `./scripts/preflight_check.sh`，再执行 `./run_workstation.sh` 启动网页。
 
 不要同时启动旧的 `state_service` 真机SDK读取、`fr_force`、`fr_robot_driver`、

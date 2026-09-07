@@ -70,12 +70,19 @@ class RosBridge:
         try:
             import rclpy
             from fr_traction.msg import TractionHistory, TractionStatus
-            from fr_traction.srv import SetOperationMode, SetTargetForce
+            from fr_traction.srv import SetTargetForce
             from sensor_msgs.msg import JointState
             from std_msgs.msg import Empty
             from std_srvs.srv import Trigger
         except ImportError:
             return
+
+        try:
+            from fr_traction.srv import SetOperationMode
+        except ImportError:
+            # The archived first-version runtime predates the mode service.
+            # It can still run its original constant-force workflow.
+            SetOperationMode = None
 
         if not rclpy.ok():
             rclpy.init(args=None)
@@ -118,10 +125,11 @@ class RosBridge:
             "set_target_force": self._node.create_client(
                 SetTargetForce, "/traction/set_target_force"
             ),
-            "set_operation_mode": self._node.create_client(
-                SetOperationMode, "/traction/set_operation_mode"
-            ),
         }
+        if SetOperationMode is not None:
+            self._clients["set_operation_mode"] = self._node.create_client(
+                SetOperationMode, "/traction/set_operation_mode"
+            )
         from rclpy.executors import MultiThreadedExecutor
 
         self._executor = MultiThreadedExecutor(num_threads=2)

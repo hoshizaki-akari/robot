@@ -4,7 +4,8 @@ set -eo pipefail
 # ROS 2 Humble's setup script reads AMENT_TRACE_SETUP_FILES while nounset is
 # active. Source both environments first, then restore nounset for checks.
 source /opt/ros/humble/setup.bash
-ROS_WS="${FR5_ROS_WS:-/home/zhj/projects/fr5_learning/robot_ws_backup/new_fairino_ws}"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROS_WS="${FR5_ROS_WS:-$PROJECT_DIR/ros2_overlay}"
 if [[ ! -f "$ROS_WS/install/setup.bash" ]]; then
   echo "FR5 ROS2 工作区不存在或尚未编译：$ROS_WS" >&2
   exit 2

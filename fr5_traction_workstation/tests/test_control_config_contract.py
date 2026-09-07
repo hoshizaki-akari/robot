@@ -31,6 +31,12 @@ class ControlConfigurationContractTest(unittest.TestCase):
             self.assertIn(name, service)
             self.assertIn(name, status)
 
+    def test_web_runtime_defaults_to_current_overlay(self):
+        launcher = (ROOT / "run_workstation.sh").read_text(encoding="utf-8")
+        preflight = (ROOT / "scripts" / "preflight_check.sh").read_text(encoding="utf-8")
+        self.assertIn('$PROJECT_DIR/ros2_overlay', launcher)
+        self.assertIn('$PROJECT_DIR/ros2_overlay', preflight)
+
 
 if __name__ == "__main__":
     unittest.main()
