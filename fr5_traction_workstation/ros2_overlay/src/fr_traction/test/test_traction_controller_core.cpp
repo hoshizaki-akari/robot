@@ -128,10 +128,10 @@ TEST(TractionControllerCore, AssistedDragUsesThreeAxisForceAndReleaseHysteresis)
   for (int step = 0; step < 50; ++step) {
     output = core.update(ControlMode::DRAGGING, {}, 0.0, {2.0, -1.0, 0.5}, 0.01);
   }
-  EXPECT_GT(output.linear_velocity.x, 0.0);
+  EXPECT_LT(output.linear_velocity.x, 0.0);
   EXPECT_LT(output.linear_velocity.y, 0.0);
   EXPECT_LT(output.linear_velocity.z, 0.0);
-  EXPECT_GT(dot(output.linear_velocity, Vec3{2.0, -1.0, -0.5}), 0.0);
+  EXPECT_GT(dot(output.linear_velocity, Vec3{-2.0, -1.0, -0.5}), 0.0);
   EXPECT_LE(norm(output.linear_velocity), 0.050);
 
   for (int step = 0; step < 100; ++step) {

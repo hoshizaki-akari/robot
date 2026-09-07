@@ -144,11 +144,10 @@ ControllerOutput TractionControllerCore::update(
     if (drag_active_ && force_n > 1e-12) {
       const double speed = std::min(
         drag_max_speed_mps_, drag_gain_mps_per_n_ * std::max(0.0, force_n - drag_release_force_n_));
-      // Physical tool-axis verification showed that all three assisted-drag
-      // command axes were opposite to the operator's intended motion.  Apply
-      // the calibrated per-axis mapping only in assisted-drag mode; traction
-      // and position-hold control signs remain unchanged.
-      const Vec3 calibrated_drag_direction{wrench.x, wrench.y, -wrench.z};
+      // Apply the independently verified physical sign for each tool axis.
+      // This mapping belongs only to assisted-drag mode; traction and
+      // position-hold control signs remain unchanged.
+      const Vec3 calibrated_drag_direction{-wrench.x, wrench.y, -wrench.z};
       desired_velocity = calibrated_drag_direction * (speed / force_n);
     }
     result.linear_velocity = smooth_velocity(desired_velocity, dt_s);
