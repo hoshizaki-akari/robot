@@ -36,6 +36,8 @@ class ControlConfigurationContractTest(unittest.TestCase):
         preflight = (ROOT / "scripts" / "preflight_check.sh").read_text(encoding="utf-8")
         self.assertIn('$PROJECT_DIR/ros2_overlay', launcher)
         self.assertIn('$PROJECT_DIR/ros2_overlay', preflight)
+        self.assertIn('install/local_setup.bash', launcher)
+        self.assertIn('runtimes/directional_correction_v1', launcher)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ set -eo pipefail
 # mode for the actual launch and parameter handling below.
 source /opt/ros/humble/setup.bash
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FR5_MODEL_WS="/home/zhj/projects/fr5_platform_ws/runtimes/directional_correction_v1"
 VERSION_CHOICE="${1:-}"
 
 if [[ -z "$VERSION_CHOICE" ]]; then
@@ -38,7 +39,19 @@ if [[ ! -f "$ROS_WS/install/setup.bash" ]]; then
   echo "FR5 ROS2 工作区不存在或尚未编译：$ROS_WS" >&2
   exit 2
 fi
-source "$ROS_WS/install/setup.bash"
+if [[ "$VERSION_CHOICE" == "2" ]]; then
+  if [[ ! -f "$FR5_MODEL_WS/install/setup.bash" ]]; then
+    echo "FR5机器人模型基础工作区不存在：$FR5_MODEL_WS" >&2
+    exit 2
+  fi
+  # The archived runtime supplies the FR5 URDF/MoveIt configuration. Load the
+  # current project's local overlay afterwards so its new interfaces and
+  # executables override only fr_traction without hiding the robot model.
+  source "$FR5_MODEL_WS/install/setup.bash"
+  source "$ROS_WS/install/local_setup.bash"
+else
+  source "$ROS_WS/install/setup.bash"
+fi
 set -u
 
 # A real FR5 accepts only one direct-driver connection at a time. Stop an
