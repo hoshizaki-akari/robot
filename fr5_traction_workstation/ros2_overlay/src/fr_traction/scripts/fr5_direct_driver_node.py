@@ -83,11 +83,19 @@ class Fr5DirectDriver(Node):
         self._command_rpc_timeout_s = float(
             self.declare_parameter("command_rpc_timeout_s", 1.5).value
         )
+        self._startup_rpc_timeout_s = float(
+            self.declare_parameter("startup_rpc_timeout_s", 10.0).value
+        )
+        self._allow_existing_force_reference = bool(
+            self.declare_parameter("allow_existing_force_reference", True).value
+        )
         if (
             not math.isfinite(self._command_rpc_timeout_s)
             or self._command_rpc_timeout_s <= 0.0
         ):
             raise ValueError("command_rpc_timeout_s must be positive")
+        if not math.isfinite(self._startup_rpc_timeout_s) or self._startup_rpc_timeout_s <= 0.0:
+            raise ValueError("startup_rpc_timeout_s must be positive")
         self._max_speed = float(
             self.declare_parameter("max_linear_speed_mps", 0.025).value
         )
@@ -153,10 +161,29 @@ class Fr5DirectDriver(Node):
         # A lost ServoMoveEnd response can then block every ROS service in this
         # node indefinitely. Replace only the command proxy; the independent
         # realtime-state socket remains owned by the vendor SDK.
-        self._reset_command_proxy()
-        rcs_code = self._robot.FT_SetRCS(1, [0.0] * 6)
+        # FT_SetRCS is a startup/configuration RPC and can take longer than a
+        # real-time motion command while the FR5 controller initializes. Use a
+        # separate generous timeout here, then switch to the short runtime
+        # timeout for ServoCart/ServoMoveEnd and other operating calls.
+        self._reset_command_proxy(self._startup_rpc_timeout_s)
+        try:
+            rcs_code = self._robot.FT_SetRCS(1, [0.0] * 6)
+        except (OSError, xmlrpc.client.Error) as error:
+            if not self._allow_existing_force_reference:
+                raise
+            # Some FR5/KWR75D firmware responds to ordinary XML-RPC calls but
+            # does not reply to a repeated FT_SetRCS command. In that case the
+            # reference selected by the previous successful setup remains in
+            # the controller. Continue with an explicit warning; connection
+            # and motion RPC failures are still fatal or faulted normally.
+            self.get_logger().warning(
+                f"FT_SetRCS(base_link) did not respond; using existing force "
+                f"reference because allow_existing_force_reference is enabled: {error}"
+            )
+            rcs_code = 0
         if rcs_code != 0:
             raise RuntimeError(f"FT_SetRCS(base_link) failed: {rcs_code}")
+        self._reset_command_proxy()
 
         self._joint_pub = self.create_publisher(JointState, "/joint_states", 10)
         self._wrench_pub = self.create_publisher(
@@ -257,10 +284,11 @@ class Fr5DirectDriver(Node):
         message.data = self._healthy
         self._health_pub.publish(message)
 
-    def _reset_command_proxy(self):
+    def _reset_command_proxy(self, timeout_s=None):
+        timeout_s = self._command_rpc_timeout_s if timeout_s is None else timeout_s
         self._robot.robot = xmlrpc.client.ServerProxy(
             f"http://{self._robot_ip}:20003",
-            transport=_TimeoutTransport(self._command_rpc_timeout_s),
+            transport=_TimeoutTransport(timeout_s),
         )
 
     def _end_servo(self, context):

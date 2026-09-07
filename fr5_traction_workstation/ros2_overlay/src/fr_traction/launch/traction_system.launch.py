@@ -70,6 +70,12 @@ def generate_launch_description():
             # Bound vendor XML-RPC calls so a lost ServoMoveEnd reply cannot
             # occupy the driver's ROS service thread indefinitely.
             "command_rpc_timeout_s": 1.5,
+            # Startup force-sensor frame configuration may take longer while
+            # the FR5 controller is initializing than a motion RPC.
+            "startup_rpc_timeout_s": 10.0,
+            # KWR75D/FR5 firmware may not reply to a repeated FT_SetRCS even
+            # though the previously selected reference remains active.
+            "allow_existing_force_reference": True,
             # The controller bounds axial traction at 20 mm/s and the active
             # direction follower at 20 mm/s. Allow their already-bounded
             # vector sum through the direct driver without clipping it back

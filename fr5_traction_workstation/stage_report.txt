@@ -18,11 +18,14 @@ invert assisted-drag motion only; constant/position traction signs unchanged
 bound FR5 command RPC to 1.5 s and retry ServoMoveEnd once on a fresh connection
 allow return-zero service response up to 8 s
 record actual controller command_vx/command_vy/command_vz for every new session
+separate startup RPC timeout (10 s) from runtime RPC timeout
+allow an unresponsive repeated FT_SetRCS to reuse the existing controller force reference
 
 automatic_verification:
 ROS2 build passed
 89 tests, 0 errors, 0 failures
 Python backend/UI checks passed
+real ROS stack started; FR5 driver connected; traction state READY
 
 status:
 OFFLINE_FIX_COMPLETE_WAITING_FOR_BRIEF_REAL_DRAG_AND_RETURN_CHECK
