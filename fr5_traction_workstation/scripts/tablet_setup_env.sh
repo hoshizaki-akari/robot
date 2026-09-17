@@ -8,6 +8,7 @@ WORKSPACE_ROOT="$(cd "$PROJECT_DIR/.." && pwd)"
 ROS_WS="$PROJECT_DIR/ros2_overlay"
 VENV_DIR="$WORKSPACE_ROOT/.venv"
 SDK_ROOT="$PROJECT_DIR/vendor/fairino-python-sdk"
+SDK_REVISION="62add0e6b7c7d2e157beaaa4485042c9d54e1f84"
 DESCRIPTION_ROOT="$ROS_WS/src/fairino_description"
 DESKTOP_DIR="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
 if [[ -z "$DESKTOP_DIR" || "$DESKTOP_DIR" == "$HOME" ]]; then
@@ -76,12 +77,17 @@ if [[ ! -f "$DESCRIPTION_ROOT/package.xml" ]]; then
 fi
 
 echo "[3/6] 获取法奥官方 Python SDK（稀疏下载）"
-if [[ ! -f "$SDK_ROOT/linux/fairino/Robot.py" ]]; then
+CURRENT_SDK_REVISION="$(git -C "$SDK_ROOT" rev-parse HEAD 2>/dev/null || true)"
+if [[ ! -f "$SDK_ROOT/linux/fairino/Robot.py" || \
+      "$CURRENT_SDK_REVISION" != "$SDK_REVISION" ]]; then
   rm -rf "$SDK_ROOT"
-  git clone --depth 1 --filter=blob:none --sparse \
-    "$OFFICIAL_SDK_REPO" "$SDK_ROOT"
+  git init -q "$SDK_ROOT"
+  git -C "$SDK_ROOT" remote add origin "$OFFICIAL_SDK_REPO"
+  git -C "$SDK_ROOT" sparse-checkout init --no-cone
   git -C "$SDK_ROOT" sparse-checkout set --no-cone \
     /linux/fairino/Robot.py /LICENSE /README.md
+  git -C "$SDK_ROOT" fetch --depth 1 origin "$SDK_REVISION"
+  git -C "$SDK_ROOT" checkout -q --detach FETCH_HEAD
 fi
 
 echo "[4/6] 创建网页服务 Python 环境"

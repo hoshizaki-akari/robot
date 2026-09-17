@@ -138,6 +138,17 @@ class ControlConfigurationContractTest(unittest.TestCase):
         self.assertNotIn('/home/zhj/', launcher)
         self.assertNotIn('runtimes/directional_correction_v1', launcher)
 
+    def test_tablet_deployment_pins_tested_fairino_sdk(self):
+        setup = (ROOT / "scripts" / "tablet_setup_env.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'SDK_REVISION="62add0e6b7c7d2e157beaaa4485042c9d54e1f84"',
+            setup,
+        )
+        self.assertIn('fetch --depth 1 origin "$SDK_REVISION"', setup)
+        self.assertIn('checkout -q --detach FETCH_HEAD', setup)
+
 
 if __name__ == "__main__":
     unittest.main()
