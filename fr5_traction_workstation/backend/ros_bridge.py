@@ -122,6 +122,12 @@ class RosBridge:
             "emergency_stop": self._node.create_client(
                 Trigger, "/traction/emergency_stop"
             ),
+            "hardware_emergency_stop": self._node.create_client(
+                Trigger, "/traction/hardware_emergency_stop"
+            ),
+            "hardware_emergency_recover": self._node.create_client(
+                Trigger, "/traction/hardware_emergency_recover"
+            ),
             "reset_fault": self._node.create_client(Trigger, "/traction/reset_fault"),
             "set_zero_pose": self._node.create_client(
                 Trigger, "/traction/set_zero_pose"

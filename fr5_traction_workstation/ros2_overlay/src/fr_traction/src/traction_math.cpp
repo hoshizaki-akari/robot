@@ -176,6 +176,220 @@ double OneDimensionalAdmittance::update(double target_force_n, double actual_for
   return velocity_mps_;
 }
 
+PositionTractionController::PositionTractionController(const PositionControlConfig & config)
+: config_(config), estimated_stiffness_n_per_m_(config.initial_stiffness_n_per_m)
+{
+  const PositionControlConfig defaults;
+  if (!std::isfinite(config_.tolerance_n) || config_.tolerance_n <= 0.0) {
+    config_.tolerance_n = defaults.tolerance_n;
+  }
+  if (!std::isfinite(config_.maximum_speed_mps) || config_.maximum_speed_mps <= 0.0) {
+    config_.maximum_speed_mps = defaults.maximum_speed_mps;
+  }
+  if (!std::isfinite(config_.far_gain_mps_per_n) || config_.far_gain_mps_per_n <= 0.0) {
+    config_.far_gain_mps_per_n = defaults.far_gain_mps_per_n;
+  }
+  if (!std::isfinite(config_.near_gain_mps_per_n) || config_.near_gain_mps_per_n <= 0.0 ||
+    config_.near_gain_mps_per_n > config_.far_gain_mps_per_n)
+  {
+    config_.near_gain_mps_per_n = defaults.near_gain_mps_per_n;
+  }
+  if (!std::isfinite(config_.near_window_n) || config_.near_window_n <= config_.tolerance_n) {
+    config_.near_window_n = defaults.near_window_n;
+  }
+  if (!std::isfinite(config_.prediction_horizon_s) || config_.prediction_horizon_s < 0.0) {
+    config_.prediction_horizon_s = defaults.prediction_horizon_s;
+  }
+  if (!std::isfinite(config_.prediction_limit_n) || config_.prediction_limit_n <= 0.0) {
+    config_.prediction_limit_n = defaults.prediction_limit_n;
+  }
+  if (!std::isfinite(config_.force_rate_cutoff_hz) || config_.force_rate_cutoff_hz <= 0.0) {
+    config_.force_rate_cutoff_hz = defaults.force_rate_cutoff_hz;
+  }
+  if (!std::isfinite(config_.maximum_acceleration_mps2) ||
+    config_.maximum_acceleration_mps2 <= 0.0)
+  {
+    config_.maximum_acceleration_mps2 = defaults.maximum_acceleration_mps2;
+  }
+  if (!std::isfinite(config_.maximum_deceleration_mps2) ||
+    config_.maximum_deceleration_mps2 < config_.maximum_acceleration_mps2)
+  {
+    config_.maximum_deceleration_mps2 = defaults.maximum_deceleration_mps2;
+  }
+  if (!std::isfinite(config_.settling_speed_mps) || config_.settling_speed_mps <= 0.0) {
+    config_.settling_speed_mps = defaults.settling_speed_mps;
+  }
+  if (!std::isfinite(config_.minimum_stiffness_n_per_m) ||
+    config_.minimum_stiffness_n_per_m <= 0.0)
+  {
+    config_.minimum_stiffness_n_per_m = defaults.minimum_stiffness_n_per_m;
+  }
+  if (!std::isfinite(config_.maximum_stiffness_n_per_m) ||
+    config_.maximum_stiffness_n_per_m <= config_.minimum_stiffness_n_per_m)
+  {
+    config_.maximum_stiffness_n_per_m = defaults.maximum_stiffness_n_per_m;
+  }
+  if (!std::isfinite(config_.initial_stiffness_n_per_m)) {
+    config_.initial_stiffness_n_per_m = defaults.initial_stiffness_n_per_m;
+  }
+  config_.initial_stiffness_n_per_m = std::clamp(
+    config_.initial_stiffness_n_per_m, config_.minimum_stiffness_n_per_m,
+    config_.maximum_stiffness_n_per_m);
+  if (!std::isfinite(config_.stiffness_time_constant_s) ||
+    config_.stiffness_time_constant_s <= 0.0)
+  {
+    config_.stiffness_time_constant_s = defaults.stiffness_time_constant_s;
+  }
+  estimated_stiffness_n_per_m_ = config_.initial_stiffness_n_per_m;
+}
+
+void PositionTractionController::reset()
+{
+  initialized_ = false;
+  previous_force_n_ = 0.0;
+  force_rate_nps_ = 0.0;
+  estimated_stiffness_n_per_m_ = config_.initial_stiffness_n_per_m;
+  velocity_mps_ = 0.0;
+}
+
+double PositionTractionController::braking_speed_limit(double force_margin_n) const
+{
+  if (!std::isfinite(force_margin_n) || force_margin_n <= 0.0) {return 0.0;}
+  const double travel_margin_m = force_margin_n / estimated_stiffness_n_per_m_;
+  const double reaction_delay_s = config_.prediction_horizon_s;
+  const double acceleration = config_.maximum_deceleration_mps2;
+  const double discriminant = reaction_delay_s * reaction_delay_s +
+    2.0 * travel_margin_m / acceleration;
+  return std::clamp(
+    acceleration * (std::sqrt(std::max(0.0, discriminant)) - reaction_delay_s),
+    0.0, config_.maximum_speed_mps);
+}
+
+PositionControlResult PositionTractionController::update(
+  double target_force_n, double actual_force_n, double dt_s)
+{
+  PositionControlResult result;
+  if (!std::isfinite(target_force_n) || target_force_n < 0.0 ||
+    !std::isfinite(actual_force_n) || actual_force_n < 0.0 ||
+    !std::isfinite(dt_s) || dt_s <= 0.0 || dt_s > 0.25)
+  {
+    reset();
+    return result;
+  }
+  if (!initialized_) {
+    initialized_ = true;
+    previous_force_n_ = actual_force_n;
+    result.predicted_force_n = actual_force_n;
+    result.estimated_stiffness_n_per_m = estimated_stiffness_n_per_m_;
+    result.valid = true;
+    return result;
+  }
+
+  const double raw_force_rate_nps = std::clamp(
+    (actual_force_n - previous_force_n_) / dt_s, -100.0, 100.0);
+  previous_force_n_ = actual_force_n;
+  const double rate_alpha = 1.0 - std::exp(-2.0 * kPi * config_.force_rate_cutoff_hz * dt_s);
+  force_rate_nps_ += std::clamp(rate_alpha, 0.0, 1.0) *
+    (raw_force_rate_nps - force_rate_nps_);
+
+  if (std::abs(velocity_mps_) >= 0.001 && force_rate_nps_ * velocity_mps_ > 0.0) {
+    const double stiffness_sample = std::abs(force_rate_nps_ / velocity_mps_);
+    if (std::isfinite(stiffness_sample)) {
+      const double bounded_sample = std::clamp(
+        stiffness_sample, config_.minimum_stiffness_n_per_m,
+        config_.maximum_stiffness_n_per_m);
+      const double stiffness_alpha = 1.0 - std::exp(-dt_s / config_.stiffness_time_constant_s);
+      estimated_stiffness_n_per_m_ += stiffness_alpha *
+        (bounded_sample - estimated_stiffness_n_per_m_);
+    }
+  }
+
+  const double prediction_delta_n = std::clamp(
+    force_rate_nps_ * config_.prediction_horizon_s,
+    -config_.prediction_limit_n, config_.prediction_limit_n);
+  const double predicted_force_n = actual_force_n + prediction_delta_n;
+  const double actual_error_n = target_force_n - actual_force_n;
+  const double predicted_error_n = target_force_n - predicted_force_n;
+  const double absolute_error_n = std::abs(actual_error_n);
+  double desired_velocity_mps = 0.0;
+
+  if (absolute_error_n <= config_.tolerance_n) {
+    // Being inside the force band is not sufficient while the robot still
+    // has appreciable residual motion. Keep braking and only expose SETTLING
+    // after velocity is genuinely quiet. The manager independently requires
+    // the force to remain inside this band for 0.5 s, so short force-rate
+    // spikes cannot falsely complete the operation or restart motion inside
+    // the accepted band.
+    result.phase = std::abs(velocity_mps_) <= config_.settling_speed_mps ?
+      PositionControlPhase::SETTLING : PositionControlPhase::BRAKING;
+  } else {
+    const double blend = std::clamp(
+      (absolute_error_n - config_.tolerance_n) /
+      (config_.near_window_n - config_.tolerance_n), 0.0, 1.0);
+    const double gain = config_.near_gain_mps_per_n +
+      blend * (config_.far_gain_mps_per_n - config_.near_gain_mps_per_n);
+    double control_error_n = predicted_error_n;
+    if (actual_error_n > config_.tolerance_n && predicted_error_n <= 0.0) {
+      control_error_n = 0.0;
+      result.phase = PositionControlPhase::BRAKING;
+    } else if (actual_error_n < -config_.tolerance_n && predicted_error_n >= 0.0) {
+      control_error_n = 0.0;
+      result.phase = PositionControlPhase::BRAKING;
+    } else if (actual_error_n < -config_.tolerance_n) {
+      result.phase = PositionControlPhase::CORRECTING;
+    } else if (absolute_error_n <= config_.near_window_n) {
+      result.phase = PositionControlPhase::FINE_ADJUST;
+    } else {
+      result.phase = PositionControlPhase::APPROACH;
+    }
+    desired_velocity_mps = gain * control_error_n;
+    result.raw_velocity_mps = desired_velocity_mps;
+    // Brake toward the target centre rather than the outer tolerance edge.
+    // Otherwise a noiseless plant can stop at target-tolerance and never
+    // enter the dwell timer because of floating-point or sensor variation.
+    const double force_margin_n = absolute_error_n;
+    const double braking_limit_mps = braking_speed_limit(force_margin_n);
+    const double magnitude_limit_mps = std::min(config_.maximum_speed_mps, braking_limit_mps);
+    if (std::abs(desired_velocity_mps) > magnitude_limit_mps) {
+      desired_velocity_mps = std::copysign(magnitude_limit_mps, desired_velocity_mps);
+      result.speed_limited = true;
+      if (result.phase == PositionControlPhase::APPROACH) {
+        result.phase = PositionControlPhase::BRAKING;
+      }
+    }
+  }
+
+  if (desired_velocity_mps * velocity_mps_ < 0.0) {
+    desired_velocity_mps = 0.0;
+    result.phase = PositionControlPhase::BRAKING;
+  }
+  const bool decelerating = std::abs(desired_velocity_mps) < std::abs(velocity_mps_) ||
+    desired_velocity_mps * velocity_mps_ < 0.0;
+  const double acceleration_limit = decelerating ?
+    config_.maximum_deceleration_mps2 : config_.maximum_acceleration_mps2;
+  const double maximum_velocity_step = acceleration_limit * dt_s;
+  const double requested_step = desired_velocity_mps - velocity_mps_;
+  const double applied_step = std::clamp(
+    requested_step, -maximum_velocity_step, maximum_velocity_step);
+  result.acceleration_limited = std::abs(applied_step - requested_step) > 1e-12;
+  velocity_mps_ += applied_step;
+  if (std::abs(desired_velocity_mps) <= 1e-12 &&
+    std::abs(velocity_mps_) <= maximum_velocity_step)
+  {
+    velocity_mps_ = 0.0;
+  }
+
+  result.velocity_mps = velocity_mps_;
+  result.force_rate_nps = force_rate_nps_;
+  result.predicted_force_n = predicted_force_n;
+  result.estimated_stiffness_n_per_m = estimated_stiffness_n_per_m_;
+  result.valid = std::isfinite(result.velocity_mps) && std::isfinite(result.force_rate_nps) &&
+    std::isfinite(result.predicted_force_n) &&
+    std::isfinite(result.estimated_stiffness_n_per_m);
+  if (!result.valid) {reset();}
+  return result;
+}
+
 namespace
 {
 

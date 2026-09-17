@@ -14,9 +14,9 @@ Fairino SDK。正式运行时唯一的 SDK 连接者是 `fr5_direct_driver_node.
 
 - 省力拖拽：松手状态点击“初始校准”后即进入拖拽。三轴外力超过1.0N开始跟随，
   低于0.6N并持续约0.15秒后停止；力和速度均按tool坐标一一对应，法兰姿态保持不变，最高50mm/s。
-- 位置牵引：完成方向确定并设置1～20N目标后开始；张力在目标±0.2N内持续0.5秒
+- 位置牵引：完成方向确定并设置1～20N目标后开始。控制器只沿已确定方向追赶目标，不跟随牵引中的新方向；远离目标时快速接近，接近目标时根据张力变化趋势提前减速。张力进入目标±0.2N、变化率稳定且持续0.5秒后，机械臂停止并保持当时位姿。
   即显示“已到位”并停止运动。之后张力变化不会再次启动，点击“结束牵引”保留当前位置。
-- 恒力牵引：持续调节总张力，并在牵引方向明显改变时自动侧向跟随；点击结束后以
+- 恒力牵引：使用张力趋势预测和绳带刚度估计持续调节总张力，并在牵引方向明显改变时自动侧向跟随；点击结束后以
   位置运动返回本次恒力牵引开始点。
 
 通用流程如下：
@@ -47,10 +47,10 @@ Fairino SDK。正式运行时唯一的 SDK 连接者是 `fr5_direct_driver_node.
 ## 启动
 
 ```bash
-cd /home/zhj/projects/fr5_platform_ws/fr5_traction_workstation
-source /home/zhj/projects/fr5_platform_ws/.venv/bin/activate
-python -m pip install -r requirements.txt
-bash run_workstation.sh
+cd ~/projects/fr5_platform_ws/fr5_traction_workstation
+bash scripts/tablet_setup_env.sh   # 新机器只需执行一次
+./scripts/start_ros_stack.sh 2     # 开发调试时启动 ROS 2
+./run_workstation.sh               # 另一终端启动网页
 ```
 
 浏览器打开 `http://127.0.0.1:8081/`。端口可以用
@@ -74,6 +74,16 @@ bash run_workstation.sh
 不要同时启动旧的 `state_service` 真机SDK读取、`fr_force`、`fr_robot_driver`、
 旧 ConstantForce 或任何第二个Fairino SDK连接者。
 
+## Ubuntu 一体机部署
+
+目标机使用 Ubuntu 22.04 x86_64、ROS 2 Humble 和 Firefox。代码克隆完成后运行一次
+`bash scripts/tablet_setup_env.sh`；脚本会获取法奥官方机器人描述与 Python SDK、创建
+Python 环境、编译当前 ROS 2 工作区，并在桌面创建“骨伤牵引机器人工作站”图标。
+
+此后双击图标即可同时启动 ROS 2 控制栈、网页服务和全屏 Firefox。Firefox 使用独立
+配置运行，关闭这个窗口（键盘 `Alt+F4`）会自动停止本次启动的网页服务和 ROS 2 控制
+栈。完整步骤见 `docs/ASUS_A4131_部署指南.md`。
+
 ## 数据和验证
 
 ROS牵引会话由后端写入其 `data_directory`；网页通过 `/api/traction/history`
@@ -83,8 +93,9 @@ ROS牵引会话由后端写入其 `data_directory`；网页通过 `/api/traction
 bash scripts/run_checks.sh
 ```
 
-`ros2_overlay/` 保存了本工作站对应的 ROS2 应用源码和硬件交接参考源码；它不
-包含机器专属的 SDK 连接地址、生成目录或第二份 SDK 连接程序。
+`ros2_overlay/` 保存了本工作站对应的 ROS2 应用源码和硬件交接参考源码。部署脚本
+从法奥官方公开仓库获取机器人描述和 Python SDK；这些第三方依赖与编译输出均不重复
+提交到本仓库。
 
 实时原始力和末端状态分别从 `/controller_manager/wrench`、
 `/controller_manager/ee_state` 读取；管理器在松绳准备时减去安装/重力基线，发布

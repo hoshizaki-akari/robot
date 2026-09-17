@@ -20,6 +20,7 @@ find_package(std_srvs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TractionCommand.msg"
+  "msg/PositionControlDiagnostics.msg"
   "msg/TractionStatus.msg"
   "msg/TractionRecordSummary.msg"
   "msg/TractionHistory.msg"

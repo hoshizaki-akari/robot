@@ -55,7 +55,8 @@ bool can_transition(TractionState from, TractionState to)
       return to == TractionState::PRETENSION || to == TractionState::CALIBRATING ||
              to == TractionState::READY || to == TractionState::DRAGGING;
     case TractionState::PRETENSION: return to == TractionState::CALIBRATING;
-    case TractionState::CALIBRATING: return to == TractionState::DIRECTION_LOCKED;
+    case TractionState::CALIBRATING:
+      return to == TractionState::DIRECTION_LOCKED || to == TractionState::MANUAL_SETUP;
     case TractionState::DIRECTION_LOCKED:
       return to == TractionState::TRACTION || to == TractionState::MANUAL_SETUP ||
              to == TractionState::READY;

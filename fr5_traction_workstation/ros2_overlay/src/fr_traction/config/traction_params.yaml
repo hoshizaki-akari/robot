@@ -17,9 +17,32 @@ traction_controller:
     # Assisted drag consumes force in tool coordinates and sends tool-frame
     # Cartesian increments. Change only the individual sign if a physical
     # axis check proves that one sensor axis is inverted.
-    drag_sign_x: 1.0
-    drag_sign_y: 1.0
+    drag_sign_x: -1.0
+    drag_sign_y: -1.0
     drag_sign_z: 1.0
+    # Position and constant-force traction use base-frame commands, but their
+    # physical axis calibration is defined in the tool frame. X/Y are already
+    # correct on the real FR5; only tool Z requires inversion.
+    traction_sign_x: 1.0
+    traction_sign_y: 1.0
+    traction_sign_z: -1.0
+    # Position traction uses a dedicated predictive velocity loop. It keeps
+    # the 20 mm/s far-field response, brakes from the measured force trend,
+    # and enters the existing +/-0.2 N, 0.5 s hold only after motion settles.
+    position_tolerance_n: 0.20
+    position_far_gain_mps_per_n: 0.0060
+    position_near_gain_mps_per_n: 0.0045
+    position_near_window_n: 2.0
+    position_prediction_horizon_s: 0.15
+    position_prediction_limit_n: 2.0
+    position_force_rate_cutoff_hz: 2.0
+    position_max_acceleration_mps2: 0.080
+    position_max_deceleration_mps2: 0.160
+    position_settling_speed_mps: 0.0005
+    position_initial_stiffness_n_per_m: 300.0
+    position_min_stiffness_n_per_m: 50.0
+    position_max_stiffness_n_per_m: 1500.0
+    position_stiffness_time_constant_s: 1.0
     smoothing_max_acceleration_mps2: 0.30
     smoothing_max_jerk_mps3: 3.0
     direction_correction_max_speed_mps: 0.020
@@ -34,6 +57,7 @@ traction_controller:
     cartesian_command_topic: /controller_manager/command_cart_vel
     velocity_command_topic: /traction/controller_velocity_cmd
     velocity_vector_topic: /traction/controller_velocity_vector
+    position_diagnostics_topic: /traction/position_control_diagnostics
     ee_state_topic: /controller_manager/ee_state
 
 traction_manager:
@@ -111,6 +135,7 @@ traction_manager:
     hardware_health_topic: /controller_manager/healthy
     velocity_command_topic: /traction/controller_velocity_cmd
     velocity_vector_topic: /traction/controller_velocity_vector
+    position_diagnostics_topic: /traction/position_control_diagnostics
     corrected_wrench_topic: /traction/corrected_wrench
     ui_heartbeat_topic: /traction/ui_heartbeat
     slack_calibration_topic: /traction/slack_calibration

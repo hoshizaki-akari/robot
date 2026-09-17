@@ -147,7 +147,7 @@ def generate_launch_description():
         DeclareLaunchArgument("data_directory", default_value="debug/traction_sessions"),
         DeclareLaunchArgument(
             "sdk_python_path",
-            default_value="/home/zhj/projects/fr5_learning/vendor/fairino-python-sdk/linux",
+            default_value=os.environ.get("FR5_SDK_PYTHON_PATH", ""),
         ),
         robot_state_publisher,
         direct_driver,

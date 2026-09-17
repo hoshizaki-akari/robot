@@ -62,6 +62,16 @@ TEST(TractionStateMachine, CompletedRunReturnsToDirectionLockedIdleState)
   EXPECT_TRUE(can_transition(TractionState::DIRECTION_LOCKED, TractionState::MANUAL_SETUP));
 }
 
+TEST(TractionStateMachine, CalibrationCanReturnToManualSetupForOperatorRetry)
+{
+  StateMachine machine;
+  EXPECT_TRUE(machine.transition(TractionState::READY));
+  EXPECT_TRUE(machine.transition(TractionState::MANUAL_SETUP));
+  EXPECT_TRUE(machine.transition(TractionState::CALIBRATING));
+  EXPECT_TRUE(machine.transition(TractionState::MANUAL_SETUP));
+  EXPECT_EQ(machine.state(), TractionState::MANUAL_SETUP);
+}
+
 TEST(TractionStateMachine, SupportsAssistedDragAndPositionHoldFlows)
 {
   StateMachine drag;

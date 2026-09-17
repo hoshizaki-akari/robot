@@ -42,6 +42,7 @@ OPERATION_NAMES = {
     "/api/traction/start": "开始牵引",
     "/api/traction/stop": "结束牵引",
     "/api/traction/emergency-stop": "急停",
+    "/api/traction/emergency-recover": "急停恢复",
     "/api/traction/reset-fault": "故障复位",
     "/api/traction/return-zero": "回零",
 }
@@ -245,7 +246,19 @@ def stop() -> dict:
 
 @app.post("/api/traction/emergency-stop")
 def emergency_stop() -> dict:
+    # Stop the FR5 at the hardware SDK layer first, then latch the traction
+    # state machine. A successful response therefore confirms RobotEnable(0),
+    # not merely a browser-side or ROS-state change.
+    _call("hardware_emergency_stop")
     return _call("emergency_stop")
+
+
+@app.post("/api/traction/emergency-recover")
+def emergency_recover() -> dict:
+    # The manager may only leave EMERGENCY_STOP after the FR5 has cleared
+    # resettable errors, entered automatic mode, and accepted RobotEnable(1).
+    _call("hardware_emergency_recover")
+    return _call("reset_fault")
 
 
 @app.post("/api/traction/reset-fault")

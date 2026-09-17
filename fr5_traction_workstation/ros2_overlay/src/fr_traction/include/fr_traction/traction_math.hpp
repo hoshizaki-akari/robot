@@ -76,6 +76,67 @@ private:
   double velocity_mps_ = 0.0;
 };
 
+enum class PositionControlPhase : unsigned char
+{
+  IDLE = 0,
+  APPROACH = 1,
+  BRAKING = 2,
+  FINE_ADJUST = 3,
+  CORRECTING = 4,
+  SETTLING = 5
+};
+
+struct PositionControlConfig
+{
+  double tolerance_n = 0.20;
+  double maximum_speed_mps = 0.020;
+  double far_gain_mps_per_n = 0.0060;
+  double near_gain_mps_per_n = 0.0045;
+  double near_window_n = 2.0;
+  double prediction_horizon_s = 0.15;
+  double prediction_limit_n = 2.0;
+  double force_rate_cutoff_hz = 2.0;
+  double maximum_acceleration_mps2 = 0.080;
+  double maximum_deceleration_mps2 = 0.160;
+  double settling_speed_mps = 0.0005;
+  double initial_stiffness_n_per_m = 300.0;
+  double minimum_stiffness_n_per_m = 50.0;
+  double maximum_stiffness_n_per_m = 1500.0;
+  double stiffness_time_constant_s = 1.0;
+};
+
+struct PositionControlResult
+{
+  double velocity_mps = 0.0;
+  double force_rate_nps = 0.0;
+  double predicted_force_n = 0.0;
+  double estimated_stiffness_n_per_m = 0.0;
+  double raw_velocity_mps = 0.0;
+  PositionControlPhase phase = PositionControlPhase::IDLE;
+  bool speed_limited = false;
+  bool acceleration_limited = false;
+  bool valid = false;
+};
+
+class PositionTractionController
+{
+public:
+  explicit PositionTractionController(const PositionControlConfig & config = {});
+
+  void reset();
+  PositionControlResult update(double target_force_n, double actual_force_n, double dt_s);
+
+private:
+  double braking_speed_limit(double force_margin_n) const;
+
+  PositionControlConfig config_;
+  bool initialized_ = false;
+  double previous_force_n_ = 0.0;
+  double force_rate_nps_ = 0.0;
+  double estimated_stiffness_n_per_m_ = 300.0;
+  double velocity_mps_ = 0.0;
+};
+
 struct CalibrationResult
 {
   bool success = false;

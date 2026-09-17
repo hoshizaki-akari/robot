@@ -27,6 +27,7 @@ let tractionState = 0;
 let previousDirectionTrackState = 4;
 let pendingStart = false;
 let finishRequested = false;
+let emergencyPending = false;
 const MODE_LABELS = { 0: '恒力牵引', 1: '位置牵引', 2: '省力拖拽' };
 
 const TRACTION_STATE_LABELS = {
@@ -50,6 +51,7 @@ const ACTION_SUCCESS_MESSAGES = {
   '/api/traction/start': '开始牵引',
   '/api/traction/stop': '正在结束牵引',
   '/api/traction/emergency-stop': '已急停',
+  '/api/traction/emergency-recover': '急停已恢复',
   '/api/traction/return-zero': '正在回零'
 };
 const REASON_LABELS = {
@@ -134,9 +136,14 @@ function applyPermissions() {
   $('targetForceVal').disabled = !permission.adjust || motionActive || operationMode === 2;
   $('startBtn').disabled = !permission.operate || operationMode === 2 || tractionState !== 5 || !dataOnline || pendingStart;
   $('stopBtn').disabled = !permission.operate || ![6, 11, 12].includes(tractionState) || !dataOnline;
-  if ($('prepareBtn')) $('prepareBtn').disabled = !permission.operate || !dataOnline || ![1, 2, 5, 8, 9, 10].includes(tractionState);
+  if ($('prepareBtn')) $('prepareBtn').disabled = !permission.operate || !dataOnline || ![1, 2, 5, 8, 9].includes(tractionState);
   if ($('calibrateBtn')) $('calibrateBtn').disabled = !permission.operate || !dataOnline || operationMode === 2 || tractionState !== 2;
-  if ($('emergencyBtn')) $('emergencyBtn').disabled = !permission.operate || !dataOnline || tractionState === 10;
+  if ($('emergencyBtn')) {
+    const recovering = tractionState === 10;
+    $('emergencyBtn').disabled = !permission.operate || !dataOnline || emergencyPending;
+    $('emergencyBtn').textContent = recovering ? '急停恢复' : '急停';
+    $('emergencyBtn').classList.toggle('recover', recovering);
+  }
   if ($('returnZeroBtn')) $('returnZeroBtn').disabled = !permission.operate || !dataOnline || motionActive || ![1, 2, 5, 8].includes(tractionState);
   document.querySelectorAll('.mode-btn').forEach(button => {
     button.disabled = !permission.operate || !dataOnline || motionActive || ![1, 2, 5, 8].includes(tractionState);
@@ -262,14 +269,31 @@ async function finishTraction(status = '已完成') {
 }
 
 async function emergencyStop() {
+  const recovering = tractionState === 10;
+  emergencyPending = true;
+  applyPermissions();
   try {
-    await postJson('/api/traction/emergency-stop');
+    await postJson(recovering
+      ? '/api/traction/emergency-recover'
+      : '/api/traction/emergency-stop');
   } catch (error) {
-    return toast(`${simpleErrorMessage(error)}；请使用实体急停`);
+    emergencyPending = false;
+    applyPermissions();
+    return toast(recovering
+      ? `${simpleErrorMessage(error)}；请确认实体急停已释放`
+      : `${simpleErrorMessage(error)}；请使用实体急停`);
+  }
+  emergencyPending = false;
+  if (recovering) {
+    finishRequested = false;
+    $('workStatus').textContent = '未初始化';
+    applyPermissions();
+    return toast('急停已恢复');
   }
   if (activeRecord) saveFinishedRecord('紧急终止');
   finishRequested = false;
   $('workStatus').textContent = '已急停';
+  applyPermissions();
   toast('已急停');
 }
 
@@ -431,7 +455,7 @@ function handleState(state) {
   actualForce = Number(traction.actual_force_n || 0);
   $('actualForceVal').textContent = actualForce.toFixed(1);
   const tensionDetected = actualForce >= 1.0;
-  $('tensionState').textContent = tensionDetected ? '牵引带：紧' : '牵引带：松';
+  $('tensionState').textContent = tensionDetected ? '张紧' : '松弛';
   $('tensionState').classList.toggle('tight', tensionDetected);
   const directionTrackState = Number(traction.direction_track_state ?? 4);
   const adaptiveTraction = tractionState === 6 && operationMode === 0;
@@ -449,21 +473,6 @@ function handleState(state) {
   $('directionState').classList.toggle('following', directionFollowing);
   previousDirectionTrackState = directionTrackState;
 
-  const vector = Array.isArray(traction.force_vector_n) ? traction.force_vector_n : [];
-  ['forceFx', 'forceFy', 'forceFz'].forEach((id, index) => {
-    $(id).textContent = Number.isFinite(Number(vector[index])) ? Number(vector[index]).toFixed(2) : '--';
-  });
-  const measuredDirection = Array.isArray(traction.force_direction_base) ? traction.force_direction_base : [];
-  const increaseDirection = Array.isArray(traction.increase_direction_base)
-    ? traction.increase_direction_base : [];
-  $('forceDirection').textContent = measuredDirection.length === 3
-    ? `[${measuredDirection.map(value => Number(value).toFixed(2)).join(', ')}]` : '--';
-  $('increaseDirection').textContent = increaseDirection.length === 3
-    ? `[${increaseDirection.map(value => Number(value).toFixed(2)).join(', ')}]` : '--';
-  const directionForModel = increaseDirection.length === 3 ? increaseDirection : [0, 0, 0];
-  if (window.updateForceVector && vector.length === 3) {
-    window.updateForceVector(vector, directionForModel);
-  }
   if (activeRecord) {
     $('workStatus').textContent = tractionState === 7
       ? '正在结束'

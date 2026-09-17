@@ -9,11 +9,13 @@
 
 TEST(TractionSyntheticPipeline, TenNewtonAxisOnlyConvergesWithoutLateralCommand)
 {
-  fr_traction::TractionControllerCore controller(10.0, 80.0, 0.5, 0.005, 0.02);
+  fr_traction::TractionControllerCore controller(10.0, 80.0, 0.5, 0.020, 0.02);
   const fr_traction::Vec3 direction{0.0, 0.0, -1.0};
   double actual_force = 0.0;
-  double previous_force = 0.0;
-  for (int step = 0; step < 400; ++step) {
+  double maximum_force = 0.0;
+  double settled_minimum_force = 1e9;
+  double settled_maximum_force = 0.0;
+  for (int step = 0; step < 600; ++step) {
     const fr_traction::Vec3 wrench{0.0, 0.0, -actual_force};
     const auto output = controller.update(
       fr_traction::ControlMode::TRACTION, direction, 10.0, wrench, 0.01);
@@ -22,10 +24,15 @@ TEST(TractionSyntheticPipeline, TenNewtonAxisOnlyConvergesWithoutLateralCommand)
     EXPECT_DOUBLE_EQ(output.linear_velocity.y, 0.0);
     EXPECT_TRUE(std::isfinite(output.linear_velocity.z));
     actual_force = std::max(0.0, actual_force + output.scalar_velocity_mps * 200.0 * 0.01);
-    EXPECT_GE(actual_force + 1e-12, previous_force);
-    previous_force = actual_force;
+    maximum_force = std::max(maximum_force, actual_force);
+    if (step >= 500) {
+      settled_minimum_force = std::min(settled_minimum_force, actual_force);
+      settled_maximum_force = std::max(settled_maximum_force, actual_force);
+    }
   }
-  EXPECT_GT(actual_force, 0.0);
+  EXPECT_LE(maximum_force, 10.1);
+  EXPECT_LE(settled_maximum_force - settled_minimum_force, 0.02);
+  EXPECT_NEAR(actual_force, 10.0, 0.51);
 
   controller.reset();
   const auto settled = controller.update(

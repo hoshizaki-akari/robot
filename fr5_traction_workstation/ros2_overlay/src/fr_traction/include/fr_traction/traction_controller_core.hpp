@@ -12,13 +12,15 @@ enum class ControlMode : unsigned char
   PRETENSION = 1,
   TRACTION = 2,
   RELEASING = 3,
-  DRAGGING = 4
+  DRAGGING = 4,
+  POSITIONING = 5
 };
 
 struct ControllerOutput
 {
   Vec3 linear_velocity;
   double scalar_velocity_mps = 0.0;
+  PositionControlResult position_control;
   bool valid = false;
 };
 
@@ -40,9 +42,10 @@ public:
     double drag_max_speed_mps = 0.050,
     double smoothing_max_acceleration_mps2 = 0.30,
     double smoothing_max_jerk_mps3 = 3.0,
-    double drag_sign_x = 1.0,
-    double drag_sign_y = 1.0,
-    double drag_sign_z = 1.0);
+    double drag_sign_x = -1.0,
+    double drag_sign_y = -1.0,
+    double drag_sign_z = 1.0,
+    const PositionControlConfig & position_config = {});
 
   void reset();
   ControllerOutput update(
@@ -54,9 +57,12 @@ public:
     const Vec3 & lateral_velocity = {});
 
 private:
-  Vec3 smooth_velocity(const Vec3 & desired_velocity, double dt_s);
+  Vec3 smooth_velocity(
+    const Vec3 & desired_velocity, double dt_s, bool snap_to_target = true);
 
   OneDimensionalAdmittance admittance_;
+  PositionTractionController position_controller_;
+  PositionTractionController continuous_force_controller_;
   double drag_start_force_n_;
   double drag_release_force_n_;
   double drag_release_confirm_s_;

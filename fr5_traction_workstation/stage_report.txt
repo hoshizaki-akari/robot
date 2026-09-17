@@ -16,7 +16,7 @@ drag records did not contain the actual XYZ controller velocity
 implemented:
 invert assisted-drag motion only; constant/position traction signs unchanged
 assisted-drag input is converted from base_link force into tool coordinates
-command direction defaults to [Fx, Fy, Fz]; drag_sign_x/y/z allow independent physical correction
+current physical mapping = [-Fx, -Fy, +Fz]; drag_sign_x/y/z remain independently configurable
 bound FR5 command RPC to 1.5 s and retry ServoMoveEnd once on a fresh connection
 allow return-zero service response up to 8 s
 record actual controller command_vx/command_vy/command_vz for every new session
@@ -30,4 +30,136 @@ Python backend/UI checks passed
 real ROS stack started; FR5 driver connected; traction state READY
 
 status:
-OFFLINE_FIX_COMPLETE_WAITING_FOR_REAL_DRAG_AXIS_CHECK
+ASSISTED_DRAG_XYZ_CONFIRMED_BY_OPERATOR
+
+===== POSITION / CONSTANT TRACTION TOOL-Z FIX =====
+
+source_record:
+session_1788855509493
+mode = POSITION_TRACTION
+locked_direction_base = [0.6422, -0.7391, -0.2033]
+observed = tool X/Y correct; tool Z reversed
+
+root_cause:
+assisted drag had an independently calibrated tool-axis mapping
+position and constant-force traction still sent the uncalibrated base-frame vector
+
+implemented:
+convert non-drag traction velocity from base to tool coordinates
+keep tool X/Y signs unchanged and invert only tool Z
+rotate the calibrated velocity back to base before the FR5 base-frame command
+leave assisted-drag mapping unchanged
+
+automatic_verification:
+ROS2 build passed
+90 tests, 0 errors, 0 failures
+Python control configuration checks passed
+
+status:
+SOFTWARE_FIX_COMPLETE_WAITING_FOR_REAL_TOOL_Z_CHECK
+
+===== POSITION TRACTION CONVERGENCE REDESIGN =====
+
+source_record:
+session_1788919534640
+mode = POSITION_TRACTION
+target_force_n = 10.0
+first_target_crossing_s = 15.291
+velocity_at_first_crossing_mm_s = 12.949
+velocity_reversals = 52
+longest_time_within_0.2_n_s = 0.21
+
+root_cause:
+the former admittance controller retained virtual momentum at the target
+the former position mode had no force-trend prediction or stiffness-based braking
+repeated overshoot prevented the required 0.5 s stable dwell
+
+implemented:
+give position traction an independent predictive force-position controller
+use total rope tension while moving only on the initially locked axis
+keep the 20 mm/s far-speed limit and remove integral accumulation
+estimate force change rate and rope stiffness online
+approach quickly when far; reduce speed from predicted stopping distance when near
+brake to zero before reversing correction direction
+hold only after force is within 0.2 N, force rate is stable, and dwell reaches 0.5 s
+do not enable active direction following in position traction
+add controller phase, predicted force, stiffness and limiting fields to session logs
+leave constant-force and assisted-drag algorithms unchanged
+
+automatic_verification:
+ROS2 build passed
+fixed-target spring simulation converged without repeated overshoot
+moving-target simulation reacquired the target and held after target motion stopped
+15 N nonlinear spring simulation completed inside 5 s without overshoot
+95 ROS2 tests, 0 errors, 0 failures
+12 backend and UI checks passed
+
+real_robot_verification:
+attempt_1 = 14.668 N at 5.018 s; stopped automatically at the acceptance timeout
+attempt_2 = 14.820 N at 5.015 s; stopped automatically at the acceptance timeout
+attempt_3 = 15.135 N at 5.042 s but stable dwell incomplete; stopped automatically
+final_session = session_1788923123018
+target_force_n = 15.0
+position_hold_elapsed_from_active_control_s = 4.589
+position_hold_elapsed_from_start_request_s = 4.679
+force_at_position_hold_n = 14.904
+maximum_force_n = 14.908
+position_hold_pose_drift_over_2_s_mm = 0.0039
+normal_stop_reason = POSITION_TRACTION_COMPLETED
+return_zero_completed = true
+
+status:
+POSITION_TRACTION_15N_UNDER_5S_ACCEPTED
+
+===== CONSTANT FORCE OSCILLATION FIX =====
+
+source_record:
+session_1788923963328
+mode = CONSTANT_FORCE
+target_force_n = 15.0
+active_duration_s = 20.18
+force_min_mean_max_n = 3.145 / 12.824 / 29.319
+force_standard_deviation_n = 7.865
+axial_velocity_min_max_mm_s = -10.916 / 13.625
+axial_velocity_direction_reversals = 18
+
+root_cause:
+the former constant-force loop combined virtual mass, retained velocity and integral bias
+in the stiff rope/robot plant it crossed the target with residual motion, reversed, and repeated
+direction tracking remained stable for most samples and was not the source of the oscillation
+
+implemented:
+replace constant-force axial regulation with an independent predictive controller
+estimate force rate and rope stiffness online and brake before the predicted target crossing
+retain continuous re-regulation when the external object moves or the tension changes
+retain the configured 0.15 N force deadband and 20 mm/s speed ceiling
+apply acceleration and jerk limiting without snapping to rapidly changing velocity requests
+leave position traction, assisted drag and lateral direction following independent
+
+automatic_verification:
+high-stiffness nonlinear rope simulation reached 15 N without repeated oscillation
+force reversal obeyed acceleration and jerk limits
+96 ROS2 tests, 0 errors, 0 failures
+14 backend and UI checks passed
+
+status:
+SOFTWARE_FIX_COMPLETE_WAITING_FOR_REAL_CONSTANT_FORCE_CHECK
+
+===== HARDWARE EMERGENCY STOP AND RECOVERY =====
+
+implemented:
+emergency button now requests FR5 StopMotion, RobotEnable(0), and manual mode
+driver latches the emergency state locally and rejects all motion activation while latched
+button changes to 急停恢复 while the manager is in EMERGENCY_STOP
+recovery requests ResetAllError, automatic mode, and RobotEnable(1)
+manager returns to READY only after the hardware recovery service succeeds
+initial calibration is required again before any new motion
+
+automatic_verification:
+hardware emergency stop and recovery ROS services are present after restart
+web and ROS stacks restarted with the updated build
+live state = READY, connected = true, actual force approximately 0.16 N
+no physical emergency-stop command was issued during verification
+
+status:
+SOFTWARE_AND_RUNTIME_READY_WAITING_FOR_OPERATOR_EMERGENCY_BUTTON_CHECK

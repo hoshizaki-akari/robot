@@ -19,5 +19,8 @@ fr5_traction_workstation/.ruff_cache/
 # Local editor / OS metadata
 .vscode/
 .idea/
+.workbuddy/
+fr5_traction_workstation/vendor/
+fr5_traction_workstation/ros2_overlay/src/fairino_description
 .DS_Store
 Thumbs.db

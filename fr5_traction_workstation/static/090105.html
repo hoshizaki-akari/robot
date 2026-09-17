@@ -11,6 +11,7 @@
       --blue: #3b82f6;
       --green: #16a34a;
       --red: #dc2626;
+      --orange: #f59e0b;
       --muted: #64748b;
       --line: #e2e8f0;
     }
@@ -23,13 +24,13 @@
     button:disabled { opacity: .42; cursor: not-allowed !important; }
 
     .top-bar {
-      height: 68px; padding: 0 24px; background: var(--navy); color: #fff;
+      height: 64px; padding: 0 22px; background: var(--navy); color: #fff;
       display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
       box-shadow: 0 3px 12px rgba(15, 23, 42, .18);
     }
     .top-left, .top-right { display: flex; align-items: center; gap: 10px; }
     .top-right { justify-content: flex-end; }
-    .top-bar h1 { font-size: 22px; font-weight: 600; letter-spacing: 3px; }
+    .top-bar h1 { font-size: 24px; font-weight: 700; letter-spacing: 3px; }
     .nav-btn {
       border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.12);
       color: #fff; padding: 8px 16px; border-radius: 7px; font-size: 15px;
@@ -42,15 +43,18 @@
     }
     .role-tag { padding: 2px 7px; border-radius: 10px; background: #dbeafe; color: #1d4ed8; font-size: 12px; }
 
-    .main-container { height: calc(100% - 68px); display: flex; gap: 18px; padding: 18px; }
-    .left-area, .right-area { width: 50%; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+    .main-container {
+      height: calc(100% - 64px); display: grid; grid-template-columns: minmax(330px, 31%) minmax(0, 1fr);
+      gap: 16px; padding: 16px;
+    }
+    .left-area, .right-area { display: flex; flex-direction: column; gap: 14px; min-width: 0; min-height: 0; }
     .card {
       background: #fff; border-radius: 14px; box-shadow: 0 4px 16px rgba(0,0,0,.08);
       display: flex; flex-direction: column; overflow: hidden;
     }
     .card-title {
-      min-height: 50px; padding: 13px 18px; border-bottom: 2px solid #e8ecf1;
-      color: var(--navy); font-size: 18px; font-weight: 600;
+      min-height: 56px; padding: 13px 20px; border-bottom: 2px solid #e8ecf1;
+      color: var(--navy); font-size: 21px; font-weight: 700;
       display: flex; align-items: center; justify-content: space-between;
     }
     .status { display: inline-flex; align-items: center; gap: 6px; color: var(--green); font-size: 13px; font-weight: 500; }
@@ -58,86 +62,98 @@
     .status.running { color: #f59e0b; }
     .status.offline { color: var(--red); }
 
-    .arm-panel { flex: 1.15; background: #323232; }
+    .arm-panel { flex: 1.05; background: #323232; min-height: 0; }
     .arm-img-wrap { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
     .arm-img-wrap img { width: 100%; height: 100%; object-fit: contain; }
-    #robotViewer { width: 100%; height: 100%; min-height: 260px; }
+    #robotViewer { width: 100%; height: 100%; min-height: 210px; }
     #robotViewer canvas { display: block; width: 100%; height: 100%; }
     .image-fallback { color: #cbd5e1; text-align: center; line-height: 1.8; }
     .image-fallback strong { display: block; color: #fff; font-size: 26px; }
 
-    .curve-panel { flex: 1; padding: 0 14px 14px; min-height: 220px; }
+    .curve-panel { flex: .95; padding: 0 14px 14px; min-height: 180px; }
     .curve-panel .card-title { margin: 0 -14px 10px; }
     #forceCanvas { flex: 1; width: 100%; min-height: 0; border-radius: 10px; background: #f8fafc; border: 1px solid var(--line); }
 
-    .force-panel { flex: 1; padding-bottom: 16px; }
-    .force-content { flex: 1; display: grid; grid-template-columns: 135px 1fr 135px; align-items: center; gap: 18px; padding: 12px 22px; }
-    .round-btn-group { display: flex; flex-direction: column; gap: 20px; align-items: center; }
+    .operation-panel { flex: 1; min-height: 0; padding-bottom: 18px; }
+    .operation-title { flex: 0 0 58px; }
+    .compact-status { display: flex; align-items: center; gap: 18px; font-size: 14px; font-weight: 600; }
+    .compact-status-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+    .compact-status-item::before {
+      content: ""; width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: currentColor;
+    }
+    .compact-status-label { color: var(--muted); font-weight: 400; }
+    .state-value { color: var(--green); font-size: 14px; font-weight: 600; white-space: nowrap; }
+    #workStatus.running, #directionState.following { color: #d97706; }
+    #tensionState { color: #d97706; }
+    #tensionState.tight { color: var(--green); }
+    .mode-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+      padding: 18px 24px 12px;
+    }
+    .mode-btn {
+      min-height: 66px; border: 2px solid #aebdce; border-radius: 14px; padding: 10px 16px;
+      background: #fff; color: #334155; font-size: clamp(28px, 1.65vw, 33px); font-weight: 900;
+      line-height: 1; letter-spacing: .24em; text-indent: .24em; cursor: pointer;
+      box-shadow: 0 3px 8px rgba(15,23,42,.06); transition: .15s;
+    }
+    .mode-btn.active {
+      border-color: var(--blue); background: var(--blue); color: #fff;
+      box-shadow: 0 5px 14px rgba(59,130,246,.28);
+    }
+    .force-content {
+      flex: 1; min-height: 0; display: grid; grid-template-columns: 148px minmax(430px, 1fr) 148px;
+      align-items: center; gap: 28px; padding: 10px 30px 14px;
+    }
+    .round-btn-group { display: flex; flex-direction: column; gap: 34px; align-items: center; }
     .round-btn {
-      width: 110px; height: 110px; border-radius: 50%; border: 4px solid #d1d5db;
-      background: #f8fafc; font-size: 27px; font-weight: 700; cursor: pointer; transition: .15s;
+      width: 138px; height: 138px; border-radius: 50%; border: 5px solid #d1d5db;
+      background: #fff; font-size: 38px; font-weight: 900; letter-spacing: .02em;
+      cursor: pointer; transition: .15s;
+      box-shadow: 0 5px 15px rgba(15,23,42,.08);
     }
     .round-btn:active:not(:disabled) { transform: scale(.95); }
     .round-btn.minus { color: var(--red); border-color: #fca5a5; }
     .round-btn.plus { color: var(--green); border-color: #86efac; }
-    .force-display-target { text-align: center; }
-    .force-label-target { font-size: 24px; color: var(--muted); margin-bottom: 8px; }
-    .force-box-target {
-      height: 150px; border: 3px solid var(--blue); border-radius: 12px;
-      display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 16px rgba(59,130,246,.15);
+    .force-board {
+      width: 100%; height: clamp(270px, 32vh, 320px);
+      display: grid; grid-template-columns: 1fr 2px 1fr; align-items: stretch;
+      border: 3px solid #cbd8e8; border-radius: 38px; overflow: hidden; background: #fff;
+      box-shadow: 0 10px 26px rgba(30,58,95,.12);
     }
+    .force-metric {
+      min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 22px 16px;
+    }
+    .force-metric-label {
+      color: var(--muted); font-size: 29px; font-weight: 800; line-height: 1;
+      letter-spacing: .12em; text-indent: .12em; margin-bottom: 18px;
+    }
+    .force-divider { width: 2px; margin: 30px 0; background: #cbd5e1; }
+    .force-number { display: flex; align-items: baseline; justify-content: center; min-width: 0; }
     .force-value-target {
-      width: 150px; border: 0; outline: 0; background: transparent; text-align: center;
-      font: inherit; font-size: 70px; font-weight: 800; color: var(--navy);
+      width: 188px; border: 0; outline: 0; background: transparent; text-align: right;
+      font: inherit; font-size: 98px; font-weight: 900; color: var(--navy);
       appearance: textfield; -moz-appearance: textfield;
     }
     .force-value-target::-webkit-inner-spin-button,
     .force-value-target::-webkit-outer-spin-button { appearance: none; margin: 0; }
-    .force-unit-target { font-size: 48px; font-weight: 600; color: var(--blue); margin-left: 5px; }
-    .actual-force { margin-top: 10px; color: var(--muted); font-size: 15px; }
-    .actual-force strong { color: var(--navy); font-size: 22px; }
-    .force-vector-card {
-      margin-top: 14px; padding: 12px 14px; border: 1px solid #dbe5ef;
-      border-radius: 10px; background: #f8fafc; text-align: left;
+    .force-unit-target { font-size: 52px; font-weight: 800; color: var(--blue); margin-left: 8px; }
+    .actual-force-value { color: var(--navy); font-size: 98px; font-weight: 900; line-height: 1; }
+    .actual-force-unit { color: var(--green); font-size: 52px; font-weight: 800; margin-left: 8px; }
+    .control-grid {
+      flex: 0 0 224px; display: grid; grid-template-columns: repeat(3, 1fr);
+      grid-template-rows: repeat(2, 1fr); gap: 16px 20px; padding: 0 30px;
     }
-    .vector-card-title {
-      color: var(--navy); font-size: 14px; font-weight: 700;
-      display: flex; justify-content: space-between; align-items: center;
+    .action-btn {
+      border: 0; border-radius: 17px; color: #fff; font-size: clamp(32px, 1.85vw, 38px); font-weight: 900;
+      line-height: 1; letter-spacing: .28em; text-indent: .28em;
+      cursor: pointer; box-shadow: 0 5px 14px rgba(15,23,42,.13); transition: .15s;
     }
-    .vector-card-title code { color: var(--blue); font-size: 12px; font-weight: 600; }
-    .vector-components {
-      display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
-      margin-top: 10px;
-    }
-    .vector-components div {
-      display: grid; grid-template-columns: auto 1fr auto; align-items: baseline;
-      gap: 4px; padding: 7px 8px; border-radius: 7px; background: #fff;
-    }
-    .vector-components span { color: var(--muted); font-size: 12px; }
-    .vector-components strong { color: var(--navy); font-size: 17px; text-align: right; }
-    .vector-components small { color: var(--muted); font-size: 11px; }
-    .vector-direction {
-      display: grid; grid-template-columns: 72px 1fr; gap: 8px; align-items: center;
-      margin-top: 8px; color: var(--muted); font-size: 12px;
-    }
-    .vector-direction code {
-      color: var(--navy); font-size: 12px; white-space: nowrap;
-      overflow: hidden; text-overflow: ellipsis;
-    }
-    .tension-state { margin-top: 8px; font-weight: 700; color: #64748b; }
-    .tension-state.tight { color: #15803d; }
-    .direction-state { margin-top: 4px; font-weight: 700; color: #15803d; }
-    .direction-state.following { color: #d97706; }
-
-    .control-panel { flex: 0 0 178px; padding: 12px 18px; display: flex; flex-direction: column; gap: 10px; }
-    .mode-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-    .mode-btn { border: 1px solid #94a3b8; border-radius: 8px; padding: 8px; background: #f8fafc; color: #334155; font-size: 15px; font-weight: 700; cursor: pointer; }
-    .mode-btn.active { border-color: var(--blue); background: var(--blue); color: #fff; box-shadow: 0 3px 9px rgba(59,130,246,.25); }
-    .control-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; flex: 1; }
-    .action-btn { border: 0; border-radius: 9px; color: #fff; font-size: 17px; font-weight: 600; cursor: pointer; }
+    .action-btn:active:not(:disabled) { transform: translateY(2px); }
     .action-btn.start { background: var(--green); }
-    .action-btn.stop { background: #f59e0b; }
+    .action-btn.stop { background: var(--orange); }
     .action-btn.emergency { background: var(--red); }
+    .action-btn.emergency.recover { background: var(--green); }
 
     .modal-mask {
       position: fixed; inset: 0; z-index: 20; background: rgba(15,23,42,.55);
@@ -186,14 +202,41 @@
     }
     .toast.show { opacity: 1; }
 
+    @media (max-height: 820px) and (min-width: 1051px) {
+      .mode-grid { padding-top: 10px; padding-bottom: 8px; }
+      .mode-btn { min-height: 56px; font-size: 26px; letter-spacing: .18em; text-indent: .18em; }
+      .force-content { grid-template-columns: 128px minmax(390px, 1fr) 128px; gap: 18px; padding: 6px 22px 10px; }
+      .round-btn-group { gap: 24px; }
+      .round-btn { width: 118px; height: 118px; font-size: 31px; }
+      .force-board { height: 250px; }
+      .force-metric-label { font-size: 25px; letter-spacing: .1em; text-indent: .1em; margin-bottom: 10px; }
+      .force-value-target { width: 150px; font-size: 82px; }
+      .actual-force-value { font-size: 82px; }
+      .force-unit-target, .actual-force-unit { font-size: 44px; }
+      .control-grid { flex-basis: 190px; gap: 12px 16px; padding: 0 22px; }
+      .action-btn { font-size: 29px; letter-spacing: .22em; text-indent: .22em; }
+    }
+
     @media (max-width: 1050px) {
       .top-bar { grid-template-columns: auto 1fr auto; padding: 0 12px; }
       .top-bar h1 { font-size: 18px; text-align: center; }
       .user-chip span:first-child { display: none; }
-      .force-content { grid-template-columns: 95px 1fr 95px; gap: 8px; padding: 10px; }
-      .round-btn { width: 82px; height: 82px; font-size: 21px; }
-      .force-vector-card { margin-top: 10px; padding: 9px 10px; }
-      .vector-components strong { font-size: 15px; }
+      .main-container { grid-template-columns: minmax(280px, 34%) minmax(0, 1fr); gap: 10px; padding: 10px; }
+      .compact-status { gap: 8px; font-size: 12px; }
+      .compact-status-label { display: none; }
+      .state-value { font-size: 12px; }
+      .mode-grid { gap: 8px; padding: 10px 12px 6px; }
+      .mode-btn { min-height: 48px; font-size: 20px; letter-spacing: .12em; text-indent: .12em; }
+      .force-content { grid-template-columns: 82px minmax(260px, 1fr) 82px; gap: 8px; padding: 6px 12px 10px; }
+      .round-btn-group { gap: 15px; }
+      .round-btn { width: 76px; height: 76px; font-size: 20px; border-width: 3px; }
+      .force-board { min-height: 190px; border-radius: 24px; }
+      .force-metric-label { font-size: 17px; }
+      .force-value-target { width: 95px; font-size: 54px; }
+      .actual-force-value { font-size: 54px; }
+      .force-unit-target, .actual-force-unit { font-size: 28px; }
+      .control-grid { flex-basis: 150px; gap: 9px; padding: 0 12px; }
+      .action-btn { font-size: 22px; letter-spacing: .16em; text-indent: .16em; }
     }
   </style>
 </head>
@@ -225,41 +268,46 @@
     </section>
 
     <section class="right-area">
-      <div class="card force-panel">
-        <div class="card-title"><span>牵引力调节</span><span class="status" id="workStatus">设备就绪</span></div>
+      <div class="card operation-panel">
+        <div class="card-title operation-title">
+          <span>牵引力调节</span>
+          <div class="compact-status" aria-label="实时状态">
+            <span class="compact-status-item"><span class="compact-status-label">任务</span><strong class="state-value" id="workStatus">设备就绪</strong></span>
+            <span class="compact-status-item"><span class="compact-status-label">牵引带</span><strong class="state-value" id="tensionState">松弛</strong></span>
+            <span class="compact-status-item"><span class="compact-status-label">方向</span><strong class="state-value" id="directionState">方向稳定</strong></span>
+          </div>
+        </div>
+        <div class="mode-grid" aria-label="工作模式">
+          <button class="mode-btn" data-mode="2">省力拖拽</button>
+          <button class="mode-btn" data-mode="1">位置牵引</button>
+          <button class="mode-btn active" data-mode="0">恒力牵引</button>
+        </div>
         <div class="force-content">
           <div class="round-btn-group">
             <button class="round-btn minus force-adjust" data-step="-5">−5N</button>
             <button class="round-btn minus force-adjust" data-step="-10">−10N</button>
           </div>
-          <div class="force-display-target">
-            <div class="force-label-target">目标牵引力</div>
-            <div class="force-box-target"><input class="force-value-target" id="targetForceVal" type="number" min="1" max="20" step="0.1" value="10" inputmode="decimal" aria-label="目标牵引力"><span class="force-unit-target">N</span></div>
-            <div class="actual-force">当前张力：<strong id="actualForceVal">0.0</strong> N</div>
-            <div class="force-vector-card" aria-label="三轴受力">
-              <div class="vector-card-title">三轴受力</div>
-              <div class="vector-components">
-                <div><span>Fx</span><strong id="forceFx">--</strong><small>N</small></div>
-                <div><span>Fy</span><strong id="forceFy">--</strong><small>N</small></div>
-                <div><span>Fz</span><strong id="forceFz">--</strong><small>N</small></div>
+          <div class="force-board">
+            <div class="force-metric">
+              <div class="force-metric-label">目标牵引力</div>
+              <div class="force-number">
+                <input class="force-value-target" id="targetForceVal" type="number" min="1" max="20" step="0.1" value="10" inputmode="decimal" aria-label="目标牵引力">
+                <span class="force-unit-target">N</span>
               </div>
-              <div class="vector-direction"><span>受力方向</span><code id="forceDirection">--</code></div>
-              <div class="vector-direction"><span>增力方向</span><code id="increaseDirection">--</code></div>
-              <div class="tension-state" id="tensionState">牵引带：松</div>
-              <div class="direction-state" id="directionState">方向稳定</div>
+            </div>
+            <div class="force-divider" aria-hidden="true"></div>
+            <div class="force-metric">
+              <div class="force-metric-label">当前牵引力</div>
+              <div class="force-number">
+                <strong class="actual-force-value" id="actualForceVal">0.0</strong>
+                <span class="actual-force-unit">N</span>
+              </div>
             </div>
           </div>
           <div class="round-btn-group">
             <button class="round-btn plus force-adjust" data-step="5">+5N</button>
             <button class="round-btn plus force-adjust" data-step="10">+10N</button>
           </div>
-        </div>
-      </div>
-      <div class="card control-panel">
-        <div class="mode-grid" aria-label="工作模式">
-          <button class="mode-btn" data-mode="2">省力拖拽</button>
-          <button class="mode-btn" data-mode="1">位置牵引</button>
-          <button class="mode-btn active" data-mode="0">恒力牵引</button>
         </div>
         <div class="control-grid">
           <button class="action-btn start" id="prepareBtn" title="牵引带松弛时点击">初始校准</button>
@@ -321,12 +369,12 @@
       }
     }
   </script>
-  <script type="module" src="/assets/robot_viewer.js?v=20260901-simple-arm"></script>
+  <script type="module" src="/assets/robot_viewer.js?v=20260907-clinician-layout"></script>
 <script type="text/plain" id="legacyLogic">
     Legacy traction logic is intentionally disabled. The active compatibility page
     uses /api/traction/* and the ROS2 traction manager; it does not simulate force,
     persist traction records in the browser, or issue robot SDK commands.
   </script>
-  <script src="/assets/090105.js?v=20260907-multi-mode"></script>
+  <script src="/assets/090105.js?v=20260907-clinician-layout"></script>
 </body>
 </html>

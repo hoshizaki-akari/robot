@@ -8,6 +8,7 @@
 #include <string>
 
 #include "fr_traction/msg/traction_command.hpp"
+#include "fr_traction/msg/position_control_diagnostics.hpp"
 #include "fairino_msgs/msg/pose_twist.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/wrench_stamped.hpp"
@@ -40,9 +41,37 @@ public:
     drag_release_confirm_s_ = declare_parameter("drag_release_confirm_s", 0.15);
     drag_gain_mps_per_n_ = declare_parameter("drag_gain_mps_per_n", 0.00625);
     drag_max_speed_mps_ = declare_parameter("drag_max_speed_mps", 0.050);
-    drag_sign_x_ = declare_parameter("drag_sign_x", 1.0);
-    drag_sign_y_ = declare_parameter("drag_sign_y", 1.0);
+    drag_sign_x_ = declare_parameter("drag_sign_x", -1.0);
+    drag_sign_y_ = declare_parameter("drag_sign_y", -1.0);
     drag_sign_z_ = declare_parameter("drag_sign_z", 1.0);
+    traction_sign_x_ = declare_parameter("traction_sign_x", 1.0);
+    traction_sign_y_ = declare_parameter("traction_sign_y", 1.0);
+    traction_sign_z_ = declare_parameter("traction_sign_z", -1.0);
+    position_tolerance_n_ = declare_parameter("position_tolerance_n", 0.20);
+    position_far_gain_mps_per_n_ = declare_parameter(
+      "position_far_gain_mps_per_n", 0.0060);
+    position_near_gain_mps_per_n_ = declare_parameter(
+      "position_near_gain_mps_per_n", 0.0045);
+    position_near_window_n_ = declare_parameter("position_near_window_n", 2.0);
+    position_prediction_horizon_s_ = declare_parameter(
+      "position_prediction_horizon_s", 0.15);
+    position_prediction_limit_n_ = declare_parameter("position_prediction_limit_n", 2.0);
+    position_force_rate_cutoff_hz_ = declare_parameter(
+      "position_force_rate_cutoff_hz", 2.0);
+    position_max_acceleration_mps2_ = declare_parameter(
+      "position_max_acceleration_mps2", 0.080);
+    position_max_deceleration_mps2_ = declare_parameter(
+      "position_max_deceleration_mps2", 0.160);
+    position_settling_speed_mps_ = declare_parameter(
+      "position_settling_speed_mps", 0.0005);
+    position_initial_stiffness_n_per_m_ = declare_parameter(
+      "position_initial_stiffness_n_per_m", 300.0);
+    position_min_stiffness_n_per_m_ = declare_parameter(
+      "position_min_stiffness_n_per_m", 50.0);
+    position_max_stiffness_n_per_m_ = declare_parameter(
+      "position_max_stiffness_n_per_m", 1500.0);
+    position_stiffness_time_constant_s_ = declare_parameter(
+      "position_stiffness_time_constant_s", 1.0);
     smoothing_max_acceleration_mps2_ = declare_parameter(
       "smoothing_max_acceleration_mps2", 0.30);
     smoothing_max_jerk_mps3_ = declare_parameter("smoothing_max_jerk_mps3", 3.0);
@@ -61,6 +90,8 @@ public:
       "velocity_command_topic", std::string("/traction/controller_velocity_cmd"));
     velocity_vector_topic_ = declare_parameter(
       "velocity_vector_topic", std::string("/traction/controller_velocity_vector"));
+    position_diagnostics_topic_ = declare_parameter(
+      "position_diagnostics_topic", std::string("/traction/position_control_diagnostics"));
     ee_state_topic_ = declare_parameter(
       "ee_state_topic", std::string("/controller_manager/ee_state"));
 
@@ -81,14 +112,39 @@ public:
     {
       throw std::runtime_error("drag_sign_x/y/z must be either -1.0 or 1.0");
     }
+    if (!std::isfinite(traction_sign_x_) ||
+      std::abs(std::abs(traction_sign_x_) - 1.0) > 1e-9 ||
+      !std::isfinite(traction_sign_y_) ||
+      std::abs(std::abs(traction_sign_y_) - 1.0) > 1e-9 ||
+      !std::isfinite(traction_sign_z_) ||
+      std::abs(std::abs(traction_sign_z_) - 1.0) > 1e-9)
+    {
+      throw std::runtime_error("traction_sign_x/y/z must be either -1.0 or 1.0");
+    }
 
     force_filter_.set_cutoff(force_filter_cutoff_hz_);
+    PositionControlConfig position_config;
+    position_config.tolerance_n = position_tolerance_n_;
+    position_config.maximum_speed_mps = max_speed_mps_;
+    position_config.far_gain_mps_per_n = position_far_gain_mps_per_n_;
+    position_config.near_gain_mps_per_n = position_near_gain_mps_per_n_;
+    position_config.near_window_n = position_near_window_n_;
+    position_config.prediction_horizon_s = position_prediction_horizon_s_;
+    position_config.prediction_limit_n = position_prediction_limit_n_;
+    position_config.force_rate_cutoff_hz = position_force_rate_cutoff_hz_;
+    position_config.maximum_acceleration_mps2 = position_max_acceleration_mps2_;
+    position_config.maximum_deceleration_mps2 = position_max_deceleration_mps2_;
+    position_config.settling_speed_mps = position_settling_speed_mps_;
+    position_config.initial_stiffness_n_per_m = position_initial_stiffness_n_per_m_;
+    position_config.minimum_stiffness_n_per_m = position_min_stiffness_n_per_m_;
+    position_config.maximum_stiffness_n_per_m = position_max_stiffness_n_per_m_;
+    position_config.stiffness_time_constant_s = position_stiffness_time_constant_s_;
     core_ = TractionControllerCore(
       virtual_mass_, virtual_damping_, force_deadband_n_, max_speed_mps_,
       max_acceleration_mps2_, integral_gain_s_inv_, integral_limit_n_,
       drag_start_force_n_, drag_release_force_n_, drag_release_confirm_s_,
       drag_gain_mps_per_n_, drag_max_speed_mps_, smoothing_max_acceleration_mps2_,
-      smoothing_max_jerk_mps3_, drag_sign_x_, drag_sign_y_, drag_sign_z_);
+      smoothing_max_jerk_mps3_, drag_sign_x_, drag_sign_y_, drag_sign_z_, position_config);
 
     command_subscription_ = create_subscription<msg::TractionCommand>(
       command_topic_, rclcpp::QoS(10).reliable(),
@@ -107,6 +163,8 @@ public:
       velocity_command_topic_, rclcpp::QoS(10).reliable());
     velocity_vector_publisher_ = create_publisher<geometry_msgs::msg::Twist>(
       velocity_vector_topic_, rclcpp::QoS(10).reliable());
+    position_diagnostics_publisher_ = create_publisher<msg::PositionControlDiagnostics>(
+      position_diagnostics_topic_, rclcpp::QoS(10).reliable());
     health_publisher_ = create_publisher<std_msgs::msg::Bool>(
       "~/healthy", rclcpp::QoS(1).transient_local().reliable());
 
@@ -159,13 +217,41 @@ private:
     return finite(tool_vector);
   }
 
+  static bool rotate_tool_to_base(
+    const Vec3 & tool_vector,
+    const geometry_msgs::msg::Quaternion & orientation,
+    Vec3 & base_vector)
+  {
+    const double quaternion_norm = std::sqrt(
+      orientation.x * orientation.x + orientation.y * orientation.y +
+      orientation.z * orientation.z + orientation.w * orientation.w);
+    if (!std::isfinite(quaternion_norm) || quaternion_norm <= 1e-12) {
+      return false;
+    }
+    const double x = orientation.x / quaternion_norm;
+    const double y = orientation.y / quaternion_norm;
+    const double z = orientation.z / quaternion_norm;
+    const double w = orientation.w / quaternion_norm;
+    base_vector = {
+      (1.0 - 2.0 * (y * y + z * z)) * tool_vector.x +
+      2.0 * (x * y - w * z) * tool_vector.y +
+      2.0 * (x * z + w * y) * tool_vector.z,
+      2.0 * (x * y + w * z) * tool_vector.x +
+      (1.0 - 2.0 * (x * x + z * z)) * tool_vector.y +
+      2.0 * (y * z - w * x) * tool_vector.z,
+      2.0 * (x * z - w * y) * tool_vector.x +
+      2.0 * (y * z + w * x) * tool_vector.y +
+      (1.0 - 2.0 * (x * x + y * y)) * tool_vector.z};
+    return finite(base_vector);
+  }
+
   void on_command(const msg::TractionCommand & message)
   {
     command_ = message;
     last_command_at_ = now();
     last_command_steady_at_ = std::chrono::steady_clock::now();
     ++command_generation_;
-    command_valid_ = message.mode <= msg::TractionCommand::DRAG &&
+    command_valid_ = message.mode <= msg::TractionCommand::POSITIONING &&
       message.direction_correction_mode <= msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE &&
       std::isfinite(message.target_force_n) && message.target_force_n >= 0.0 &&
       finite(vector_from_message(message.locked_direction_base)) &&
@@ -215,6 +301,19 @@ private:
     std_msgs::msg::Float64 scalar;
     scalar.data = output.scalar_velocity_mps;
     velocity_publisher_->publish(scalar);
+    msg::PositionControlDiagnostics diagnostics;
+    diagnostics.header.stamp = now();
+    diagnostics.header.frame_id = "base_link";
+    diagnostics.phase = static_cast<uint8_t>(output.position_control.phase);
+    diagnostics.force_rate_nps = output.position_control.force_rate_nps;
+    diagnostics.predicted_force_n = output.position_control.predicted_force_n;
+    diagnostics.estimated_stiffness_n_per_m =
+      output.position_control.estimated_stiffness_n_per_m;
+    diagnostics.raw_velocity_mps = output.position_control.raw_velocity_mps;
+    diagnostics.limited_velocity_mps = output.position_control.velocity_mps;
+    diagnostics.speed_limited = output.position_control.speed_limited;
+    diagnostics.acceleration_limited = output.position_control.acceleration_limited;
+    position_diagnostics_publisher_->publish(diagnostics);
   }
 
   void publish_zero()
@@ -320,8 +419,39 @@ private:
         bounded_output.linear_velocity = unit * bounded_output.scalar_velocity_mps;
       }
     }
+    if (mode == ControlMode::PRETENSION || mode == ControlMode::TRACTION ||
+      mode == ControlMode::RELEASING || mode == ControlMode::POSITIONING)
+    {
+      // The KWR75D's physically verified assisted-drag mapping means that an
+      // increasing-tension move is +X, +Y and -Z in tool coordinates.  The
+      // traction algorithms operate in base_link, so convert the complete
+      // axial/lateral command to tool coordinates, apply only the required
+      // tool-axis signs, and rotate it back before publishing a base command.
+      // This keeps assisted drag untouched and prevents a tool-Z correction
+      // from accidentally becoming a base-Z-only correction.
+      Vec3 tool_velocity;
+      Vec3 calibrated_base_velocity;
+      if (!ee_orientation_valid_ ||
+        !rotate_base_to_tool(
+          bounded_output.linear_velocity, latest_ee_orientation_, tool_velocity))
+      {
+        publish_zero();
+        publish_health(true);
+        return;
+      }
+      tool_velocity = {
+        traction_sign_x_ * tool_velocity.x,
+        traction_sign_y_ * tool_velocity.y,
+        traction_sign_z_ * tool_velocity.z};
+      if (!rotate_tool_to_base(tool_velocity, latest_ee_orientation_, calibrated_base_velocity)) {
+        publish_zero();
+        publish_health(true);
+        return;
+      }
+      bounded_output.linear_velocity = calibrated_base_velocity;
+    }
     if (mode == ControlMode::TRACTION || mode == ControlMode::RELEASING ||
-      mode == ControlMode::DRAGGING)
+      mode == ControlMode::DRAGGING || mode == ControlMode::POSITIONING)
     {
       const double combined_speed = norm(bounded_output.linear_velocity);
       const double mode_speed_limit = mode == ControlMode::DRAGGING ?
@@ -350,9 +480,26 @@ private:
   double drag_release_confirm_s_ = 0.15;
   double drag_gain_mps_per_n_ = 0.00625;
   double drag_max_speed_mps_ = 0.050;
-  double drag_sign_x_ = 1.0;
-  double drag_sign_y_ = 1.0;
+  double drag_sign_x_ = -1.0;
+  double drag_sign_y_ = -1.0;
   double drag_sign_z_ = 1.0;
+  double traction_sign_x_ = 1.0;
+  double traction_sign_y_ = 1.0;
+  double traction_sign_z_ = -1.0;
+  double position_tolerance_n_ = 0.20;
+  double position_far_gain_mps_per_n_ = 0.0040;
+  double position_near_gain_mps_per_n_ = 0.0015;
+  double position_near_window_n_ = 2.0;
+  double position_prediction_horizon_s_ = 0.25;
+  double position_prediction_limit_n_ = 2.0;
+  double position_force_rate_cutoff_hz_ = 3.0;
+  double position_max_acceleration_mps2_ = 0.080;
+  double position_max_deceleration_mps2_ = 0.120;
+  double position_settling_speed_mps_ = 0.0005;
+  double position_initial_stiffness_n_per_m_ = 300.0;
+  double position_min_stiffness_n_per_m_ = 50.0;
+  double position_max_stiffness_n_per_m_ = 1500.0;
+  double position_stiffness_time_constant_s_ = 1.0;
   double smoothing_max_acceleration_mps2_ = 0.30;
   double smoothing_max_jerk_mps3_ = 3.0;
   double direction_correction_max_speed_mps_ = 0.020;
@@ -365,6 +512,7 @@ private:
   std::string cartesian_command_topic_;
   std::string velocity_command_topic_;
   std::string velocity_vector_topic_;
+  std::string position_diagnostics_topic_;
   std::string ee_state_topic_;
 
   msg::TractionCommand command_;
@@ -389,6 +537,8 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr twist_publisher_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr velocity_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr velocity_vector_publisher_;
+  rclcpp::Publisher<msg::PositionControlDiagnostics>::SharedPtr
+    position_diagnostics_publisher_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr health_publisher_;
   rclcpp::TimerBase::SharedPtr timer_;
 };

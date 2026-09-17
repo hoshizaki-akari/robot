@@ -2,6 +2,7 @@
 """Single-owner FR5 feedback and Cartesian-servo bridge for traction."""
 
 import math
+import os
 import sys
 import threading
 import time
@@ -69,8 +70,13 @@ class Fr5DirectDriver(Node):
         robot_ip = self.declare_parameter("robot_ip", "192.168.58.2").value
         sdk_path = self.declare_parameter(
             "sdk_python_path",
-            "/home/zhj/projects/fr5_learning/vendor/fairino-python-sdk/linux",
+            os.environ.get("FR5_SDK_PYTHON_PATH", ""),
         ).value
+        if not sdk_path:
+            raise RuntimeError(
+                "sdk_python_path is empty; run the deployment setup or set "
+                "FR5_SDK_PYTHON_PATH"
+            )
         self._rate_hz = float(self.declare_parameter("update_rate_hz", 100.0).value)
         self._motion_rate_hz = float(
             self.declare_parameter("motion_rate_hz", 25.0).value
@@ -216,6 +222,16 @@ class Fr5DirectDriver(Node):
         self.create_service(Trigger, "/traction/return_zero_pose", self._on_return_zero)
         self.create_service(
             Trigger,
+            "/traction/hardware_emergency_stop",
+            self._on_hardware_emergency_stop,
+        )
+        self.create_service(
+            Trigger,
+            "/traction/hardware_emergency_recover",
+            self._on_hardware_emergency_recover,
+        )
+        self.create_service(
+            Trigger,
             "/traction/return_pretraction_pose",
             self._on_return_pretraction,
         )
@@ -273,6 +289,7 @@ class Fr5DirectDriver(Node):
         self._pretraction_joints = None
         self._healthy = True
         self._hardware_fault_latched = False
+        self._hardware_emergency_latched = False
         self._last_tick = time.monotonic()
         self._feedback_stop_event = threading.Event()
         self._feedback_thread = threading.Thread(
@@ -336,6 +353,7 @@ class Fr5DirectDriver(Node):
             TractionCommand.TRACTION,
             TractionCommand.RELEASING,
             TractionCommand.DRAG,
+            TractionCommand.POSITIONING,
         ):
             self._traction_mode = message.mode
 
@@ -348,7 +366,10 @@ class Fr5DirectDriver(Node):
     def _on_switch(self, request, response):
         activate, deactivate = self._switch_lists(request)
         if "cartesian_velocity_controller" in activate and (
-            self._return_active or self._auto_tension_active or self._hardware_fault_latched
+            self._return_active
+            or self._auto_tension_active
+            or self._hardware_fault_latched
+            or self._hardware_emergency_latched
         ):
             response.ok = False
             return response
@@ -382,6 +403,88 @@ class Fr5DirectDriver(Node):
         response.ok = True
         return response
 
+    def _run_hardware_command(self, command, *args):
+        """Run one bounded FR5 state command and keep later commands possible."""
+        try:
+            return int(getattr(self._robot, command)(*args)), ""
+        except Exception as error:  # noqa: BLE001 - vendor exceptions vary.
+            self.get_logger().error(f"{command} failed: {error}")
+            self._reset_command_proxy()
+            return None, str(error)
+
+    def _on_hardware_emergency_stop(self, _request, response):
+        # Latch locally before the first RPC so no later controller request can
+        # restart motion while the hardware stop sequence is still executing.
+        self._hardware_emergency_latched = True
+        self._twist = Twist()
+        self._traction_mode = TractionCommand.DISABLED
+        self._return_active = False
+        self._return_target_pose = None
+        self._auto_tension_active = False
+
+        results = []
+        for command, args in (
+            ("StopMotion", ()),
+            ("RobotEnable", (0,)),
+            ("Mode", (1,)),
+        ):
+            code, detail = self._run_hardware_command(command, *args)
+            results.append((command, code, detail))
+        self._servo_enabled = False
+
+        disable_code = next(code for name, code, _ in results if name == "RobotEnable")
+        if disable_code == 0:
+            warnings = [
+                f"{name}={code if code is not None else detail}"
+                for name, code, detail in results
+                if code != 0
+            ]
+            response.success = True
+            response.message = "FR5 motion stopped and robot power enable disabled."
+            if warnings:
+                response.message += " Additional results: " + ", ".join(warnings)
+            return response
+
+        response.success = False
+        response.message = "FR5 emergency stop could not confirm RobotEnable(0): " + ", ".join(
+            f"{name}={code if code is not None else detail}"
+            for name, code, detail in results
+        )
+        return response
+
+    def _on_hardware_emergency_recover(self, _request, response):
+        if self._servo_enabled or self._return_active or self._auto_tension_active:
+            response.success = False
+            response.message = "FR5 emergency recovery rejected while motion is active."
+            return response
+
+        results = []
+        for command, args in (
+            ("ResetAllError", ()),
+            ("Mode", (0,)),
+            ("RobotEnable", (1,)),
+        ):
+            code, detail = self._run_hardware_command(command, *args)
+            results.append((command, code, detail))
+
+        enable_code = next(code for name, code, _ in results if name == "RobotEnable")
+        mode_code = next(code for name, code, _ in results if name == "Mode")
+        reset_code = next(code for name, code, _ in results if name == "ResetAllError")
+        if enable_code == 0 and mode_code == 0 and reset_code == 0:
+            self._hardware_emergency_latched = False
+            self._hardware_fault_latched = False
+            self._publish_health(True)
+            response.success = True
+            response.message = "FR5 errors cleared, automatic mode selected, and robot enabled."
+            return response
+
+        response.success = False
+        response.message = "FR5 emergency recovery failed: " + ", ".join(
+            f"{name}={code if code is not None else detail}"
+            for name, code, detail in results
+        )
+        return response
+
     def _on_set_zero(self, _request, response):
         response.success = False
         response.message = "The return-zero pose is fixed by the project configuration."
@@ -393,6 +496,7 @@ class Fr5DirectDriver(Node):
         if (
             self._servo_enabled
             or self._hardware_fault_latched
+            or self._hardware_emergency_latched
         ):
             self.get_logger().warning(
                 "Slack calibration ignored because FR5 motion or feedback is active."
@@ -425,7 +529,11 @@ class Fr5DirectDriver(Node):
             response.success = False
             response.message = "Return rejected: servo motion is busy."
             return response
-        if self._latest_pose is None or self._hardware_fault_latched:
+        if (
+            self._latest_pose is None
+            or self._hardware_fault_latched
+            or self._hardware_emergency_latched
+        ):
             response.success = False
             response.message = "Return rejected: FR5 feedback is unavailable."
             return response
@@ -491,6 +599,7 @@ class Fr5DirectDriver(Node):
         if (
             self._servo_enabled
             or self._hardware_fault_latched
+            or self._hardware_emergency_latched
             or self._latest_pose is None
             or self._latest_wrench is None
         ):
@@ -584,8 +693,21 @@ class Fr5DirectDriver(Node):
         return joints, pose, speeds, wrench
 
     def _servo_cart(self, mode, desc_pos):
+        # The FR5 XML-RPC parser does not accept denormal floating-point
+        # values serialized in scientific notation.  A velocity command that
+        # is already far below the robot's resolution has no physical effect,
+        # so transmit it as an exact zero instead of allowing a long
+        # deceleration tail to become e-318 and fault the controller.
+        if len(desc_pos) != 6:
+            raise ValueError("ServoCart desc_pos must contain six values")
+        sanitized_desc_pos = []
+        for value in desc_pos:
+            value = float(value)
+            if not math.isfinite(value):
+                raise ValueError("ServoCart desc_pos must contain finite values")
+            sanitized_desc_pos.append(0.0 if abs(value) < 1e-9 else value)
         started_at = time.monotonic()
-        code = self._robot.ServoCart(mode, desc_pos, cmdT=0.008)
+        code = self._robot.ServoCart(mode, sanitized_desc_pos, cmdT=0.008)
         elapsed = time.monotonic() - started_at
         if elapsed > 0.05:
             self.get_logger().warning(

@@ -36,6 +36,23 @@ class ControlConfigurationContractTest(unittest.TestCase):
         self.assertIn('"allow_existing_force_reference": True', launch)
         self.assertIn('"return_zero_pose": 8.0', bridge)
 
+    def test_emergency_button_controls_real_fr5_enable_state(self):
+        driver = (ROS / "scripts" / "fr5_direct_driver_node.py").read_text(
+            encoding="utf-8"
+        )
+        bridge = (ROOT / "backend" / "ros_bridge.py").read_text(encoding="utf-8")
+        app = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn('"/traction/hardware_emergency_stop"', driver)
+        self.assertIn('"/traction/hardware_emergency_recover"', driver)
+        self.assertIn('(\"StopMotion\", ())', driver)
+        self.assertIn('(\"RobotEnable\", (0,))', driver)
+        self.assertIn('(\"ResetAllError\", ())', driver)
+        self.assertIn('(\"RobotEnable\", (1,))', driver)
+        self.assertIn('"hardware_emergency_stop"', bridge)
+        self.assertIn('"hardware_emergency_recover"', bridge)
+        self.assertIn('_call("hardware_emergency_stop")', app)
+        self.assertIn('_call("hardware_emergency_recover")', app)
+
     def test_assisted_drag_uses_tool_frame_commands_and_independent_signs(self):
         driver = (ROS / "scripts" / "fr5_direct_driver_node.py").read_text(encoding="utf-8")
         controller = (ROS / "src" / "traction_controller_node.cpp").read_text(encoding="utf-8")
@@ -49,9 +66,20 @@ class ControlConfigurationContractTest(unittest.TestCase):
         self.assertIn("drag_sign_x_ * wrench.x", core)
         self.assertIn("drag_sign_y_ * wrench.y", core)
         self.assertIn("drag_sign_z_ * wrench.z", core)
-        self.assertIn("drag_sign_x: 1.0", parameters)
-        self.assertIn("drag_sign_y: 1.0", parameters)
+        self.assertIn("drag_sign_x: -1.0", parameters)
+        self.assertIn("drag_sign_y: -1.0", parameters)
         self.assertIn("drag_sign_z: 1.0", parameters)
+
+    def test_traction_flips_only_tool_z_before_base_frame_output(self):
+        controller = (ROS / "src" / "traction_controller_node.cpp").read_text(encoding="utf-8")
+        parameters = (ROS / "config" / "traction_params.yaml").read_text(encoding="utf-8")
+        self.assertIn("rotate_tool_to_base", controller)
+        self.assertIn("traction_sign_x_ * tool_velocity.x", controller)
+        self.assertIn("traction_sign_y_ * tool_velocity.y", controller)
+        self.assertIn("traction_sign_z_ * tool_velocity.z", controller)
+        self.assertIn("traction_sign_x: 1.0", parameters)
+        self.assertIn("traction_sign_y: 1.0", parameters)
+        self.assertIn("traction_sign_z: -1.0", parameters)
 
     def test_all_three_modes_have_ros_interfaces(self):
         service = (ROS / "srv" / "SetOperationMode.srv").read_text(encoding="utf-8")
@@ -60,13 +88,55 @@ class ControlConfigurationContractTest(unittest.TestCase):
             self.assertIn(name, service)
             self.assertIn(name, status)
 
+    def test_position_mode_has_independent_predictive_control_and_diagnostics(self):
+        command = (ROS / "msg" / "TractionCommand.msg").read_text(encoding="utf-8")
+        diagnostics = (ROS / "msg" / "PositionControlDiagnostics.msg").read_text(
+            encoding="utf-8"
+        )
+        controller = (ROS / "src" / "traction_controller_core.cpp").read_text(
+            encoding="utf-8"
+        )
+        manager = (ROS / "src" / "traction_manager_node.cpp").read_text(
+            encoding="utf-8"
+        )
+        parameters = (ROS / "config" / "traction_params.yaml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("POSITIONING=5", command)
+        self.assertIn("predicted_force_n", diagnostics)
+        self.assertIn("estimated_stiffness_n_per_m", diagnostics)
+        self.assertIn("position_controller_.update", controller)
+        self.assertIn("position_config.maximum_speed_mps = max_speed_mps_", (
+            ROS / "src" / "traction_controller_node.cpp"
+        ).read_text(encoding="utf-8"))
+        self.assertIn("TractionCommand::POSITIONING", manager)
+        self.assertIn("PositionControlDiagnostics::SETTLING", manager)
+        self.assertIn("position_tolerance_n: 0.20", parameters)
+        self.assertIn("traction_max_speed_mps: 0.020", parameters)
+        self.assertIn("position_far_gain_mps_per_n: 0.0060", parameters)
+        self.assertIn("position_near_gain_mps_per_n: 0.0045", parameters)
+        self.assertIn("position_prediction_horizon_s: 0.15", parameters)
+        self.assertIn("position_settling_speed_mps: 0.0005", parameters)
+
+    def test_constant_force_uses_independent_predictive_control(self):
+        controller = (ROS / "src" / "traction_controller_core.cpp").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("continuous_force_controller_.update", controller)
+        self.assertIn("constant_force_config(", controller)
+        self.assertIn("config.maximum_speed_mps = maximum_speed_mps", controller)
+        self.assertIn(
+            "smooth_velocity(desired_velocity, dt_s, false)", controller
+        )
+
     def test_web_runtime_defaults_to_current_overlay(self):
         launcher = (ROOT / "run_workstation.sh").read_text(encoding="utf-8")
         preflight = (ROOT / "scripts" / "preflight_check.sh").read_text(encoding="utf-8")
         self.assertIn('$PROJECT_DIR/ros2_overlay', launcher)
         self.assertIn('$PROJECT_DIR/ros2_overlay', preflight)
-        self.assertIn('install/local_setup.bash', launcher)
-        self.assertIn('runtimes/directional_correction_v1', launcher)
+        self.assertIn('install/setup.bash', launcher)
+        self.assertNotIn('/home/zhj/', launcher)
+        self.assertNotIn('runtimes/directional_correction_v1', launcher)
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@
 #include "builtin_interfaces/msg/time.hpp"
 #include "controller_manager_msgs/srv/switch_controller.hpp"
 #include "fairino_msgs/msg/pose_twist.hpp"
+#include "fr_traction/msg/position_control_diagnostics.hpp"
 #include "fr_traction/msg/traction_command.hpp"
 #include "fr_traction/msg/traction_history.hpp"
 #include "fr_traction/msg/traction_record_summary.hpp"
@@ -131,6 +132,8 @@ public:
       "velocity_command_topic", std::string("/traction/controller_velocity_cmd"));
     velocity_vector_topic_ = declare_parameter(
       "velocity_vector_topic", std::string("/traction/controller_velocity_vector"));
+    position_diagnostics_topic_ = declare_parameter(
+      "position_diagnostics_topic", std::string("/traction/position_control_diagnostics"));
     corrected_wrench_topic_ = declare_parameter(
       "corrected_wrench_topic", std::string("/traction/corrected_wrench"));
     ui_heartbeat_topic_ = declare_parameter(
@@ -201,6 +204,21 @@ public:
       [this](const geometry_msgs::msg::Twist::SharedPtr message) {
         const Vec3 velocity{message->linear.x, message->linear.y, message->linear.z};
         if (finite(velocity)) {controller_velocity_base_ = velocity;}
+      });
+    position_diagnostics_subscription_ =
+      create_subscription<msg::PositionControlDiagnostics>(
+      position_diagnostics_topic_, rclcpp::QoS(10).reliable(),
+      [this](const msg::PositionControlDiagnostics::SharedPtr message) {
+        if (message->phase <= msg::PositionControlDiagnostics::SETTLING &&
+        std::isfinite(message->force_rate_nps) &&
+        std::isfinite(message->predicted_force_n) &&
+        std::isfinite(message->estimated_stiffness_n_per_m) &&
+        std::isfinite(message->raw_velocity_mps) &&
+        std::isfinite(message->limited_velocity_mps))
+        {
+          position_diagnostics_ = *message;
+          last_position_diagnostics_steady_at_ = std::chrono::steady_clock::now();
+        }
       });
     heartbeat_subscription_ = create_subscription<std_msgs::msg::Empty>(
       ui_heartbeat_topic_, rclcpp::QoS(10).reliable(),
@@ -713,13 +731,13 @@ private:
     request_controller_stop();
     finalize_session();
     response->success = true;
-    response->message =
-      "Software emergency stop latched; it does not replace the physical emergency stop.";
+    response->message = "Emergency stop latched after the FR5 hardware stop request.";
   }
 
   void handle_reset_fault(const std_srvs::srv::Trigger::Response::SharedPtr response)
   {
     const auto state = state_machine_.state();
+    const bool emergency_recovery = state == TractionState::EMERGENCY_STOP;
     if (state != TractionState::FAULT && state != TractionState::EMERGENCY_STOP) {
       response->success = false;
       response->message = state_and_allowed("reset_fault only from FAULT or EMERGENCY_STOP");
@@ -731,7 +749,7 @@ private:
     {
       response->success = false;
       response->message =
-        "Reset rejected: controller must be reactivated, disabled, and at zero velocity with fresh data.";
+        "Reset rejected: FR5 must be enabled, stationary, and reporting fresh data.";
       return;
     }
     if (!transition(TractionState::READY)) {
@@ -742,7 +760,9 @@ private:
     fault_code_.clear();
     stop_reason_.clear();
     response->success = true;
-    response->message = "Fault reset. Prepare must be called before another motion.";
+    response->message = emergency_recovery ?
+      "Emergency stop recovered. Initial calibration is required before motion." :
+      "Fault reset. Initial calibration is required before motion.";
   }
 
   void handle_set_target(
@@ -894,6 +914,10 @@ private:
       "direction_correction_velocity_mps,combined_velocity_mps,"
       "direction_correction_displacement_m,direction_vx,direction_vy,direction_vz,"
       "command_vx,command_vy,command_vz,"
+      "position_phase,position_force_rate_nps,position_predicted_force_n,"
+      "position_stiffness_n_per_m,position_raw_velocity_mps,"
+      "position_limited_velocity_mps,position_speed_limited,"
+      "position_acceleration_limited,"
       "stop_reason\n";
     record_stream_ << std::setprecision(10);
     session_active_ = true;
@@ -901,6 +925,8 @@ private:
     session_force_sum_ = 0.0;
     session_force_max_ = 0.0;
     session_sample_count_ = 0;
+    position_diagnostics_ = msg::PositionControlDiagnostics();
+    last_position_diagnostics_steady_at_ = {};
   }
 
   Vec3 active_direction() const
@@ -1217,7 +1243,22 @@ private:
       calibration_samples_, static_cast<std::size_t>(calibration_min_samples_),
       calibration_max_angle_p95_deg_);
     if (!result.success) {
-      enter_fault("DIRECTION_CALIBRATION_FAILED", result.reason);
+      // Releasing or moving the band during the short direction-sampling
+      // window is an ordinary operator retry, not a robot/device fault.
+      // Return to passive manual setup and let the operator tension the band
+      // and confirm direction again without resetting the whole workstation.
+      calibration_samples_.clear();
+      calibration_started_at_.reset();
+      calibration_requested_ = false;
+      temporary_direction_valid_ = false;
+      temporary_direction_ = {};
+      direction_locked_ = false;
+      locked_direction_ = {};
+      target_force_configured_ = false;
+      transition(TractionState::MANUAL_SETUP);
+      RCLCPP_WARN(
+        get_logger(), "Direction calibration was not retained (%s); waiting for another attempt.",
+        result.reason.c_str());
       return;
     }
     locked_direction_ = result.direction;
@@ -1388,14 +1429,20 @@ private:
           break;
         }
         if (operation_mode_ == OperationMode::POSITION_TRACTION) {
-          current_command_target_n_ = ramped_command_target(dt_s);
+          // Position traction has its own predictive velocity controller. It
+          // receives the final target directly and performs fast approach,
+          // early braking and fine correction without inheriting the virtual
+          // momentum used by continuous constant-force traction.
+          current_command_target_n_ = target_force_n_;
           publish_command(
-            msg::TractionCommand::TRACTION, locked_direction_, current_command_target_n_,
+            msg::TractionCommand::POSITIONING, locked_direction_, current_command_target_n_,
             msg::TractionCommand::DIRECTION_CORRECTION_OFF);
           const double force_error = std::abs(current_metrics().actual_force_n - target_force_n_);
-          const bool target_command_reached =
-            std::abs(current_command_target_n_ - target_force_n_) <= 1e-9;
-          if (target_command_reached && force_error <= position_reached_tolerance_n_) {
+          const bool diagnostics_fresh = fresh(
+            last_position_diagnostics_steady_at_, motion_pause_timeout_s_);
+          const bool controller_settled = diagnostics_fresh &&
+            position_diagnostics_.phase == msg::PositionControlDiagnostics::SETTLING;
+          if (force_error <= position_reached_tolerance_n_ && controller_settled) {
             if (!position_reached_started_at_) {position_reached_started_at_ = current_time;}
             if ((current_time - *position_reached_started_at_).seconds() >=
               position_reached_confirm_s_)
@@ -1509,7 +1556,16 @@ private:
                    << lateral_correction_velocity_base_.y << ','
                    << lateral_correction_velocity_base_.z << ','
                    << controller_velocity_base_.x << ',' << controller_velocity_base_.y << ','
-                   << controller_velocity_base_.z << ',' << stop_reason_ << '\n';
+                   << controller_velocity_base_.z << ','
+                   << static_cast<unsigned>(position_diagnostics_.phase) << ','
+                   << position_diagnostics_.force_rate_nps << ','
+                   << position_diagnostics_.predicted_force_n << ','
+                   << position_diagnostics_.estimated_stiffness_n_per_m << ','
+                   << position_diagnostics_.raw_velocity_mps << ','
+                   << position_diagnostics_.limited_velocity_mps << ','
+                   << (position_diagnostics_.speed_limited ? 1 : 0) << ','
+                   << (position_diagnostics_.acceleration_limited ? 1 : 0) << ','
+                   << stop_reason_ << '\n';
     session_force_sum_ += metrics.actual_force_n;
     session_force_max_ = std::max(session_force_max_, metrics.actual_force_n);
     ++session_sample_count_;
@@ -1703,7 +1759,7 @@ private:
       case TractionState::RELEASING: status.message = "已停止力控，正在返回牵引起始位置"; break;
       case TractionState::COMPLETED: status.message = "牵引完成"; break;
       case TractionState::FAULT: status.message = "设备故障；确认安全后重新初始校准"; break;
-      case TractionState::EMERGENCY_STOP: status.message = "已急停；确认安全后重新初始校准"; break;
+      case TractionState::EMERGENCY_STOP: status.message = "已急停并下使能；确认后点击急停恢复"; break;
       case TractionState::PRETENSION: status.message = "正在自动预张紧"; break;
       case TractionState::DRAGGING: status.message = "省力拖拽中；施力即动，松手即停"; break;
       case TractionState::POSITION_HOLD: status.message = "已到位，机械臂保持当前位置"; break;
@@ -1763,6 +1819,7 @@ private:
   std::string hardware_health_topic_;
   std::string velocity_command_topic_;
   std::string velocity_vector_topic_;
+  std::string position_diagnostics_topic_;
   std::string corrected_wrench_topic_;
   std::string ui_heartbeat_topic_;
   std::string slack_calibration_topic_;
@@ -1816,6 +1873,7 @@ private:
   std::chrono::steady_clock::time_point last_controller_health_steady_at_{};
   std::chrono::steady_clock::time_point last_hardware_health_steady_at_{};
   std::chrono::steady_clock::time_point last_ui_heartbeat_steady_at_{};
+  std::chrono::steady_clock::time_point last_position_diagnostics_steady_at_{};
   std::optional<rclcpp::Time> pretension_detection_started_at_;
   std::optional<rclcpp::Time> pretension_started_at_;
   std::optional<rclcpp::Time> calibration_started_at_;
@@ -1830,6 +1888,7 @@ private:
   double current_command_target_n_ = 0.0;
   double velocity_command_mps_ = 0.0;
   Vec3 controller_velocity_base_;
+  msg::PositionControlDiagnostics position_diagnostics_;
   std::string fault_code_;
   std::string stop_reason_;
 
@@ -1856,6 +1915,8 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr hardware_health_subscription_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr velocity_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr velocity_vector_subscription_;
+  rclcpp::Subscription<msg::PositionControlDiagnostics>::SharedPtr
+    position_diagnostics_subscription_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr heartbeat_subscription_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr prepare_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr calibrate_service_;

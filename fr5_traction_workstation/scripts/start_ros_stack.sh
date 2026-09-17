@@ -6,7 +6,8 @@ set -eo pipefail
 # mode for the actual launch and parameter handling below.
 source /opt/ros/humble/setup.bash
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FR5_MODEL_WS="/home/zhj/projects/fr5_platform_ws/runtimes/directional_correction_v1"
+WORKSPACE_ROOT="$(cd "$PROJECT_DIR/.." && pwd)"
+FR5_SDK_PYTHON_PATH="${FR5_SDK_PYTHON_PATH:-$PROJECT_DIR/vendor/fairino-python-sdk/linux}"
 VERSION_CHOICE="${1:-}"
 
 if [[ -z "$VERSION_CHOICE" ]]; then
@@ -21,7 +22,7 @@ VERSION_CHOICE="${VERSION_CHOICE:-2}"
 
 case "$VERSION_CHOICE" in
   1)
-    ROS_WS="/home/zhj/projects/fr5_platform_ws/runtimes/force_stable_v1"
+    ROS_WS="${FR5_BASELINE_WS:-$WORKSPACE_ROOT/runtimes/force_stable_v1}"
     VERSION_LABEL="版本1：稳定基线"
     ;;
   2)
@@ -40,15 +41,12 @@ if [[ ! -f "$ROS_WS/install/setup.bash" ]]; then
   exit 2
 fi
 if [[ "$VERSION_CHOICE" == "2" ]]; then
-  if [[ ! -f "$FR5_MODEL_WS/install/setup.bash" ]]; then
-    echo "FR5机器人模型基础工作区不存在：$FR5_MODEL_WS" >&2
+  if [[ ! -f "$FR5_SDK_PYTHON_PATH/fairino/Robot.py" ]]; then
+    echo "未找到法奥 Python SDK：$FR5_SDK_PYTHON_PATH" >&2
+    echo "请先运行：bash $PROJECT_DIR/scripts/tablet_setup_env.sh" >&2
     exit 2
   fi
-  # The archived runtime supplies the FR5 URDF/MoveIt configuration. Load the
-  # current project's local overlay afterwards so its new interfaces and
-  # executables override only fr_traction without hiding the robot model.
-  source "$FR5_MODEL_WS/install/setup.bash"
-  source "$ROS_WS/install/local_setup.bash"
+  source "$ROS_WS/install/setup.bash"
 else
   source "$ROS_WS/install/setup.bash"
 fi
@@ -96,6 +94,7 @@ fi
 
 exec ros2 launch fr_traction traction_system.launch.py \
   robot_ip:="${FR5_ROBOT_IP:-192.168.58.2}" \
+  sdk_python_path:="$FR5_SDK_PYTHON_PATH" \
   zero_sensor_on_activate:="${FR5_ZERO_SENSOR_ON_ACTIVATE:-true}" \
   use_web_bridge:=false \
   use_rviz:="${FR5_USE_RVIZ:-false}" \

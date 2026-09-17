@@ -110,61 +110,8 @@ link = addJoint(link, [0, 0, 0.102], [-Math.PI / 2, 0, 0]);
 joints.push(link);
 meshLoads.push(addMesh(link, "wrist3_link", jointMaterial));
 
-const toolRoot = new THREE.Group();
-link.add(toolRoot);
-// The viewer shows the FR5 itself. The real sensor, flange and belt are not
-// part of the robot body, so they are deliberately not drawn as a fake tool.
-const tractionPoint = new THREE.Object3D();
-toolRoot.add(tractionPoint);
-
-const forceArrow = new THREE.ArrowHelper(
-  new THREE.Vector3(0, 0, 1),
-  new THREE.Vector3(),
-  0.1,
-  0xef4444,
-  0.035,
-  0.018,
-);
-const movementArrow = new THREE.ArrowHelper(
-  new THREE.Vector3(0, 0, 1),
-  new THREE.Vector3(),
-  0.1,
-  0x22c55e,
-  0.035,
-  0.018,
-);
-forceArrow.visible = false;
-movementArrow.visible = false;
-robotRoot.add(forceArrow, movementArrow);
-
-function placeArrow(arrow, vector, length) {
-  if (!tractionPoint) return;
-  // The display root is rotated 180 degrees for the chosen camera view.  The
-  // incoming force/motion vectors are in base_link, so convert them into the
-  // model's local frame before applying the arrow direction.
-  const direction = new THREE.Vector3(...vector).applyQuaternion(
-    robotRoot.quaternion.clone().invert(),
-  );
-  if (direction.lengthSq() < 1e-10) {
-    arrow.visible = false;
-    return;
-  }
-  const origin = new THREE.Vector3();
-  tractionPoint.getWorldPosition(origin);
-  robotRoot.worldToLocal(origin);
-  arrow.position.copy(origin);
-  arrow.setDirection(direction.normalize());
-  arrow.setLength(length, Math.min(length * 0.28, 0.045), Math.min(length * 0.15, 0.025));
-  arrow.visible = true;
-}
-
-function updateForceVector(forceVector, movementVector = [0, 0, 0]) {
-  window.latestForceVector = forceVector;
-  window.latestMovementVector = movementVector;
-  const forceLength = new THREE.Vector3(...forceVector).length();
-  placeArrow(forceArrow, forceVector, Math.min(0.42, 0.05 + forceLength * 0.004));
-  placeArrow(movementArrow, movementVector, 0.14);
-}
+// Keep the clinician view focused on the real FR5 posture. Force arrows and
+// virtual end tools are deliberately omitted from this compact display.
 
 function updateJoints(degrees) {
   if (!Array.isArray(degrees) || degrees.length !== 6) return;
@@ -179,7 +126,6 @@ function updateJoints(degrees) {
 }
 
 window.updateFR5Joints = updateJoints;
-window.updateForceVector = updateForceVector;
 if (window.latestFR5Joints) updateJoints(window.latestFR5Joints);
 
 Promise.all(meshLoads)
