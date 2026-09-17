@@ -90,7 +90,11 @@ python -m pip install -r "$PROJECT_DIR/requirements.txt"
 
 echo "[5/6] 编译 ROS 2 工作区"
 # shellcheck disable=SC1091
+# Humble's generated setup reads AMENT_TRACE_SETUP_FILES before defining it.
+# Temporarily disable nounset exactly as the runtime launchers do.
+set +u
 source /opt/ros/humble/setup.bash
+set -u
 if [[ ! -e /etc/ros/rosdep/sources.list.d/20-default.list ]]; then
   sudo rosdep init
 fi
