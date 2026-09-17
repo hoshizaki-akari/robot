@@ -13,9 +13,16 @@ DESKTOP_FILE="$HOME/Desktop/骨伤牵引机器人工作站.desktop"
 # The target machine is deployed on a mainland-China network. Prefix public
 # GitHub URLs with a streaming mirror by default; set GITHUB_MIRROR_PREFIX to
 # an empty string before running this script when direct GitHub is available.
-GITHUB_MIRROR_PREFIX="${GITHUB_MIRROR_PREFIX-https://ghfast.top/}"
-OFFICIAL_ROS2_REPO="${GITHUB_MIRROR_PREFIX}https://github.com/FAIR-INNOVATION/frcobot_ros2.git"
-OFFICIAL_SDK_REPO="${GITHUB_MIRROR_PREFIX}https://github.com/FAIR-INNOVATION/fairino-python-sdk.git"
+GITHUB_MIRROR_PREFIX="${GITHUB_MIRROR_PREFIX-https://gh-proxy.com/}"
+if [[ -n "$GITHUB_MIRROR_PREFIX" ]]; then
+  OFFICIAL_ROS2_REPO="${GITHUB_MIRROR_PREFIX}https://github.com/FAIR-INNOVATION/frcobot_ros2.git"
+  OFFICIAL_SDK_REPO="${GITHUB_MIRROR_PREFIX}https://github.com/FAIR-INNOVATION/fairino-python-sdk.git"
+else
+  # An empty mirror prefix explicitly selects the user's authenticated SSH
+  # connection (normally github.com -> ssh.github.com:443 in ~/.ssh/config).
+  OFFICIAL_ROS2_REPO="git@github.com:FAIR-INNOVATION/frcobot_ros2.git"
+  OFFICIAL_SDK_REPO="git@github.com:FAIR-INNOVATION/fairino-python-sdk.git"
+fi
 
 if [[ ! -r /etc/os-release ]]; then
   echo "无法识别操作系统。" >&2
