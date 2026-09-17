@@ -13,7 +13,7 @@ DESKTOP_FILE="$HOME/Desktop/骨伤牵引机器人工作站.desktop"
 # The target machine is deployed on a mainland-China network. Prefix public
 # GitHub URLs with a streaming mirror by default; set GITHUB_MIRROR_PREFIX to
 # an empty string before running this script when direct GitHub is available.
-GITHUB_MIRROR_PREFIX="${GITHUB_MIRROR_PREFIX-https://gh-proxy.com/}"
+GITHUB_MIRROR_PREFIX="${GITHUB_MIRROR_PREFIX-https://ghfast.top/}"
 OFFICIAL_ROS2_REPO="${GITHUB_MIRROR_PREFIX}https://github.com/FAIR-INNOVATION/frcobot_ros2.git"
 OFFICIAL_SDK_REPO="${GITHUB_MIRROR_PREFIX}https://github.com/FAIR-INNOVATION/fairino-python-sdk.git"
 

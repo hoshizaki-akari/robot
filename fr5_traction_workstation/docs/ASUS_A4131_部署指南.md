@@ -23,13 +23,17 @@
 
 ```bash
 mkdir -p ~/projects
-git clone --branch feat/multi-mode-traction --single-branch \
-  https://gh-proxy.com/https://github.com/hoshizaki-akari/robot.git \
+git clone --depth 1 --filter=blob:none --sparse \
+  --branch feat/multi-mode-traction --single-branch \
+  https://ghfast.top/https://github.com/hoshizaki-akari/robot.git \
   ~/projects/fr5_platform_ws
+git -C ~/projects/fr5_platform_ws sparse-checkout set fr5_traction_workstation
 cd ~/projects/fr5_platform_ws/fr5_traction_workstation
 ```
 
-该地址只为公开 GitHub 仓库增加下载转发，不需要登录或填写令牌。若此前已经克隆过，
+其中 `--depth 1 --filter=blob:none --sparse` 会只获取最新版和本工作站目录，避免下载
+大型仓库中的其他项目。该地址只为公开 GitHub 仓库增加下载转发，不需要登录或填写
+令牌。若此前已经克隆过，
 不要重复克隆，改为：
 
 ```bash
