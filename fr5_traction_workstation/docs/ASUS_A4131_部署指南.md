@@ -24,12 +24,13 @@
 ```bash
 mkdir -p ~/projects
 git clone --branch feat/multi-mode-traction --single-branch \
-  https://github.com/hoshizaki-akari/robot.git \
+  https://gh-proxy.com/https://github.com/hoshizaki-akari/robot.git \
   ~/projects/fr5_platform_ws
 cd ~/projects/fr5_platform_ws/fr5_traction_workstation
 ```
 
-若此前已经克隆过，不要重复克隆，改为：
+该地址只为公开 GitHub 仓库增加下载转发，不需要登录或填写令牌。若此前已经克隆过，
+不要重复克隆，改为：
 
 ```bash
 cd ~/projects/fr5_platform_ws
