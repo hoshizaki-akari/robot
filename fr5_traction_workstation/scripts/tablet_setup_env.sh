@@ -9,7 +9,11 @@ ROS_WS="$PROJECT_DIR/ros2_overlay"
 VENV_DIR="$WORKSPACE_ROOT/.venv"
 SDK_ROOT="$PROJECT_DIR/vendor/fairino-python-sdk"
 DESCRIPTION_ROOT="$ROS_WS/src/fairino_description"
-DESKTOP_FILE="$HOME/Desktop/骨伤牵引机器人工作站.desktop"
+DESKTOP_DIR="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+if [[ -z "$DESKTOP_DIR" || "$DESKTOP_DIR" == "$HOME" ]]; then
+  DESKTOP_DIR="$HOME/Desktop"
+fi
+DESKTOP_FILE="$DESKTOP_DIR/骨伤牵引机器人工作站.desktop"
 # The target machine is deployed on a mainland-China network. Prefix public
 # GitHub URLs with a streaming mirror by default; set GITHUB_MIRROR_PREFIX to
 # an empty string before running this script when direct GitHub is available.
@@ -47,6 +51,7 @@ echo "[1/6] 安装编译和桌面启动所需工具"
 sudo apt-get update
 sudo apt-get install -y \
   build-essential curl git psmisc python3-pip python3-rosdep python3-venv \
+  xdg-user-dirs \
   python3-colcon-common-extensions zenity \
   ros-humble-ament-cmake ros-humble-ament-index-python \
   ros-humble-controller-manager-msgs ros-humble-geometry-msgs \
@@ -111,7 +116,7 @@ rosdep install --from-paths \
 )
 
 echo "[6/6] 创建桌面双击启动图标"
-mkdir -p "$HOME/Desktop"
+mkdir -p "$DESKTOP_DIR"
 cat > "$DESKTOP_FILE" <<EOF
 [Desktop Entry]
 Type=Application
