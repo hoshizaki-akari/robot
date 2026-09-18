@@ -295,10 +295,20 @@ class Fr5DirectDriver(Node):
         self._feedback_thread = threading.Thread(
             target=self._feedback_loop, name="fr5-feedback", daemon=True
         )
-        self.create_timer(1.0 / self._rate_hz, self._tick)
+        # Feedback is collected by the independent feedback thread at
+        # update_rate_hz.  Motion must use its own configured cadence; tying
+        # it to the feedback rate made 50 Hz Cartesian servo commands run at
+        # only 25 Hz, which was felt as discrete steps during assisted drag.
+        self._motion_timer = self.create_timer(
+            1.0 / self._motion_rate_hz, self._tick
+        )
         self._publish_health(True)
         self._feedback_thread.start()
-        self.get_logger().info("FR5 direct driver connected; SDK owner is unique.")
+        self.get_logger().info(
+            "FR5 direct driver connected; SDK owner is unique. "
+            f"Feedback {self._rate_hz:.1f} Hz, Cartesian servo "
+            f"{self._motion_rate_hz:.1f} Hz."
+        )
 
     def _publish_health(self, value):
         self._healthy = bool(value)
