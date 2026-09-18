@@ -25,10 +25,12 @@ public:
   TractionControllerNode()
   : Node("traction_controller"),
     force_filter_(5.0),
+    drag_force_filter_(12.0),
     core_(10.0, 80.0, 0.15, 0.020, 0.02)
   {
     control_rate_hz_ = declare_parameter("control_rate_hz", 100.0);
     force_filter_cutoff_hz_ = declare_parameter("force_filter_cutoff_hz", 5.0);
+    drag_force_filter_cutoff_hz_ = declare_parameter("drag_force_filter_cutoff_hz", 12.0);
     integral_gain_s_inv_ = declare_parameter("integral_gain_s_inv", 0.25);
     integral_limit_n_ = declare_parameter("integral_limit_n", 3.0);
     virtual_mass_ = declare_parameter("virtual_mass", 10.0);
@@ -41,6 +43,9 @@ public:
     drag_release_confirm_s_ = declare_parameter("drag_release_confirm_s", 0.15);
     drag_gain_mps_per_n_ = declare_parameter("drag_gain_mps_per_n", 0.00625);
     drag_max_speed_mps_ = declare_parameter("drag_max_speed_mps", 0.050);
+    drag_max_acceleration_mps2_ = declare_parameter(
+      "drag_max_acceleration_mps2", 0.60);
+    drag_max_jerk_mps3_ = declare_parameter("drag_max_jerk_mps3", 12.0);
     drag_sign_x_ = declare_parameter("drag_sign_x", -1.0);
     drag_sign_y_ = declare_parameter("drag_sign_y", -1.0);
     drag_sign_z_ = declare_parameter("drag_sign_z", 1.0);
@@ -97,6 +102,7 @@ public:
 
     if (!std::isfinite(control_rate_hz_) || control_rate_hz_ <= 0.0 ||
       !std::isfinite(force_filter_cutoff_hz_) || force_filter_cutoff_hz_ <= 0.0 ||
+      !std::isfinite(drag_force_filter_cutoff_hz_) || drag_force_filter_cutoff_hz_ <= 0.0 ||
       !std::isfinite(wrench_timeout_s_) || wrench_timeout_s_ <= 0.0 ||
       !std::isfinite(command_timeout_s_) || command_timeout_s_ <= 0.0 ||
       !std::isfinite(pretension_speed_mps_) || pretension_speed_mps_ <= 0.0 ||
@@ -123,6 +129,7 @@ public:
     }
 
     force_filter_.set_cutoff(force_filter_cutoff_hz_);
+    drag_force_filter_.set_cutoff(drag_force_filter_cutoff_hz_);
     PositionControlConfig position_config;
     position_config.tolerance_n = position_tolerance_n_;
     position_config.maximum_speed_mps = max_speed_mps_;
@@ -144,7 +151,8 @@ public:
       max_acceleration_mps2_, integral_gain_s_inv_, integral_limit_n_,
       drag_start_force_n_, drag_release_force_n_, drag_release_confirm_s_,
       drag_gain_mps_per_n_, drag_max_speed_mps_, smoothing_max_acceleration_mps2_,
-      smoothing_max_jerk_mps3_, drag_sign_x_, drag_sign_y_, drag_sign_z_, position_config);
+      smoothing_max_jerk_mps3_, drag_sign_x_, drag_sign_y_, drag_sign_z_, position_config,
+      drag_max_acceleration_mps2_, drag_max_jerk_mps3_);
 
     command_subscription_ = create_subscription<msg::TractionCommand>(
       command_topic_, rclcpp::QoS(10).reliable(),
@@ -247,6 +255,11 @@ private:
 
   void on_command(const msg::TractionCommand & message)
   {
+    if (message.mode == msg::TractionCommand::DRAG &&
+      command_.mode != msg::TractionCommand::DRAG)
+    {
+      drag_force_filter_.reset();
+    }
     command_ = message;
     last_command_at_ = now();
     last_command_steady_at_ = std::chrono::steady_clock::now();
@@ -371,8 +384,10 @@ private:
       return;
     }
 
-    const Vec3 filtered_wrench = force_filter_.update(latest_wrench_, dt_s);
     const auto mode = static_cast<ControlMode>(command_.mode);
+    const Vec3 filtered_wrench = mode == ControlMode::DRAGGING ?
+      drag_force_filter_.update(latest_wrench_, dt_s) :
+      force_filter_.update(latest_wrench_, dt_s);
     Vec3 controller_wrench = filtered_wrench;
     if (mode == ControlMode::DRAGGING) {
       if (!ee_orientation_valid_ ||
@@ -468,6 +483,7 @@ private:
 
   double control_rate_hz_ = 100.0;
   double force_filter_cutoff_hz_ = 5.0;
+  double drag_force_filter_cutoff_hz_ = 12.0;
   double integral_gain_s_inv_ = 0.25;
   double integral_limit_n_ = 3.0;
   double virtual_mass_ = 10.0;
@@ -480,6 +496,8 @@ private:
   double drag_release_confirm_s_ = 0.15;
   double drag_gain_mps_per_n_ = 0.00625;
   double drag_max_speed_mps_ = 0.050;
+  double drag_max_acceleration_mps2_ = 0.60;
+  double drag_max_jerk_mps3_ = 12.0;
   double drag_sign_x_ = -1.0;
   double drag_sign_y_ = -1.0;
   double drag_sign_z_ = 1.0;
@@ -529,6 +547,7 @@ private:
   std::chrono::steady_clock::time_point last_wrench_steady_at_{};
   std::chrono::steady_clock::time_point last_control_steady_at_{};
   FirstOrderLowPass force_filter_;
+  FirstOrderLowPass drag_force_filter_;
   TractionControllerCore core_;
 
   rclcpp::Subscription<msg::TractionCommand>::SharedPtr command_subscription_;

@@ -20,6 +20,7 @@ class ControlConfigurationContractTest(unittest.TestCase):
         launch = (ROS / "launch" / "traction_system.launch.py").read_text(encoding="utf-8")
         driver = (ROS / "scripts" / "fr5_direct_driver_node.py").read_text(encoding="utf-8")
         self.assertIn('"motion_rate_hz": 100.0', launch)
+        self.assertIn('"update_rate_hz": 100.0', launch)
         self.assertIn("1.0 / self._motion_rate_hz, self._tick", driver)
         self.assertNotIn("1.0 / self._rate_hz, self._tick", driver)
         self.assertNotIn("now - self._last_motion_at < self._motion_period_s", driver)
@@ -73,6 +74,11 @@ class ControlConfigurationContractTest(unittest.TestCase):
         self.assertIn("drag_sign_x: -1.0", parameters)
         self.assertIn("drag_sign_y: -1.0", parameters)
         self.assertIn("drag_sign_z: 1.0", parameters)
+        self.assertIn("drag_force_filter_cutoff_hz: 12.0", parameters)
+        self.assertIn("drag_start_force_n: 0.5", parameters)
+        self.assertIn("drag_release_force_n: 0.2", parameters)
+        self.assertIn("drag_gain_mps_per_n: 0.015", parameters)
+        self.assertIn("drag_max_acceleration_mps2: 0.60", parameters)
 
     def test_traction_flips_only_tool_z_before_base_frame_output(self):
         controller = (ROS / "src" / "traction_controller_node.cpp").read_text(encoding="utf-8")

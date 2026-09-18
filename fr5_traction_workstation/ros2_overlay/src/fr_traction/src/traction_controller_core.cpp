@@ -40,7 +40,9 @@ TractionControllerCore::TractionControllerCore(
   double drag_sign_x,
   double drag_sign_y,
   double drag_sign_z,
-  const PositionControlConfig & position_config)
+  const PositionControlConfig & position_config,
+  double drag_max_acceleration_mps2,
+  double drag_max_jerk_mps3)
 : admittance_(
     virtual_mass, virtual_damping, deadband_n, max_speed_mps, max_acceleration_mps2,
     integral_gain_s_inv, integral_limit_n),
@@ -56,7 +58,9 @@ TractionControllerCore::TractionControllerCore(
   drag_sign_y_(drag_sign_y),
   drag_sign_z_(drag_sign_z),
   smoothing_max_acceleration_mps2_(smoothing_max_acceleration_mps2),
-  smoothing_max_jerk_mps3_(smoothing_max_jerk_mps3)
+  smoothing_max_jerk_mps3_(smoothing_max_jerk_mps3),
+  drag_max_acceleration_mps2_(drag_max_acceleration_mps2),
+  drag_max_jerk_mps3_(drag_max_jerk_mps3)
 {
   if (!std::isfinite(drag_start_force_n_) || drag_start_force_n_ <= 0.0) {
     drag_start_force_n_ = 1.0;
@@ -92,6 +96,12 @@ TractionControllerCore::TractionControllerCore(
   if (!std::isfinite(smoothing_max_jerk_mps3_) || smoothing_max_jerk_mps3_ <= 0.0) {
     smoothing_max_jerk_mps3_ = 3.0;
   }
+  if (!std::isfinite(drag_max_acceleration_mps2_) || drag_max_acceleration_mps2_ <= 0.0) {
+    drag_max_acceleration_mps2_ = 0.60;
+  }
+  if (!std::isfinite(drag_max_jerk_mps3_) || drag_max_jerk_mps3_ <= 0.0) {
+    drag_max_jerk_mps3_ = 12.0;
+  }
 }
 
 void TractionControllerCore::reset()
@@ -106,19 +116,24 @@ void TractionControllerCore::reset()
 }
 
 Vec3 TractionControllerCore::smooth_velocity(
-  const Vec3 & desired_velocity, double dt_s, bool snap_to_target)
+  const Vec3 & desired_velocity, double dt_s, bool snap_to_target,
+  double maximum_acceleration_mps2, double maximum_jerk_mps3)
 {
   if (!finite(desired_velocity) || !std::isfinite(dt_s) || dt_s <= 0.0) {return {};}
+  const double acceleration_limit = maximum_acceleration_mps2 > 0.0 ?
+    maximum_acceleration_mps2 : smoothing_max_acceleration_mps2_;
+  const double jerk_limit = maximum_jerk_mps3 > 0.0 ?
+    maximum_jerk_mps3 : smoothing_max_jerk_mps3_;
   const Vec3 previous_velocity = smoothed_velocity_;
   Vec3 desired_acceleration = (desired_velocity - smoothed_velocity_) * (1.0 / dt_s);
   const double requested_acceleration = norm(desired_acceleration);
-  if (requested_acceleration > smoothing_max_acceleration_mps2_) {
+  if (requested_acceleration > acceleration_limit) {
     desired_acceleration = desired_acceleration *
-      (smoothing_max_acceleration_mps2_ / requested_acceleration);
+      (acceleration_limit / requested_acceleration);
   }
   Vec3 acceleration_delta = desired_acceleration - smoothed_acceleration_;
   const double requested_jerk_step = norm(acceleration_delta);
-  const double maximum_jerk_step = smoothing_max_jerk_mps3_ * dt_s;
+  const double maximum_jerk_step = jerk_limit * dt_s;
   if (requested_jerk_step > maximum_jerk_step) {
     acceleration_delta = acceleration_delta * (maximum_jerk_step / requested_jerk_step);
   }
@@ -191,7 +206,8 @@ ControllerOutput TractionControllerCore::update(
         drag_sign_x_ * wrench.x, drag_sign_y_ * wrench.y, drag_sign_z_ * wrench.z};
       desired_velocity = calibrated_drag_direction * (speed / force_n);
     }
-    result.linear_velocity = smooth_velocity(desired_velocity, dt_s);
+    result.linear_velocity = smooth_velocity(
+      desired_velocity, dt_s, true, drag_max_acceleration_mps2_, drag_max_jerk_mps3_);
     result.scalar_velocity_mps = norm(result.linear_velocity);
     result.valid = finite(result.linear_velocity);
     return result;

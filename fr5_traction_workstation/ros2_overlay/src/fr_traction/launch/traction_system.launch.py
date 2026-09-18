@@ -61,10 +61,9 @@ def generate_launch_description():
         parameters=[{
             "robot_ip": robot_ip,
             "sdk_python_path": sdk_python_path,
-            # Feedback remains 25 Hz. Cartesian servo commands run at the
-            # controller's 100 Hz cadence so each command period is fully
-            # covered instead of alternating between motion and idle gaps.
-            "update_rate_hz": 25.0,
+            # Sample the FR5 realtime packet stream at the same cadence used
+            # by the drag controller and Cartesian command output.
+            "update_rate_hz": 100.0,
             "motion_rate_hz": 100.0,
             # Reject a velocity command left behind by a blocked feedback RPC.
             "command_timeout_s": 0.25,

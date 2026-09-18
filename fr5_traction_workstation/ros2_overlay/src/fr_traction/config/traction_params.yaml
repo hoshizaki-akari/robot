@@ -2,6 +2,9 @@ traction_controller:
   ros__parameters:
     control_rate_hz: 100.0
     force_filter_cutoff_hz: 5.0
+    # Assisted drag uses a faster, independent force path. Constant-force and
+    # position traction keep the existing 5 Hz filter and are not retuned.
+    drag_force_filter_cutoff_hz: 12.0
     integral_gain_s_inv: 0.25
     integral_limit_n: 3.0
     virtual_mass: 10.0
@@ -9,11 +12,13 @@ traction_controller:
     force_deadband_n: 0.15
     traction_max_speed_mps: 0.020
     traction_max_acc_mps2: 0.02
-    drag_start_force_n: 1.0
-    drag_release_force_n: 0.6
-    drag_release_confirm_s: 0.15
-    drag_gain_mps_per_n: 0.00625
+    drag_start_force_n: 0.5
+    drag_release_force_n: 0.2
+    drag_release_confirm_s: 0.08
+    drag_gain_mps_per_n: 0.015
     drag_max_speed_mps: 0.050
+    drag_max_acceleration_mps2: 0.60
+    drag_max_jerk_mps3: 12.0
     # Assisted drag consumes force in tool coordinates and sends tool-frame
     # Cartesian increments. Change only the individual sign if a physical
     # axis check proves that one sensor axis is inverted.

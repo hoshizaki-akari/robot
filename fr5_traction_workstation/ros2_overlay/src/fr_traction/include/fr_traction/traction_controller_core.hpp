@@ -45,7 +45,9 @@ public:
     double drag_sign_x = -1.0,
     double drag_sign_y = -1.0,
     double drag_sign_z = 1.0,
-    const PositionControlConfig & position_config = {});
+    const PositionControlConfig & position_config = {},
+    double drag_max_acceleration_mps2 = 0.60,
+    double drag_max_jerk_mps3 = 12.0);
 
   void reset();
   ControllerOutput update(
@@ -58,7 +60,8 @@ public:
 
 private:
   Vec3 smooth_velocity(
-    const Vec3 & desired_velocity, double dt_s, bool snap_to_target = true);
+    const Vec3 & desired_velocity, double dt_s, bool snap_to_target = true,
+    double maximum_acceleration_mps2 = 0.0, double maximum_jerk_mps3 = 0.0);
 
   OneDimensionalAdmittance admittance_;
   PositionTractionController position_controller_;
@@ -73,6 +76,8 @@ private:
   double drag_sign_z_;
   double smoothing_max_acceleration_mps2_;
   double smoothing_max_jerk_mps3_;
+  double drag_max_acceleration_mps2_;
+  double drag_max_jerk_mps3_;
   bool drag_active_ = false;
   double drag_release_elapsed_s_ = 0.0;
   Vec3 smoothed_velocity_;

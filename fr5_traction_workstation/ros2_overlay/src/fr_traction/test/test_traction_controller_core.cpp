@@ -151,10 +151,20 @@ TEST(TractionControllerCore, DirectionCorrectionIsLateralOnly)
 
 TEST(TractionControllerCore, AssistedDragUsesThreeAxisForceAndReleaseHysteresis)
 {
-  TractionControllerCore core(10.0, 80.0, 0.15, 0.020, 0.02);
-  auto output = core.update(ControlMode::DRAGGING, {}, 0.0, {0.7, 0.0, 0.0}, 0.01);
+  TractionControllerCore core(
+    10.0, 80.0, 0.15, 0.020, 0.02, 0.25, 3.0,
+    0.5, 0.2, 0.08, 0.015, 0.050, 0.30, 3.0,
+    -1.0, -1.0, 1.0, PositionControlConfig{}, 0.60, 12.0);
+  auto output = core.update(ControlMode::DRAGGING, {}, 0.0, {0.35, 0.0, 0.0}, 0.01);
   EXPECT_TRUE(output.valid);
   EXPECT_DOUBLE_EQ(norm(output.linear_velocity), 0.0);
+
+  // A light 0.7 N hand force must already create a useful continuous move;
+  // the former 1 N threshold made the operator repeatedly break away from rest.
+  for (int step = 0; step < 20; ++step) {
+    output = core.update(ControlMode::DRAGGING, {}, 0.0, {0.7, 0.0, 0.0}, 0.01);
+  }
+  EXPECT_LT(output.linear_velocity.x, -0.004);
 
   for (int step = 0; step < 50; ++step) {
     output = core.update(ControlMode::DRAGGING, {}, 0.0, {2.0, -1.0, 0.5}, 0.01);
