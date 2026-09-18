@@ -7,6 +7,8 @@ import asyncio
 import csv
 import io
 import json
+import os
+import signal
 import tempfile
 import threading
 import time
@@ -45,6 +47,7 @@ OPERATION_NAMES = {
     "/api/traction/emergency-recover": "急停恢复",
     "/api/traction/reset-fault": "故障复位",
     "/api/traction/return-zero": "回零",
+    "/api/system/shutdown": "关闭程序",
 }
 
 
@@ -209,6 +212,21 @@ def _call(name: str, target_force_n: float | None = None) -> dict:
         return bridge.call(name, target_force_n)
     except RosBridgeError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+def _terminate_workstation() -> None:
+    """Stop the tablet supervisor, or just this web process when run manually."""
+    time.sleep(0.5)
+    raw_supervisor_pid = os.environ.get("FR5_WORKSTATION_SUPERVISOR_PID", "")
+    supervisor_pid = int(raw_supervisor_pid) if raw_supervisor_pid.isdigit() else 0
+    target_pid = supervisor_pid if supervisor_pid > 1 else os.getpid()
+    os.kill(target_pid, signal.SIGTERM)
+
+
+@app.post("/api/system/shutdown")
+def shutdown_program() -> dict:
+    threading.Thread(target=_terminate_workstation, daemon=True).start()
+    return {"success": True, "message": "工作站正在关闭"}
 
 
 @app.post("/api/traction/prepare")

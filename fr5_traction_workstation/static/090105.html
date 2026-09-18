@@ -37,6 +37,8 @@
       cursor: pointer; transition: .18s;
     }
     .nav-btn:hover { background: rgba(255,255,255,.24); }
+    .nav-btn.shutdown { border-color: rgba(254,202,202,.55); background: rgba(220,38,38,.28); }
+    .nav-btn.shutdown:hover { background: rgba(220,38,38,.48); }
     .user-chip {
       display: flex; align-items: center; gap: 8px; padding: 7px 12px;
       border-radius: 8px; background: rgba(255,255,255,.1); font-size: 14px;
@@ -195,6 +197,9 @@
     tbody tr:hover { background: #f8fafc; }
     .empty { padding: 32px; text-align: center; color: #94a3b8; }
     .permission-note { font-size: 13px; color: #64748b; margin-top: 8px; }
+    .shutdown-copy { color: #334155; font-size: 18px; line-height: 1.7; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 22px; }
+    .modal-actions .danger-btn { background: var(--red); color: #fff; }
     .toast {
       position: fixed; z-index: 50; left: 50%; bottom: 28px; transform: translateX(-50%);
       padding: 11px 22px; border-radius: 8px; background: #0f172a; color: #fff; opacity: 0;
@@ -250,6 +255,7 @@
     <div class="top-right">
       <div class="user-chip"><span id="currentUser">未登录</span><span class="role-tag" id="currentRole">访客</span></div>
       <button class="nav-btn" id="logoutBtn">退出登录</button>
+      <button class="nav-btn shutdown" id="shutdownBtn">关闭程序</button>
     </div>
   </header>
 
@@ -359,6 +365,19 @@
     </div>
   </div>
 
+  <div class="modal-mask hidden" id="shutdownModal">
+    <div class="modal small" role="dialog" aria-modal="true" aria-labelledby="shutdownTitle">
+      <div class="modal-header"><h2 id="shutdownTitle">关闭程序</h2></div>
+      <div class="modal-body">
+        <p class="shutdown-copy" id="shutdownPrompt">确认关闭工作站程序和机器人控制服务吗？</p>
+        <div class="modal-actions">
+          <button class="secondary-btn" id="cancelShutdownBtn">取消</button>
+          <button class="danger-btn" id="confirmShutdownBtn">确认关闭</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
   <script type="importmap">
@@ -375,6 +394,6 @@
     uses /api/traction/* and the ROS2 traction manager; it does not simulate force,
     persist traction records in the browser, or issue robot SDK commands.
   </script>
-  <script src="/assets/090105.js?v=20260907-clinician-layout"></script>
+  <script src="/assets/090105.js?v=20260918-smooth-drag-shutdown"></script>
 </body>
 </html>

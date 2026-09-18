@@ -61,10 +61,11 @@ def generate_launch_description():
         parameters=[{
             "robot_ip": robot_ip,
             "sdk_python_path": sdk_python_path,
-            # Feedback remains 25 Hz, while small motion increments are sent
-            # at 50 Hz to remove the former perceptible stepping.
+            # Feedback remains 25 Hz. Cartesian servo commands run at the
+            # controller's 100 Hz cadence so each command period is fully
+            # covered instead of alternating between motion and idle gaps.
             "update_rate_hz": 25.0,
-            "motion_rate_hz": 50.0,
+            "motion_rate_hz": 100.0,
             # Reject a velocity command left behind by a blocked feedback RPC.
             "command_timeout_s": 0.25,
             # Bound vendor XML-RPC calls so a lost ServoMoveEnd reply cannot

@@ -19,9 +19,11 @@ class ControlConfigurationContractTest(unittest.TestCase):
     def test_fixed_zero_and_motion_rate_are_configured(self):
         launch = (ROS / "launch" / "traction_system.launch.py").read_text(encoding="utf-8")
         driver = (ROS / "scripts" / "fr5_direct_driver_node.py").read_text(encoding="utf-8")
-        self.assertIn('"motion_rate_hz": 50.0', launch)
+        self.assertIn('"motion_rate_hz": 100.0', launch)
         self.assertIn("1.0 / self._motion_rate_hz, self._tick", driver)
         self.assertNotIn("1.0 / self._rate_hz, self._tick", driver)
+        self.assertNotIn("now - self._last_motion_at < self._motion_period_s", driver)
+        self.assertIn("cmdT=self._motion_period_s", driver)
         self.assertIn('"fixed_zero_pose_mm_deg"', launch)
         self.assertIn("500.7035522460938", launch)
         self.assertIn("fixed zero pose unchanged", driver)

@@ -9,6 +9,10 @@ class UiContractTest(unittest.TestCase):
     def test_clean_page_exists_and_uses_real_endpoints(self):
         page = (ROOT / "static" / "090105.html").read_text(encoding="utf-8")
         script = (ROOT / "static" / "090105.js").read_text(encoding="utf-8")
+        app = (ROOT / "app.py").read_text(encoding="utf-8")
+        tablet_start = (ROOT / "scripts" / "tablet_start.sh").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("robotViewer", page)
         self.assertIn("forceCanvas", page)
         self.assertIn("/api/traction", script)
@@ -38,6 +42,13 @@ class UiContractTest(unittest.TestCase):
         self.assertNotIn("resetBtn", page)
         self.assertIn("Always send the value currently shown", script)
         self.assertIn("finishRequested", script)
+        self.assertIn("DRAG_COMPLETED: '拖拽已完成'", script)
+        self.assertIn("POSITION_TRACTION_COMPLETED: '位置牵引已完成'", script)
+        self.assertIn('id="shutdownBtn"', page)
+        self.assertIn('id="shutdownModal"', page)
+        self.assertIn("/api/system/shutdown", script)
+        self.assertIn('@app.post("/api/system/shutdown")', app)
+        self.assertIn('FR5_WORKSTATION_SUPERVISOR_PID="$$"', tablet_start)
         self.assertIn("/ws", script)
         self.assertNotIn("Math.random()", script)
         self.assertNotIn("actualForce +=", script)

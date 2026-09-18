@@ -92,6 +92,9 @@ fi
 
 export FR5_SDK_PYTHON_PATH="$PROJECT_DIR/vendor/fairino-python-sdk/linux"
 export FR5_TRACTION_DATA_DIR="$PROJECT_DIR/debug/traction_sessions"
+# The web shutdown endpoint signals this supervisor. Its cleanup trap then
+# closes Firefox and stops both FastAPI and the ROS 2 control process groups.
+export FR5_WORKSTATION_SUPERVISOR_PID="$$"
 
 setsid bash "$PROJECT_DIR/scripts/start_ros_stack.sh" 2 >"$ROS_LOG" 2>&1 &
 ROS_PID=$!

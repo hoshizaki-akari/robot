@@ -717,7 +717,13 @@ class Fr5DirectDriver(Node):
                 raise ValueError("ServoCart desc_pos must contain finite values")
             sanitized_desc_pos.append(0.0 if abs(value) < 1e-9 else value)
         started_at = time.monotonic()
-        code = self._robot.ServoCart(mode, sanitized_desc_pos, cmdT=0.008)
+        # cmdT is the execution duration understood by the FR5 controller,
+        # not merely metadata. Keep it equal to the host send period so the
+        # controller does not finish an 8 ms move and sit idle while waiting
+        # for a later command (the former source of assisted-drag stepping).
+        code = self._robot.ServoCart(
+            mode, sanitized_desc_pos, cmdT=self._motion_period_s
+        )
         elapsed = time.monotonic() - started_at
         if elapsed > 0.05:
             self.get_logger().warning(
@@ -728,8 +734,9 @@ class Fr5DirectDriver(Node):
     def _send_motion(self, now, dt):
         if not self._servo_enabled:
             return
-        if self._last_motion_at > 0.0 and now - self._last_motion_at < self._motion_period_s:
-            return
+        # _tick itself already runs at motion_rate_hz. A second strict period
+        # gate here used to discard a callback whenever timer jitter made it
+        # arrive a fraction early, effectively halving the requested rate.
         motion_dt = now - self._last_motion_at if self._last_motion_at > 0.0 else dt
         self._last_motion_at = now
         motion_dt = min(max(motion_dt, 0.0), 0.05)

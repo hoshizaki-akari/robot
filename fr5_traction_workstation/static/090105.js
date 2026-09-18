@@ -62,7 +62,10 @@ const REASON_LABELS = {
   LATERAL_FORCE_LIMIT: '横向力过大',
   LATERAL_FORCE: '横向力过大',
   UI_HEARTBEAT_TIMEOUT: '页面连接中断',
-  NORMAL_RELEASE_COMPLETED: '已正常结束'
+  NORMAL_RELEASE_COMPLETED: '已正常结束',
+  DRAG_COMPLETED: '拖拽已完成',
+  POSITION_TRACTION_COMPLETED: '位置牵引已完成',
+  POSITION_TRACTION_STOPPED: '位置牵引已结束'
 };
 
 const $ = id => document.getElementById(id);
@@ -161,6 +164,22 @@ function logout() {
   sessionStorage.removeItem('tractionSession');
   $('password').value = '';
   $('loginModal').classList.remove('hidden');
+}
+
+async function shutdownProgram() {
+  const confirmButton = $('confirmShutdownBtn');
+  confirmButton.disabled = true;
+  confirmButton.textContent = '正在关闭…';
+  try {
+    const response = await fetch('/api/system/shutdown', { method: 'POST' });
+    if (!response.ok) throw new Error('关闭请求失败');
+    $('shutdownPrompt').textContent = '正在停止机械臂控制服务并关闭程序，请稍候。';
+  } catch (error) {
+    confirmButton.disabled = false;
+    confirmButton.textContent = '确认关闭';
+    $('shutdownModal').classList.add('hidden');
+    toast(simpleErrorMessage(error));
+  }
 }
 
 function updateForceDisplay() {
@@ -544,6 +563,16 @@ $('password').addEventListener('keydown', event => {
   if (event.key === 'Enter') login();
 });
 $('logoutBtn').addEventListener('click', logout);
+$('shutdownBtn').addEventListener('click', () => {
+  $('shutdownPrompt').textContent = '确认关闭工作站程序和机器人控制服务吗？';
+  $('confirmShutdownBtn').disabled = false;
+  $('confirmShutdownBtn').textContent = '确认关闭';
+  $('shutdownModal').classList.remove('hidden');
+});
+$('cancelShutdownBtn').addEventListener('click', () => {
+  $('shutdownModal').classList.add('hidden');
+});
+$('confirmShutdownBtn').addEventListener('click', shutdownProgram);
 $('startBtn').addEventListener('click', startTraction);
 $('stopBtn').addEventListener('click', () => finishTraction('已完成'));
 $('emergencyBtn').addEventListener('click', emergencyStop);
