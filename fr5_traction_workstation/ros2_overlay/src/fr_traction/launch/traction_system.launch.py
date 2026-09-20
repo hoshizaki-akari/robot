@@ -81,6 +81,17 @@ def generate_launch_description():
             # vector sum through the direct driver without clipping it back
             # to the former 5 mm/s limit.
             "max_linear_speed_mps": 0.050,
+            # Assisted drag is executed by the FR5 controller instead of by
+            # host-side ServoCart steps. The translational floors combine with
+            # the measured idle sensor bias plus a 2 N margin, preventing the
+            # controller from interpreting its own residual load as a pull.
+            "native_drag_mass": [8.0, 8.0, 8.0, 0.5, 0.5, 0.1],
+            "native_drag_damping": [120.0, 120.0, 120.0, 5.0, 5.0, 1.0],
+            "native_drag_stiffness": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "native_drag_threshold": [3.0, 3.0, 3.0, 5.0, 5.0, 5.0],
+            "native_drag_bias_margin_n": 2.0,
+            "native_drag_max_force_n": 50.0,
+            "native_drag_max_joint_speed_deg_s": 50.0,
             # On this FR5, the live Y- tension search showed that a positive
             # base command must be passed through unchanged for the force
             # controller to move in the measured increasing-force direction.

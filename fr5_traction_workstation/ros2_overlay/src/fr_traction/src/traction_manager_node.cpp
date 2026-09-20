@@ -142,6 +142,10 @@ public:
       "slack_calibration_topic", std::string("/traction/slack_calibration"));
     pretraction_return_service_name_ = declare_parameter(
       "pretraction_return_service", std::string("/traction/return_pretraction_pose"));
+    native_drag_start_service_name_ = declare_parameter(
+      "native_drag_start_service", std::string("/traction/native_drag_start"));
+    native_drag_stop_service_name_ = declare_parameter(
+      "native_drag_stop_service", std::string("/traction/native_drag_stop"));
     pretraction_return_tolerance_m_ = declare_parameter(
       "pretraction_return_tolerance_m", 0.0015);
     expected_wrench_frame_ = declare_parameter("expected_wrench_frame", std::string("base_link"));
@@ -168,6 +172,10 @@ public:
       switch_service_name_);
     pretraction_return_client_ = create_client<std_srvs::srv::Trigger>(
       pretraction_return_service_name_);
+    native_drag_start_client_ = create_client<std_srvs::srv::Trigger>(
+      native_drag_start_service_name_);
+    native_drag_stop_client_ = create_client<std_srvs::srv::Trigger>(
+      native_drag_stop_service_name_);
 
     wrench_subscription_ = create_subscription<geometry_msgs::msg::WrenchStamped>(
       // The direct FR5 driver publishes this stream reliably. Match that
@@ -684,13 +692,38 @@ private:
     }
     if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
       publish_disabled();
-      request_controller_stop();
-      stop_reason_ = "DRAG_COMPLETED";
-      transition(TractionState::COMPLETED);
-      finalize_session();
-      transition(TractionState::READY);
+      if (native_drag_stop_pending_) {
+        response->success = true;
+        response->message = "FR5 native drag is already stopping.";
+        return;
+      }
+      if (!native_drag_stop_client_ || !native_drag_stop_client_->service_is_ready()) {
+        response->success = false;
+        response->message = "FR5 native drag stop service is unavailable.";
+        return;
+      }
+      native_drag_stop_pending_ = true;
+      native_drag_stop_client_->async_send_request(
+        std::make_shared<std_srvs::srv::Trigger::Request>(),
+        [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
+          native_drag_stop_pending_ = false;
+          try {
+            const auto result = future.get();
+            if (!result->success) {
+              enter_fault("NATIVE_DRAG_STOP_FAILED", result->message);
+              return;
+            }
+            if (state_machine_.state() != TractionState::DRAGGING) {return;}
+            stop_reason_ = "DRAG_COMPLETED";
+            transition(TractionState::COMPLETED);
+            finalize_session();
+            transition(TractionState::READY);
+          } catch (const std::exception & error) {
+            enter_fault("NATIVE_DRAG_STOP_EXCEPTION", error.what());
+          }
+        });
       response->success = true;
-      response->message = "Drag stopped.";
+      response->message = "FR5 native drag stop requested; waiting for controller confirmation.";
       return;
     }
     if (operation_mode_ == OperationMode::POSITION_TRACTION) {
@@ -865,6 +898,7 @@ private:
     force_filter_.reset();
     controller_start_pending_ = false;
     controller_activation_confirming_ = false;
+    native_drag_stop_pending_ = false;
     controller_stop_requested_ = false;
     pretraction_return_call_pending_ = false;
     pretraction_return_requested_ = false;
@@ -1089,6 +1123,27 @@ private:
   {
     controller_activation_confirming_ = false;
     controller_start_pending_ = false;
+    if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
+      if (!native_drag_stop_client_ || !native_drag_stop_client_->service_is_ready()) {
+        RCLCPP_ERROR(
+          get_logger(), "FR5 native drag stop service is unavailable during stop.");
+        return;
+      }
+      native_drag_stop_client_->async_send_request(
+        std::make_shared<std_srvs::srv::Trigger::Request>(),
+        [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
+          try {
+            const auto result = future.get();
+            if (!result->success) {
+              RCLCPP_ERROR(
+                get_logger(), "FR5 native drag stop failed: %s", result->message.c_str());
+            }
+          } catch (const std::exception & error) {
+            RCLCPP_ERROR(get_logger(), "FR5 native drag stop exception: %s", error.what());
+          }
+        });
+      return;
+    }
     if (!switch_client_ || !switch_client_->service_is_ready()) {
       RCLCPP_ERROR(
         get_logger(), "Controller switch service is unavailable during software emergency stop.");
@@ -1104,6 +1159,38 @@ private:
 
   bool request_controller_start()
   {
+    if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
+      if (!native_drag_start_client_ || !native_drag_start_client_->service_is_ready()) {
+        RCLCPP_ERROR(get_logger(), "FR5 native drag start service is unavailable.");
+        return false;
+      }
+      controller_start_pending_ = true;
+      native_drag_start_client_->async_send_request(
+        std::make_shared<std_srvs::srv::Trigger::Request>(),
+        [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
+          controller_start_pending_ = false;
+          try {
+            const auto result = future.get();
+            if (!result->success) {
+              enter_fault("NATIVE_DRAG_START_FAILED", result->message);
+              return;
+            }
+            if (operation_mode_ != OperationMode::ASSISTED_DRAG ||
+            state_machine_.state() != TractionState::MANUAL_SETUP)
+            {
+              return;
+            }
+            controller_activation_confirming_ = true;
+            controller_activation_started_at_ = now();
+            RCLCPP_INFO(
+              get_logger(),
+              "FR5 controller-resident force drag started; waiting for fresh feedback.");
+          } catch (const std::exception & error) {
+            enter_fault("NATIVE_DRAG_START_EXCEPTION", error.what());
+          }
+        });
+      return true;
+    }
     if (!switch_client_ || !switch_client_->service_is_ready()) {
       RCLCPP_ERROR(get_logger(), "Controller switch service is unavailable during traction start.");
       return false;
@@ -1492,6 +1579,10 @@ private:
           direction_correction_command_mode(), lateral_correction_velocity_base_);
         break;
       case TractionState::DRAGGING:
+        if (native_drag_stop_pending_) {
+          publish_disabled();
+          break;
+        }
         if (!motion_feedback_fresh()) {
           publish_disabled();
           break;
@@ -1761,7 +1852,10 @@ private:
       case TractionState::FAULT: status.message = "设备故障；确认安全后重新初始校准"; break;
       case TractionState::EMERGENCY_STOP: status.message = "已急停并下使能；确认后点击急停恢复"; break;
       case TractionState::PRETENSION: status.message = "正在自动预张紧"; break;
-      case TractionState::DRAGGING: status.message = "省力拖拽中；施力即动，松手即停"; break;
+      case TractionState::DRAGGING:
+        status.message = native_drag_stop_pending_ ?
+          "正在结束省力拖拽" : "省力拖拽中；施力即动，松手即停";
+        break;
       case TractionState::POSITION_HOLD: status.message = "已到位，机械臂保持当前位置"; break;
     }
     status_publisher_->publish(status);
@@ -1827,6 +1921,8 @@ private:
   std::string data_directory_;
   std::string switch_service_name_;
   std::string pretraction_return_service_name_;
+  std::string native_drag_start_service_name_;
+  std::string native_drag_stop_service_name_;
   double pretraction_return_tolerance_m_ = 0.0015;
   std::unique_ptr<DirectionEstimator> direction_estimator_;
   std::unique_ptr<AdaptiveDirectionFollower> direction_controller_;
@@ -1928,6 +2024,8 @@ private:
   rclcpp::Service<srv::SetOperationMode>::SharedPtr operation_mode_service_;
   rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedPtr switch_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr pretraction_return_client_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr native_drag_start_client_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr native_drag_stop_client_;
   rclcpp::TimerBase::SharedPtr control_timer_;
   rclcpp::TimerBase::SharedPtr status_timer_;
   Vec3 latest_joint_velocity_;
@@ -1935,6 +2033,7 @@ private:
   bool joint_state_valid_ = false;
   bool controller_start_pending_ = false;
   bool controller_activation_confirming_ = false;
+  bool native_drag_stop_pending_ = false;
   bool controller_stop_requested_ = false;
   bool pretraction_return_call_pending_ = false;
   bool pretraction_return_requested_ = false;

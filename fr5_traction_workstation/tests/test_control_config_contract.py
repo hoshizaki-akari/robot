@@ -80,6 +80,35 @@ class ControlConfigurationContractTest(unittest.TestCase):
         self.assertIn("drag_gain_mps_per_n: 0.015", parameters)
         self.assertIn("drag_max_acceleration_mps2: 0.60", parameters)
 
+    def test_assisted_drag_runs_inside_fr5_controller_with_stationary_deadzone(self):
+        driver = (ROS / "scripts" / "fr5_direct_driver_node.py").read_text(
+            encoding="utf-8"
+        )
+        manager = (ROS / "src" / "traction_manager_node.cpp").read_text(
+            encoding="utf-8"
+        )
+        launch = (ROS / "launch" / "traction_system.launch.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("EndForceDragControl", driver)
+        self.assertIn('"/traction/native_drag_start"', driver)
+        self.assertIn('"/traction/native_drag_stop"', driver)
+        self.assertIn("if self._native_drag_active:", driver)
+        self.assertIn("native_drag_start_client_", manager)
+        self.assertIn("native_drag_stop_client_", manager)
+        self.assertIn("OperationMode::ASSISTED_DRAG", manager)
+        self.assertIn(
+            '"native_drag_threshold": [3.0, 3.0, 3.0, 5.0, 5.0, 5.0]',
+            launch,
+        )
+        self.assertIn('"native_drag_bias_margin_n": 2.0', launch)
+        self.assertIn("abs(load) + self._native_drag_bias_margin_n", driver)
+        self.assertIn("SetForceSensorDragAutoFlag(0)", driver)
+        self.assertIn(
+            '"native_drag_damping": [120.0, 120.0, 120.0, 5.0, 5.0, 1.0]',
+            launch,
+        )
+
     def test_traction_flips_only_tool_z_before_base_frame_output(self):
         controller = (ROS / "src" / "traction_controller_node.cpp").read_text(encoding="utf-8")
         parameters = (ROS / "config" / "traction_params.yaml").read_text(encoding="utf-8")

@@ -72,6 +72,7 @@ install(PROGRAMS
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
   # The ROS package schema URL is not reachable from the offline WSL build
   # image; package XML is checked locally with xmllint in the validation record.
@@ -94,6 +95,8 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_direction_correction test/test_direction_correction.cpp)
   target_link_libraries(test_direction_correction fr_traction_core)
+
+  ament_add_pytest_test(test_native_drag_driver test/test_native_drag_driver.py)
 
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
