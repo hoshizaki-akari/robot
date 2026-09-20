@@ -1,6 +1,7 @@
 """Exercise native-drag SDK handoff without connecting to a real FR5."""
 
 import importlib.util
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -79,9 +80,7 @@ def fake_driver(sdk, raw_force):
         _native_drag_mass=[8.0, 8.0, 8.0, 0.5, 0.5, 0.1],
         _native_drag_damping=[120.0, 120.0, 120.0, 5.0, 5.0, 1.0],
         _native_drag_stiffness=[0.0] * 6,
-        _native_drag_threshold=[3.0, 3.0, 3.0, 5.0, 5.0, 5.0],
-        _native_drag_effective_threshold=[3.0, 3.0, 3.0, 5.0, 5.0, 5.0],
-        _native_drag_bias_margin_n=2.0,
+        _native_drag_threshold=[5.0] * 6,
         _native_drag_max_force_n=50.0,
         _native_drag_max_joint_speed_deg_s=50.0,
         _native_drag_active=False,
@@ -115,14 +114,14 @@ def fake_driver(sdk, raw_force):
     return driver
 
 
-def test_old_sdk_idle_bias_does_not_arm_below_threshold():
+def test_old_sdk_uses_vendor_threshold_independent_of_raw_idle_bias():
     sdk = OldSdk()
     driver = fake_driver(sdk, [1.5, -2.7, 0.2, 0.0, 0.0, 0.0])
     response = SimpleNamespace(success=False, message="")
     Fr5DirectDriver._on_native_drag_start(driver, None, response)
     assert response.success
     assert sdk.auto_flags == [0]
-    assert sdk.calls[0][1][:3] == [3.5, 4.7, 3.0]
+    assert sdk.calls[0][1][:3] == [5.0, 5.0, 5.0]
     assert sdk.drag_state == 1
     Fr5DirectDriver._on_native_drag_stop(driver, None, response)
     assert response.success
@@ -136,17 +135,26 @@ def test_new_sdk_accepts_extra_controller_flags():
     response = SimpleNamespace(success=False, message="")
     Fr5DirectDriver._on_native_drag_start(driver, None, response)
     assert response.success
-    assert sdk.calls[0][1][:3] == [3.0, 3.0, 3.0]
+    assert sdk.calls[0][1][:3] == [5.0, 5.0, 5.0]
 
 
-def test_large_stationary_sensor_load_rejects_drag():
+def test_raw_sensor_payload_does_not_fault_drag_at_start():
     sdk = OldSdk()
-    driver = fake_driver(sdk, [9.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    driver = fake_driver(sdk, [12.0, -9.0, 0.0, 0.0, 0.0, 0.0])
+    response = SimpleNamespace(success=False, message="")
+    Fr5DirectDriver._on_native_drag_start(driver, None, response)
+    assert response.success
+    assert sdk.calls[0][1][:3] == [5.0, 5.0, 5.0]
+    assert sdk.drag_state == 1
+
+
+def test_nonfinite_sensor_data_still_rejects_drag():
+    sdk = OldSdk()
+    driver = fake_driver(sdk, [math.nan, 0.0, 0.0, 0.0, 0.0, 0.0])
     response = SimpleNamespace(success=False, message="")
     Fr5DirectDriver._on_native_drag_start(driver, None, response)
     assert not response.success
     assert not sdk.calls
-    assert sdk.drag_state == 0
 
 
 def test_failed_native_stop_disables_robot_instead_of_reporting_ready():

@@ -170,21 +170,14 @@ class Fr5DirectDriver(Node):
         self._native_drag_stiffness = self._six_finite_parameter(
             "native_drag_stiffness", [0.0] * 6
         )
-        # The controller does not use the manager's software slack baseline.
-        # These are floors; start also adds a margin above the current raw
-        # stationary sensor load before enabling controller-resident drag.
+        # The SDK's native drag thresholds refer to its own force processing,
+        # not the raw ft_sensor_data stream or the manager's software tare.
+        # Use the vendor's recommended lower translational threshold (5 N).
         self._native_drag_threshold = self._six_finite_parameter(
-            "native_drag_threshold", [3.0, 3.0, 3.0, 5.0, 5.0, 5.0]
+            "native_drag_threshold", [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
         )
-        self._native_drag_bias_margin_n = float(
-            self.declare_parameter("native_drag_bias_margin_n", 2.0).value
-        )
-        if (
-            not math.isfinite(self._native_drag_bias_margin_n)
-            or self._native_drag_bias_margin_n <= 0.0
-        ):
-            raise ValueError("native_drag_bias_margin_n must be positive")
-        self._native_drag_effective_threshold = list(self._native_drag_threshold)
+        if any(value <= 0.0 for value in self._native_drag_threshold):
+            raise ValueError("native_drag_threshold must contain positive values")
         self._native_drag_max_force_n = float(
             self.declare_parameter("native_drag_max_force_n", 50.0).value
         )
@@ -500,7 +493,7 @@ class Fr5DirectDriver(Node):
             self._native_drag_mass,
             self._native_drag_damping,
             self._native_drag_stiffness,
-            self._native_drag_effective_threshold,
+            self._native_drag_threshold,
             self._native_drag_max_force_n,
             self._native_drag_max_joint_speed_deg_s,
         )
@@ -590,29 +583,13 @@ class Fr5DirectDriver(Node):
                 "is unavailable."
             )
             return response
-        # A software baseline subtraction cannot compensate force inside the
-        # FR5's native controller. Set each translational threshold above the
-        # current absolute sensor load so stationary gravity/bias cannot
-        # trigger motion the instant the native mode is armed.
-        self._native_drag_effective_threshold = list(self._native_drag_threshold)
-        for axis in range(3):
-            load = float(self._latest_wrench[axis])
-            if not math.isfinite(load):
-                response.success = False
-                response.message = "Native drag rejected: invalid force sensor data."
-                return response
-            threshold = max(
-                self._native_drag_threshold[axis],
-                abs(load) + self._native_drag_bias_margin_n,
-            )
-            if threshold > 10.0:
-                response.success = False
-                response.message = (
-                    "Native drag rejected: sensor load is too high while idle; "
-                    "remove the load and recalibrate the sensor."
-                )
-                return response
-            self._native_drag_effective_threshold[axis] = threshold
+        # The raw stream can include the sensor/tool payload even after the
+        # software slack tare. Its absolute magnitude is not evidence of a
+        # user pull and must not block SDK drag activation (session 1789878276624).
+        if not all(math.isfinite(float(value)) for value in self._latest_wrench):
+            response.success = False
+            response.message = "Native drag rejected: invalid force sensor data."
+            return response
         try:
             # Never automatically re-arm drag after a controller error is
             # cleared; the operator must deliberately start a new session.
@@ -652,7 +629,7 @@ class Fr5DirectDriver(Node):
         response.message = "FR5 controller-resident force drag started."
         self.get_logger().info(
             "Native force drag active. Translational thresholds (N): "
-            f"{self._native_drag_effective_threshold[:3]}."
+            f"{self._native_drag_threshold[:3]}."
         )
         return response
 

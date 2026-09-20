@@ -98,11 +98,11 @@ class ControlConfigurationContractTest(unittest.TestCase):
         self.assertIn("native_drag_stop_client_", manager)
         self.assertIn("OperationMode::ASSISTED_DRAG", manager)
         self.assertIn(
-            '"native_drag_threshold": [3.0, 3.0, 3.0, 5.0, 5.0, 5.0]',
+            '"native_drag_threshold": [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]',
             launch,
         )
-        self.assertIn('"native_drag_bias_margin_n": 2.0', launch)
-        self.assertIn("abs(load) + self._native_drag_bias_margin_n", driver)
+        self.assertNotIn("native_drag_bias_margin_n", launch + driver)
+        self.assertNotIn("threshold > 10.0", driver)
         self.assertIn("SetForceSensorDragAutoFlag(0)", driver)
         self.assertIn(
             '"native_drag_damping": [120.0, 120.0, 120.0, 5.0, 5.0, 1.0]',
