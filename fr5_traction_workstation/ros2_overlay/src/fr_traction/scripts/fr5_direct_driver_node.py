@@ -657,6 +657,25 @@ class Fr5DirectDriver(Node):
                 "previous Cartesian servo cleanup is unavailable."
             )
             return response
+        # Force-sensor-assisted drag is a controller-resident manual-mode
+        # function. Do not force automatic mode merely to obtain the ordinary
+        # rbtEnableState used by Cartesian servo motion: after emergency
+        # recovery that made the SDK drag switch report ON while the brakes
+        # remained effectively locked. Manual native drag owns its enable
+        # transition internally, so validate every readiness condition except
+        # the ordinary motion-enable bit.
+        mode_error = self._select_motion_mode(1)
+        if mode_error is not None:
+            response.success = False
+            response.message = "FR5 native force drag rejected: " + mode_error
+            return response
+        readiness_error = self._robot_motion_readiness_error(
+            expected_mode=1, require_enabled=False
+        )
+        if readiness_error is not None:
+            response.success = False
+            response.message = "FR5 native force drag rejected: " + readiness_error
+            return response
         # The raw stream can include the sensor/tool payload even after the
         # software slack tare. Its absolute magnitude is not evidence of a
         # user pull and must not block SDK drag activation (session 1789878276624).
@@ -708,8 +727,9 @@ class Fr5DirectDriver(Node):
         response.success = True
         response.message = "FR5 controller-resident force drag started."
         self.get_logger().info(
-            "Native force drag active. Translational thresholds (N): "
-            f"{self._native_drag_threshold[:3]}."
+            "Native force drag active in manual mode. "
+            f"rbtEnableState={int(self._robot.robot_state_pkg.rbtEnableState)}, "
+            f"translational thresholds (N): {self._native_drag_threshold[:3]}."
         )
         return response
 

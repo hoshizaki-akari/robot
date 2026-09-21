@@ -316,7 +316,7 @@ def test_emergency_recovery_closes_interrupted_servo_before_restarting_drag():
     assert sdk.auto_flags == [0]
 
 
-def test_servo_traction_and_next_native_drag_prepare_automatic_mode():
+def test_servo_traction_and_next_native_drag_handoff_to_manual_mode():
     sdk = OldSdk()
     driver = fake_driver(sdk, [0.0] * 6)
     activate = SimpleNamespace(
@@ -338,7 +338,8 @@ def test_servo_traction_and_next_native_drag_prepare_automatic_mode():
     drag_response = SimpleNamespace(success=False, message="")
     Fr5DirectDriver._on_native_drag_start(driver, None, drag_response)
     assert drag_response.success
-    assert sdk.robot_state_pkg.robot_mode == 0
+    assert sdk.robot_state_pkg.robot_mode == 1
+    assert sdk.robot_state_pkg.rbtEnableState == 0
 
 
 def test_cartesian_start_enables_only_after_leaving_disabled_manual_mode():
@@ -442,8 +443,9 @@ def test_failed_servo_cleanup_keeps_emergency_latched():
     assert ("RobotEnable", (0,)) in commands
 
 
-def test_drag_start_preserves_controller_mode_and_enable_state():
+def test_drag_start_selects_manual_mode_without_requiring_enable():
     sdk = OldSdk()
+    sdk.robot_state_pkg.robot_mode = 0
     sdk.robot_state_pkg.rbtEnableState = 0
     driver = fake_driver(sdk, [0.0] * 6)
     commands = []
@@ -456,12 +458,13 @@ def test_drag_start_preserves_controller_mode_and_enable_state():
     assert response.success
     assert sdk.robot_state_pkg.robot_mode == 1
     assert sdk.robot_state_pkg.rbtEnableState == 0
-    assert commands == []
+    assert commands == [("Mode", (1,))]
     assert sdk.drag_state == 1
 
 
 def test_drag_start_does_not_call_robot_enable():
     sdk = OldSdk()
+    sdk.robot_state_pkg.robot_mode = 0
     sdk.robot_state_pkg.rbtEnableState = 0
     driver = fake_driver(sdk, [0.0] * 6)
     original_command = driver._run_hardware_command
