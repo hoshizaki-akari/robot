@@ -104,6 +104,7 @@ class ControlConfigurationContractTest(unittest.TestCase):
         self.assertNotIn("native_drag_bias_margin_n", launch + driver)
         self.assertNotIn("threshold > 10.0", driver)
         self.assertIn("SetForceSensorDragAutoFlag(0)", driver)
+        self.assertIn("SetForceSensorDragAutoFlag(1)", driver)
         self.assertIn(
             '"native_drag_damping": [120.0, 120.0, 120.0, 5.0, 5.0, 1.0]',
             launch,
