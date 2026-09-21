@@ -10,7 +10,7 @@ class EmergencyRecoverTest(unittest.TestCase):
     def test_retries_transient_manager_health_lag(self):
         transient = HTTPException(
             status_code=409,
-            detail="Reset rejected: FR5 must be enabled, stationary, and reporting fresh data.",
+            detail="Reset rejected: FR5 must be stationary and reporting fresh data.",
         )
         with patch.object(app, "_call", side_effect=[{"success": True}, transient, {"success": True}]) as invoke:
             with patch.object(app.time, "sleep") as sleep:

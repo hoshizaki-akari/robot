@@ -782,7 +782,7 @@ private:
     {
       response->success = false;
       response->message =
-        "Reset rejected: FR5 must be enabled, stationary, and reporting fresh data.";
+        "Reset rejected: FR5 must be stationary and reporting fresh data.";
       return;
     }
     if (!transition(TractionState::READY)) {

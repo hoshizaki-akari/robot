@@ -282,7 +282,10 @@ def emergency_recover() -> dict:
             return _call("reset_fault")
         except HTTPException as error:
             detail = str(error.detail)
-            if "Reset rejected: FR5 must be enabled, stationary" not in detail:
+            if not (
+                "Reset rejected: FR5 must be stationary" in detail
+                or "Reset rejected: FR5 must be enabled, stationary" in detail
+            ):
                 raise
             if attempt == 19:
                 raise HTTPException(
