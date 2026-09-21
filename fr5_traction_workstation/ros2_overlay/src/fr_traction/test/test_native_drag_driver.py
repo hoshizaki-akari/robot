@@ -35,6 +35,19 @@ class OldSdk:
         self.auto_flags = []
         self.calls = []
         self.references = []
+        self.servo_end_calls = 0
+        self.robot_state_pkg = SimpleNamespace(
+            frame_cnt=1,
+            EmergencyStop=0,
+            rbtEnableState=1,
+            ft_sensor_active=1,
+            main_code=0,
+            sub_code=0,
+        )
+
+    def ServoMoveEnd(self):
+        self.servo_end_calls += 1
+        return 0
 
     def FT_SetRCS(self, ref, coord):
         self.references.append((ref, list(coord)))
@@ -90,6 +103,7 @@ def fake_driver(sdk, raw_force):
         _native_drag_max_joint_speed_deg_s=50.0,
         _startup_rpc_timeout_s=10.0,
         _native_drag_active=False,
+        _servo_cleanup_pending=False,
         _native_drag_tool_xy_flip=True,
         _force_reference_custom_active=False,
         _servo_enabled=False,
@@ -109,6 +123,10 @@ def fake_driver(sdk, raw_force):
     driver._run_hardware_command = lambda command, *args: (0, "")
     driver._publish_health = lambda healthy: None
     driver._set_native_drag = lambda enabled: Fr5DirectDriver._set_native_drag(driver, enabled)
+    driver._end_servo = lambda context: Fr5DirectDriver._end_servo(driver, context)
+    driver._robot_motion_readiness_error = lambda: (
+        Fr5DirectDriver._robot_motion_readiness_error(driver)
+    )
     driver._set_drag_force_reference = lambda custom: (
         Fr5DirectDriver._set_drag_force_reference(driver, custom)
     )
@@ -239,3 +257,77 @@ def test_base_restore_failure_reports_error_and_latches_stop():
     assert not response.success
     assert driver._hardware_emergency_latched
     assert driver._force_reference_custom_active
+
+
+def test_emergency_recovery_closes_interrupted_servo_before_restarting_drag():
+    sdk = OldSdk()
+    driver = fake_driver(sdk, [0.0] * 6)
+    driver._servo_enabled = True
+    driver._servo_cleanup_pending = True
+    response = SimpleNamespace(success=False, message="")
+    Fr5DirectDriver._on_hardware_emergency_stop(driver, None, response)
+    assert response.success
+    assert driver._servo_cleanup_pending
+    assert not driver._servo_enabled
+    Fr5DirectDriver._on_hardware_emergency_recover(driver, None, response)
+    assert response.success
+    assert sdk.servo_end_calls == 1
+    assert not driver._servo_cleanup_pending
+    Fr5DirectDriver._on_native_drag_start(driver, None, response)
+    assert response.success
+    assert sdk.drag_state == 1
+
+
+def test_failed_servo_cleanup_keeps_emergency_latched():
+    class FailingServoEndSdk(OldSdk):
+        def ServoMoveEnd(self):
+            self.servo_end_calls += 1
+            return 42
+
+    sdk = FailingServoEndSdk()
+    driver = fake_driver(sdk, [0.0] * 6)
+    driver._servo_cleanup_pending = True
+    driver._hardware_emergency_latched = True
+    commands = []
+    driver._run_hardware_command = lambda command, *args: (
+        commands.append((command, args)) or (0, "")
+    )
+    response = SimpleNamespace(success=False, message="")
+    Fr5DirectDriver._on_hardware_emergency_recover(driver, None, response)
+    assert not response.success
+    assert driver._hardware_emergency_latched
+    assert driver._servo_cleanup_pending
+    assert ("RobotEnable", (0,)) in commands
+
+
+def test_drag_rejects_unenabled_robot_instead_of_false_ready():
+    sdk = OldSdk()
+    sdk.robot_state_pkg.rbtEnableState = 0
+    driver = fake_driver(sdk, [0.0] * 6)
+    response = SimpleNamespace(success=False, message="")
+    Fr5DirectDriver._on_native_drag_start(driver, None, response)
+    assert not response.success
+    assert "enable" in response.message
+    assert sdk.drag_state == 0
+
+
+def test_recovery_reactivates_inactive_force_sensor_before_drag():
+    sdk = OldSdk()
+    sdk.robot_state_pkg.ft_sensor_active = 0
+    driver = fake_driver(sdk, [0.0] * 6)
+    driver._hardware_emergency_latched = True
+    commands = []
+
+    def hardware_command(command, *args):
+        commands.append((command, args))
+        if command == "FT_Activate" and args == (1,):
+            sdk.robot_state_pkg.ft_sensor_active = 1
+        return 0, ""
+
+    driver._run_hardware_command = hardware_command
+    response = SimpleNamespace(success=False, message="")
+    Fr5DirectDriver._on_hardware_emergency_recover(driver, None, response)
+    assert response.success
+    assert ("FT_Activate", (1,)) in commands
+    Fr5DirectDriver._on_native_drag_start(driver, None, response)
+    assert response.success

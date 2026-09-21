@@ -341,6 +341,7 @@ class Fr5DirectDriver(Node):
         self._last_command_at = 0.0
         self._last_motion_at = 0.0
         self._servo_enabled = False
+        self._servo_cleanup_pending = False
         self._native_drag_active = False
         self._force_reference_custom_active = False
         self._return_active = False
@@ -426,6 +427,7 @@ class Fr5DirectDriver(Node):
                 self._reset_command_proxy()
                 continue
             if code == 0:
+                self._servo_cleanup_pending = False
                 return 0
             self.get_logger().warning(
                 f"ServoMoveEnd during {context} returned {code} on attempt {attempt + 1}."
@@ -470,6 +472,7 @@ class Fr5DirectDriver(Node):
             self._return_active
             or self._auto_tension_active
             or self._native_drag_active
+            or self._servo_cleanup_pending
             or self._hardware_fault_latched
             or self._hardware_emergency_latched
         ):
@@ -496,6 +499,7 @@ class Fr5DirectDriver(Node):
                 response.ok = False
                 return response
             self._servo_enabled = True
+            self._servo_cleanup_pending = True
             # This is the exact pose before the Cartesian force loop takes
             # control. It is intentionally separate from the slack zero.
             self._pretraction_pose = list(self._latest_pose)
@@ -636,6 +640,7 @@ class Fr5DirectDriver(Node):
             or self._auto_tension_active
             or self._hardware_fault_latched
             or self._hardware_emergency_latched
+            or self._servo_cleanup_pending
             or self._latest_pose is None
             or self._latest_wrench is None
             or time.monotonic() - self._last_realtime_state_at
@@ -643,9 +648,14 @@ class Fr5DirectDriver(Node):
         ):
             response.success = False
             response.message = (
-                "FR5 native force drag rejected because motion or feedback "
-                "is unavailable."
+                "FR5 native force drag rejected because motion, feedback, or "
+                "previous Cartesian servo cleanup is unavailable."
             )
+            return response
+        readiness_error = self._robot_motion_readiness_error()
+        if readiness_error is not None:
+            response.success = False
+            response.message = "FR5 native force drag rejected: " + readiness_error
             return response
         # The raw stream can include the sensor/tool payload even after the
         # software slack tare. Its absolute magnitude is not evidence of a
@@ -730,6 +740,21 @@ class Fr5DirectDriver(Node):
             self._reset_command_proxy()
             return None, str(error)
 
+    def _robot_motion_readiness_error(self):
+        """Check controller feedback, not just zero-valued RPC acknowledgements."""
+        state = self._robot.robot_state_pkg
+        if isinstance(state, type) or not hasattr(state, "frame_cnt"):
+            return "FR5 realtime controller status is unavailable."
+        if int(state.EmergencyStop) != 0:
+            return "FR5 emergency stop input is still active."
+        if int(state.rbtEnableState) != 1:
+            return "FR5 robot enable did not become active."
+        if int(state.ft_sensor_active) != 1:
+            return "FR5 force sensor is not active."
+        if int(state.main_code) != 0:
+            return f"FR5 controller fault is still active: {state.main_code}/{state.sub_code}."
+        return None
+
     def _on_hardware_emergency_stop(self, _request, response):
         # Latch locally before the first RPC so no later controller request can
         # restart motion while the hardware stop sequence is still executing.
@@ -778,7 +803,7 @@ class Fr5DirectDriver(Node):
         return response
 
     def _on_hardware_emergency_recover(self, _request, response):
-        if self._native_drag_active:
+        if self._native_drag_active or self._force_reference_custom_active:
             code = self._stop_native_drag_best_effort("hardware recovery")
             if code != 0:
                 response.success = False
@@ -806,6 +831,41 @@ class Fr5DirectDriver(Node):
         mode_code = next(code for name, code, _ in results if name == "Mode")
         reset_code = next(code for name, code, _ in results if name == "ResetAllError")
         if enable_code == 0 and mode_code == 0 and reset_code == 0:
+            if self._servo_cleanup_pending:
+                # StopMotion and RobotEnable(0) halt motion, but do not close
+                # ServoMoveStart. A stale Cartesian servo session can make
+                # EndForceDragControl report ON while the arm cannot move.
+                servo_end_code = self._end_servo("hardware emergency recovery")
+                if servo_end_code != 0:
+                    self._run_hardware_command("RobotEnable", 0)
+                    response.success = False
+                    response.message = (
+                        "FR5 emergency recovery could not close the previous "
+                        "Cartesian servo session. Robot disabled."
+                    )
+                    return response
+            state = self._robot.robot_state_pkg
+            if hasattr(state, "ft_sensor_active") and int(state.ft_sensor_active) != 1:
+                sensor_code, sensor_detail = self._run_hardware_command("FT_Activate", 1)
+                if sensor_code != 0:
+                    self._run_hardware_command("RobotEnable", 0)
+                    response.success = False
+                    response.message = (
+                        "FR5 emergency recovery could not reactivate the force "
+                        f"sensor: {sensor_code if sensor_code is not None else sensor_detail}."
+                    )
+                    return response
+            readiness_error = None
+            for _ in range(20):
+                readiness_error = self._robot_motion_readiness_error()
+                if readiness_error is None:
+                    break
+                time.sleep(0.05)
+            if readiness_error is not None:
+                self._run_hardware_command("RobotEnable", 0)
+                response.success = False
+                response.message = "FR5 emergency recovery incomplete: " + readiness_error
+                return response
             self._hardware_emergency_latched = False
             self._hardware_fault_latched = False
             self._publish_health(True)
@@ -861,7 +921,7 @@ class Fr5DirectDriver(Node):
             response.success = False
             response.message = f"Return rejected: {label} is not stored."
             return response
-        if self._servo_enabled or self._native_drag_active:
+        if self._servo_enabled or self._servo_cleanup_pending or self._native_drag_active:
             response.success = False
             response.message = "Return rejected: servo motion is busy."
             return response
@@ -889,6 +949,7 @@ class Fr5DirectDriver(Node):
             response.message = f"ServoMoveStart failed: {code}."
             return response
         self._servo_enabled = True
+        self._servo_cleanup_pending = True
         self._last_motion_at = time.monotonic()
         self._return_active = True
         self._return_started_at = time.monotonic()
@@ -934,6 +995,7 @@ class Fr5DirectDriver(Node):
         self._tension_search_max_mm = current_limit
         if (
             self._servo_enabled
+            or self._servo_cleanup_pending
             or self._native_drag_active
             or self._hardware_fault_latched
             or self._hardware_emergency_latched
@@ -956,6 +1018,7 @@ class Fr5DirectDriver(Node):
             response.message = f"ServoMoveStart failed: {code}."
             return response
         self._servo_enabled = True
+        self._servo_cleanup_pending = True
         self._last_motion_at = time.monotonic()
         self._auto_tension_active = True
         self._auto_tension_baseline = list(self._latest_wrench)
