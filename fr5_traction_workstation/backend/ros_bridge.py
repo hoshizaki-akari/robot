@@ -37,6 +37,11 @@ STATE_NAMES = {
 # RPC when the operator clicks Stop and Return in quick succession.
 SERVICE_RESPONSE_TIMEOUT_S = {
     "return_zero_pose": 8.0,
+    # Recovery can wait for ServoMoveEnd, force-sensor activation and fresh
+    # controller feedback. The old 2 s default returned an HTTP failure while
+    # the hardware RPC was still running (leaving the manager in ESTOP).
+    "hardware_emergency_recover": 20.0,
+    "hardware_emergency_stop": 8.0,
 }
 
 

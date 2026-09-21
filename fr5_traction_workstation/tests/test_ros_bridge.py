@@ -3,7 +3,7 @@ import unittest
 from typing import ClassVar
 from unittest.mock import patch
 
-from backend.ros_bridge import STATE_NAMES, RosBridge
+from backend.ros_bridge import SERVICE_RESPONSE_TIMEOUT_S, STATE_NAMES, RosBridge
 
 
 class FakeHeader:
@@ -51,6 +51,9 @@ class FakeJoint:
 
 
 class BridgeTest(unittest.TestCase):
+    def test_hardware_recovery_waits_for_full_driver_sequence(self):
+        self.assertGreaterEqual(SERVICE_RESPONSE_TIMEOUT_S["hardware_emergency_recover"], 15.0)
+
     def test_state_name_and_joint_conversion(self):
         bridge = RosBridge()
         bridge._on_joint_state(FakeJoint())

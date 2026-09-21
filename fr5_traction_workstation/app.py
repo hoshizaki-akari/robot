@@ -273,10 +273,24 @@ def emergency_stop() -> dict:
 
 @app.post("/api/traction/emergency-recover")
 def emergency_recover() -> dict:
-    # The manager may only leave EMERGENCY_STOP after the FR5 has cleared
-    # resettable errors, entered automatic mode, and accepted RobotEnable(1).
+    # Hardware recovery ends in enabled manual mode. The manager's health
+    # subscription may receive that confirmation a moment after the hardware
+    # service returns; retry only this transient readiness rejection.
     _call("hardware_emergency_recover")
-    return _call("reset_fault")
+    for attempt in range(20):
+        try:
+            return _call("reset_fault")
+        except HTTPException as error:
+            detail = str(error.detail)
+            if "Reset rejected: FR5 must be enabled, stationary" not in detail:
+                raise
+            if attempt == 19:
+                raise HTTPException(
+                    status_code=409,
+                    detail="机械臂已尝试恢复手动模式，但牵引系统仍未就绪；请检查设备状态后重试。",
+                ) from error
+            time.sleep(0.15)
+    raise AssertionError("unreachable")
 
 
 @app.post("/api/traction/reset-fault")

@@ -488,6 +488,11 @@ class Fr5DirectDriver(Node):
             self._return_target_pose = None
             self._auto_tension_active = False
         if "cartesian_velocity_controller" in activate and not self._servo_enabled:
+            mode_error = self._select_motion_mode(0)
+            if mode_error is not None:
+                self.get_logger().error(mode_error)
+                response.ok = False
+                return response
             try:
                 code = self._robot.ServoMoveStart()
             except Exception as error:  # noqa: BLE001 - always return a ROS response.
@@ -652,7 +657,12 @@ class Fr5DirectDriver(Node):
                 "previous Cartesian servo cleanup is unavailable."
             )
             return response
-        readiness_error = self._robot_motion_readiness_error()
+        mode_error = self._select_motion_mode(1)
+        if mode_error is not None:
+            response.success = False
+            response.message = "FR5 native force drag rejected: " + mode_error
+            return response
+        readiness_error = self._robot_motion_readiness_error(expected_mode=1)
         if readiness_error is not None:
             response.success = False
             response.message = "FR5 native force drag rejected: " + readiness_error
@@ -740,7 +750,7 @@ class Fr5DirectDriver(Node):
             self._reset_command_proxy()
             return None, str(error)
 
-    def _robot_motion_readiness_error(self):
+    def _robot_motion_readiness_error(self, expected_mode=None):
         """Check controller feedback, not just zero-valued RPC acknowledgements."""
         state = self._robot.robot_state_pkg
         if isinstance(state, type) or not hasattr(state, "frame_cnt"):
@@ -753,7 +763,27 @@ class Fr5DirectDriver(Node):
             return "FR5 force sensor is not active."
         if int(state.main_code) != 0:
             return f"FR5 controller fault is still active: {state.main_code}/{state.sub_code}."
+        if expected_mode is not None and int(state.robot_mode) != expected_mode:
+            label = "manual" if expected_mode == 1 else "automatic"
+            return f"FR5 did not enter {label} mode."
         return None
+
+    def _select_motion_mode(self, mode, force=False):
+        """Switch mode before starting native drag or Cartesian servo motion."""
+        state = self._robot.robot_state_pkg
+        if not force and hasattr(state, "robot_mode") and int(state.robot_mode) == mode:
+            return None
+        previous_frame = getattr(state, "frame_cnt", None)
+        code, detail = self._run_hardware_command("Mode", mode)
+        if code != 0:
+            return f"Mode({mode}) failed: {code if code is not None else detail}."
+        for _ in range(20):
+            feedback = self._robot.robot_state_pkg
+            if (getattr(feedback, "frame_cnt", None) != previous_frame
+                    and int(feedback.robot_mode) == mode):
+                return None
+            time.sleep(0.05)
+        return f"FR5 did not confirm Mode({mode}) from realtime feedback."
 
     def _on_hardware_emergency_stop(self, _request, response):
         # Latch locally before the first RPC so no later controller request can
@@ -838,6 +868,7 @@ class Fr5DirectDriver(Node):
                 servo_end_code = self._end_servo("hardware emergency recovery")
                 if servo_end_code != 0:
                     self._run_hardware_command("RobotEnable", 0)
+                    self._run_hardware_command("Mode", 1)
                     response.success = False
                     response.message = (
                         "FR5 emergency recovery could not close the previous "
@@ -849,15 +880,34 @@ class Fr5DirectDriver(Node):
                 sensor_code, sensor_detail = self._run_hardware_command("FT_Activate", 1)
                 if sensor_code != 0:
                     self._run_hardware_command("RobotEnable", 0)
+                    self._run_hardware_command("Mode", 1)
                     response.success = False
                     response.message = (
                         "FR5 emergency recovery could not reactivate the force "
                         f"sensor: {sensor_code if sensor_code is not None else sensor_detail}."
                     )
                     return response
+            # Complete recovery in manual mode (green indicator). Cartesian
+            # traction explicitly selects automatic mode when it starts.
+            mode_error = self._select_motion_mode(1, force=True)
+            if mode_error is not None:
+                self._run_hardware_command("RobotEnable", 0)
+                response.success = False
+                response.message = "FR5 emergency recovery incomplete: " + mode_error
+                return response
+            final_enable_code, final_enable_detail = self._run_hardware_command(
+                "RobotEnable", 1
+            )
+            if final_enable_code != 0:
+                response.success = False
+                response.message = (
+                    "FR5 manual mode could not be enabled: "
+                    f"{final_enable_code if final_enable_code is not None else final_enable_detail}."
+                )
+                return response
             readiness_error = None
             for _ in range(20):
-                readiness_error = self._robot_motion_readiness_error()
+                readiness_error = self._robot_motion_readiness_error(expected_mode=1)
                 if readiness_error is None:
                     break
                 time.sleep(0.05)
@@ -870,9 +920,11 @@ class Fr5DirectDriver(Node):
             self._hardware_fault_latched = False
             self._publish_health(True)
             response.success = True
-            response.message = "FR5 errors cleared, automatic mode selected, and robot enabled."
+            response.message = "FR5 errors cleared, manual mode selected, and robot enabled."
             return response
 
+        self._run_hardware_command("RobotEnable", 0)
+        self._run_hardware_command("Mode", 1)
         response.success = False
         response.message = "FR5 emergency recovery failed: " + ", ".join(
             f"{name}={code if code is not None else detail}"
@@ -936,6 +988,11 @@ class Fr5DirectDriver(Node):
         distance_mm = math.sqrt(
             sum((target_pose[i] - self._latest_pose[i]) ** 2 for i in range(3))
         )
+        mode_error = self._select_motion_mode(0)
+        if mode_error is not None:
+            response.success = False
+            response.message = "Return rejected: " + mode_error
+            return response
         try:
             code = self._robot.ServoMoveStart()
         except Exception as error:  # noqa: BLE001 - always return a ROS response.
@@ -1004,6 +1061,11 @@ class Fr5DirectDriver(Node):
         ):
             response.success = False
             response.message = "Auto tension rejected: servo is busy or feedback is stale."
+            return response
+        mode_error = self._select_motion_mode(0)
+        if mode_error is not None:
+            response.success = False
+            response.message = "Auto tension rejected: " + mode_error
             return response
         try:
             code = self._robot.ServoMoveStart()

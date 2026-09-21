@@ -95,6 +95,17 @@ function simpleErrorMessage(error) {
   return /[一-鿿]/.test(text) ? text : '操作失败，请检查设备';
 }
 
+function recoveryErrorMessage(error) {
+  const text = String(error?.message || '');
+  if (/牵引服务超时|timeout/i.test(text)) return '急停恢复等待设备超时，请检查连接后重试';
+  if (/emergency stop input/i.test(text)) return '请先释放实体急停，再点击急停恢复';
+  if (/Cartesian servo session|ServoMoveEnd/i.test(text)) return '机械臂运动状态尚未清理，请检查设备';
+  if (/force sensor/i.test(text)) return '力传感器未恢复，请检查设备';
+  if (/did not enter manual|Mode\(1\)/i.test(text)) return '机械臂未切换到手动模式，请检查示教器';
+  if (/robot enable|manual mode could not be enabled/i.test(text)) return '机械臂未成功上使能，请检查设备';
+  return /[一-鿿]/.test(text) ? text : '急停恢复失败，请检查设备状态';
+}
+
 async function postJson(path, body = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (sessionUser) {
@@ -299,7 +310,7 @@ async function emergencyStop() {
     emergencyPending = false;
     applyPermissions();
     return toast(recovering
-      ? `${simpleErrorMessage(error)}；请确认实体急停已释放`
+      ? recoveryErrorMessage(error)
       : `${simpleErrorMessage(error)}；请使用实体急停`);
   }
   emergencyPending = false;
