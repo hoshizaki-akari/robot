@@ -11,8 +11,9 @@ const permissions = {
 
 let sessionUser = null;
 const TARGET_FORCE_MIN = 1;
-const TARGET_FORCE_MAX = 20;
+const TARGET_FORCE_MAX = 100;
 let currentForce = 10;
+let targetUpdatePending = false;
 let operationMode = 0;
 let actualForce = 0;
 let activeRecord = null;
@@ -52,6 +53,7 @@ const ACTION_SUCCESS_MESSAGES = {
   '/api/traction/stop': '正在结束牵引',
   '/api/traction/emergency-stop': '已急停',
   '/api/traction/emergency-recover': '急停已恢复',
+  '/api/traction/set-zero': '当前位置已设为零位',
   '/api/traction/return-zero': '正在回零'
 };
 const REASON_LABELS = {
@@ -88,7 +90,7 @@ function simpleReason(value) {
 
 function simpleErrorMessage(error) {
   const text = String(error?.message || '');
-  if (/target|1 N and 20|1～20/i.test(text)) return '目标牵引力需在1～20N';
+  if (/target|1 N and 100|1～100/i.test(text)) return '目标牵引力需在1～100N';
   if (/mode|模式/i.test(text)) return '当前状态不能切换模式';
   if (/direction|calibrat/i.test(text)) return '请先完成方向确认';
   if (/state|rejected|not available|unavailable|不可用/i.test(text)) return '当前状态不能执行';
@@ -143,12 +145,16 @@ function applyPermissions() {
   $('currentUser').textContent = sessionUser.name;
   $('currentRole').textContent = sessionUser.role;
   const motionActive = [6, 7, 11, 12].includes(tractionState) || pendingStart;
+  const liveConstantForceAdjustment = operationMode === 0 && tractionState === 6;
   $('settingsBtn').disabled = !permission.settings || motionActive;
   document.querySelectorAll('.force-adjust').forEach(button => {
-    button.disabled = !permission.adjust || motionActive || operationMode === 2;
+    button.disabled = !permission.adjust || operationMode === 2 ||
+      (motionActive && !liveConstantForceAdjustment) || targetUpdatePending;
   });
-  $('targetForceVal').disabled = !permission.adjust || motionActive || operationMode === 2;
-  $('startBtn').disabled = !permission.operate || operationMode === 2 || tractionState !== 5 || !dataOnline || pendingStart;
+  $('targetForceVal').disabled = !permission.adjust || operationMode === 2 ||
+    (motionActive && !liveConstantForceAdjustment) || targetUpdatePending;
+  const startStateReady = operationMode === 2 ? tractionState === 2 : tractionState === 5;
+  $('startBtn').disabled = !permission.operate || !startStateReady || !dataOnline || pendingStart;
   $('stopBtn').disabled = !permission.operate || ![6, 11, 12].includes(tractionState) || !dataOnline;
   if ($('prepareBtn')) $('prepareBtn').disabled = !permission.operate || !dataOnline || ![1, 2, 5, 8, 9].includes(tractionState);
   if ($('calibrateBtn')) $('calibrateBtn').disabled = !permission.operate || !dataOnline || operationMode === 2 || tractionState !== 2;
@@ -159,11 +165,14 @@ function applyPermissions() {
     $('emergencyBtn').classList.toggle('recover', recovering);
   }
   if ($('returnZeroBtn')) $('returnZeroBtn').disabled = !permission.operate || !dataOnline || motionActive || ![1, 2, 5, 8].includes(tractionState);
+  if ($('setZeroPoseBtn')) {
+    $('setZeroPoseBtn').disabled = sessionUser.role !== '管理员' || !dataOnline || motionActive || ![1, 2, 5, 8].includes(tractionState);
+  }
   document.querySelectorAll('.mode-btn').forEach(button => {
     button.disabled = !permission.operate || !dataOnline || motionActive || ![1, 2, 5, 8].includes(tractionState);
     button.classList.toggle('active', Number(button.dataset.mode) === operationMode);
   });
-  $('startBtn').textContent = operationMode === 1 ? '开始位置牵引' : '开始牵引';
+  $('startBtn').textContent = operationMode === 2 ? '开始拖拽' : '开始牵引';
   $('stopBtn').textContent = operationMode === 2 ? '结束拖拽' : '结束牵引';
   $('recordsBtn').disabled = !permission.records;
 }
@@ -202,21 +211,29 @@ async function changeTarget(nextTarget) {
   if (!sessionUser || !permissions[sessionUser.role].adjust) {
     return toast('当前角色无权修改牵引参数');
   }
-  if (activeRecord) return toast('请先结束当前牵引');
+  const liveUpdateAllowed = activeRecord && operationMode === 0 && tractionState === 6;
+  if (activeRecord && !liveUpdateAllowed) return toast('当前模式运行中不能修改目标');
   const numericTarget = Number(nextTarget);
   if (!Number.isFinite(numericTarget) || numericTarget < TARGET_FORCE_MIN || numericTarget > TARGET_FORCE_MAX) {
     updateForceDisplay();
-    return toast('目标牵引力请输入 1～20 N');
+    return toast('目标牵引力请输入 1～100 N');
   }
   const previousForce = currentForce;
   currentForce = Math.round(numericTarget * 10) / 10;
   updateForceDisplay();
+  targetUpdatePending = true;
+  applyPermissions();
   try {
     await postJson('/api/traction/target', { target_force_n: currentForce });
+    targetUpdatePending = false;
+    applyPermissions();
+    if (liveUpdateAllowed) toast(`目标已调整为 ${currentForce.toFixed(1)}N`);
     return true;
   } catch (error) {
+    targetUpdatePending = false;
     currentForce = previousForce;
     updateForceDisplay();
+    applyPermissions();
     toast(simpleErrorMessage(error));
     return false;
   }
@@ -226,10 +243,24 @@ async function startTraction() {
   if (!sessionUser || !permissions[sessionUser.role].operate) return;
   if (pendingStart) return toast('正在等待控制器接管');
   if (!dataOnline) return toast('设备未连接');
-  if (operationMode === 2) return toast('省力拖拽请点击初始校准后直接操作');
+  if (operationMode === 2) {
+    if (tractionState !== 2) return toast('请先完成初始校准');
+    finishRequested = false;
+    pendingStart = true;
+    applyPermissions();
+    try {
+      await postJson('/api/traction/start');
+    } catch (error) {
+      pendingStart = false;
+      applyPermissions();
+      return toast(simpleErrorMessage(error));
+    }
+    toast('开始拖拽');
+    return;
+  }
   const requestedTarget = Number($('targetForceVal').value);
   if (!Number.isFinite(requestedTarget) || requestedTarget < TARGET_FORCE_MIN || requestedTarget > TARGET_FORCE_MAX) {
-    return toast('目标牵引力请输入 1～20 N');
+    return toast('目标牵引力请输入 1～100 N');
   }
   if (tractionState !== 5) return toast('请先完成方向标定并锁定方向');
   // A new run must not inherit the previous run's completion request/status.
@@ -423,7 +454,8 @@ function drawCurve() {
   context.strokeStyle = '#3b82f6';
   context.lineWidth = 3;
   context.beginPath();
-  const maximum = 40;
+  const peak = Math.max(currentForce, actualForce, ...dataPoints);
+  const maximum = Math.max(40, Math.ceil((peak * 1.15) / 20) * 20);
   const step = width / (dataPoints.length - 1);
   dataPoints.forEach((value, index) => {
     const x = index * step;
@@ -452,7 +484,7 @@ function handleState(state) {
   tractionState = Number(traction.state || 0);
   operationMode = Number(traction.operation_mode || 0);
   const rosTargetForce = Number(traction.target_force_n);
-  if (!activeRecord && document.activeElement !== $('targetForceVal') &&
+  if (!activeRecord && !targetUpdatePending && document.activeElement !== $('targetForceVal') &&
       Number.isFinite(rosTargetForce) &&
       rosTargetForce >= TARGET_FORCE_MIN && rosTargetForce <= TARGET_FORCE_MAX) {
     currentForce = Math.round(rosTargetForce * 10) / 10;
@@ -601,7 +633,7 @@ $('settingsBtn').addEventListener('click', () => {
 $('saveSettingsBtn').addEventListener('click', async () => {
   const target = Number($('settingTarget').value);
   if (target < TARGET_FORCE_MIN || target > TARGET_FORCE_MAX) {
-    return toast('目标牵引力必须在 1～20 N');
+    return toast('目标牵引力必须在 1～100 N');
   }
   if (!(await changeTarget(target))) {
     return;
@@ -609,6 +641,16 @@ $('saveSettingsBtn').addEventListener('click', async () => {
   $('settingsModal').classList.add('hidden');
   toast('参数已保存');
 });
+if ($('setZeroPoseBtn')) {
+  $('setZeroPoseBtn').addEventListener('click', async () => {
+    if (!sessionUser || sessionUser.role !== '管理员') {
+      return toast('仅管理员可以设置零位');
+    }
+    if (!confirm('确认把机械臂当前位姿设为新的零位吗？以后点击“回零”将返回这里。')) return;
+    const result = await callTraction('/api/traction/set-zero');
+    if (result) $('settingsModal').classList.add('hidden');
+  });
+}
 $('recordSearch').addEventListener('input', renderRecords);
 $('recordStatusFilter').addEventListener('change', renderRecords);
 $('exportBtn').addEventListener('click', exportRecords);

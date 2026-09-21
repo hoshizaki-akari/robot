@@ -103,15 +103,17 @@ public:
     calibration_min_samples_ = declare_parameter("calibration_min_samples", 80);
     calibration_max_angle_p95_deg_ = declare_parameter("calibration_max_angle_p95_deg", 15.0);
     target_force_min_n_ = declare_parameter("target_force_min_n", 1.0);
-    target_force_max_n_ = declare_parameter("target_force_max_n", 20.0);
-    validated_target_max_n_ = declare_parameter("validated_target_max_n", 20.0);
+    target_force_max_n_ = declare_parameter("target_force_max_n", 100.0);
+    validated_target_max_n_ = declare_parameter("validated_target_max_n", 100.0);
     force_tolerance_n_ = declare_parameter("force_tolerance_n", 1.0);
     force_deadband_n_ = declare_parameter("force_deadband_n", 0.15);
     // The timeout now covers the direct, low-speed position return. It is not
     // a force-unloading timeout because RELEASING no longer runs force control.
     release_timeout_s_ = declare_parameter("release_timeout_s", 300.0);
-    position_reached_tolerance_n_ = declare_parameter("position_reached_tolerance_n", 0.20);
-    position_reached_confirm_s_ = declare_parameter("position_reached_confirm_s", 0.50);
+    position_reached_tolerance_n_ = declare_parameter("position_reached_tolerance_n", 1.0);
+    position_reached_confirm_s_ = declare_parameter("position_reached_confirm_s", 1.0);
+    hard_overforce_n_ = declare_parameter("hard_overforce_n", 150.0);
+    hard_overforce_confirm_s_ = declare_parameter("hard_overforce_confirm_s", 0.20);
     wrench_timeout_s_ = declare_parameter("wrench_timeout_s", 0.10);
     ee_state_timeout_s_ = declare_parameter("ee_state_timeout_s", 0.20);
     motion_pause_timeout_s_ = declare_parameter("motion_pause_timeout_s", 0.10);
@@ -155,6 +157,7 @@ public:
 
     validate_parameters();
     force_filter_.set_cutoff(force_filter_cutoff_hz_);
+    safety_monitor_.set_limits({hard_overforce_n_, hard_overforce_confirm_s_});
     std::filesystem::create_directories(data_directory_);
 
     command_publisher_ = create_publisher<msg::TractionCommand>(
@@ -330,6 +333,8 @@ private:
       std::isfinite(release_timeout_s_) && release_timeout_s_ > 0.0 &&
       std::isfinite(position_reached_tolerance_n_) && position_reached_tolerance_n_ > 0.0 &&
       std::isfinite(position_reached_confirm_s_) && position_reached_confirm_s_ > 0.0 &&
+      std::isfinite(hard_overforce_n_) && hard_overforce_n_ > target_force_max_n_ &&
+      std::isfinite(hard_overforce_confirm_s_) && hard_overforce_confirm_s_ > 0.0 &&
       std::isfinite(wrench_timeout_s_) && wrench_timeout_s_ > 0.0 &&
       std::isfinite(ee_state_timeout_s_) && ee_state_timeout_s_ > 0.0 &&
       std::isfinite(motion_pause_timeout_s_) && motion_pause_timeout_s_ > 0.0 &&
@@ -572,22 +577,9 @@ private:
     if (state != TractionState::MANUAL_SETUP) {
       transition(TractionState::MANUAL_SETUP);
     }
-    if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
-      if (!request_controller_start()) {
-        stop_reason_ = "DRAG_CONTROLLER_START_FAILED";
-        finalize_session();
-        transition(TractionState::READY);
-        response->success = false;
-        response->message = "Drag rejected: Cartesian controller could not be activated.";
-        return;
-      }
-      response->success = true;
-      response->message =
-        "Initial calibration completed; drag will activate after feedback confirmation.";
-      return;
-    }
     response->success = true;
-    response->message =
+    response->message = operation_mode_ == OperationMode::ASSISTED_DRAG ?
+      "Initial calibration completed. Press Start Drag when ready." :
       "Initial calibration completed. Move the FR5 by teach pendant, then confirm direction.";
   }
 
@@ -632,8 +624,18 @@ private:
   void handle_start(const std_srvs::srv::Trigger::Response::SharedPtr response)
   {
     if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
-      response->success = false;
-      response->message = "Drag starts from initial calibration and does not use Start.";
+      if (state_machine_.state() != TractionState::MANUAL_SETUP) {
+        response->success = false;
+        response->message = state_and_allowed("start drag only after initial calibration");
+        return;
+      }
+      if (controller_start_pending_ || !request_controller_start()) {
+        response->success = false;
+        response->message = "Drag rejected: FR5 native drag could not be activated.";
+        return;
+      }
+      response->success = true;
+      response->message = "FR5 native drag activation requested.";
       return;
     }
     if (state_machine_.state() != TractionState::DIRECTION_LOCKED) {
@@ -649,7 +651,7 @@ private:
     }
     if (!target_in_range(target_force_n_)) {
       response->success = false;
-      response->message = "Start rejected: target must be between 1 N and 20 N.";
+      response->message = "Start rejected: target must be between 1 N and 100 N.";
       return;
     }
     if (!target_force_configured_) {
@@ -809,23 +811,28 @@ private:
     }
     if (!target_in_range(request->target_force_n)) {
       response->success = false;
-      response->message = "Target rejected: target_force_n must be in [1.0, 20.0] N.";
+      response->message = "Target rejected: target_force_n must be in [1.0, 100.0] N.";
       return;
     }
     const auto state = state_machine_.state();
+    const bool live_constant_force_update =
+      state == TractionState::TRACTION && operation_mode_ == OperationMode::CONSTANT_FORCE;
     if (state != TractionState::READY && state != TractionState::COMPLETED &&
-      state != TractionState::MANUAL_SETUP && state != TractionState::DIRECTION_LOCKED)
+      state != TractionState::MANUAL_SETUP && state != TractionState::DIRECTION_LOCKED &&
+      !live_constant_force_update)
     {
       response->success = false;
       response->message =
         state_and_allowed(
-        "set_target_force from READY, COMPLETED, MANUAL_SETUP or DIRECTION_LOCKED");
+        "set_target_force while stopped, or during constant-force traction");
       return;
     }
     target_force_n_ = request->target_force_n;
     target_force_configured_ = true;
     response->success = true;
-    response->message = "Target force set to " + std::to_string(target_force_n_) + " N.";
+    response->message = live_constant_force_update ?
+      "Live constant-force target updated to " + std::to_string(target_force_n_) + " N." :
+      "Target force set to " + std::to_string(target_force_n_) + " N.";
   }
 
   void handle_set_operation_mode(
@@ -1234,7 +1241,7 @@ private:
     const auto state = state_machine_.state();
     const bool needs_live_data = state == TractionState::PRETENSION ||
       state == TractionState::TRACTION || state == TractionState::RELEASING ||
-      state == TractionState::DRAGGING;
+      state == TractionState::DRAGGING || state == TractionState::POSITION_HOLD;
     if (!needs_live_data) {
       safety_monitor_.reset();
       return;
@@ -1448,11 +1455,13 @@ private:
 
   double ramped_command_target(double dt_s) const
   {
-    const double remaining = std::max(0.0, target_force_n_ - current_command_target_n_);
-    if (remaining <= 0.0) {return target_force_n_;}
+    const double error = target_force_n_ - current_command_target_n_;
+    const double remaining = std::abs(error);
+    if (remaining <= 1e-9) {return target_force_n_;}
     const double rate = remaining <= target_ramp_slow_window_n_ ?
       target_ramp_slow_nps_ : target_ramp_fast_nps_;
-    return std::min(target_force_n_, current_command_target_n_ + rate * dt_s);
+    const double step = std::min(remaining, rate * dt_s);
+    return current_command_target_n_ + std::copysign(step, error);
   }
 
   void control_tick()
@@ -1889,16 +1898,18 @@ private:
   int calibration_min_samples_ = 80;
   double calibration_max_angle_p95_deg_ = 15.0;
   double target_force_min_n_ = 1.0;
-  double target_force_max_n_ = 20.0;
+  double target_force_max_n_ = 100.0;
   double target_ramp_fast_nps_ = 3.0;
   double target_ramp_slow_nps_ = 0.5;
   double target_ramp_slow_window_n_ = 1.0;
-  double validated_target_max_n_ = 20.0;
+  double validated_target_max_n_ = 100.0;
   double force_tolerance_n_ = 1.0;
   double force_deadband_n_ = 0.15;
   double release_timeout_s_ = 300.0;
-  double position_reached_tolerance_n_ = 0.20;
-  double position_reached_confirm_s_ = 0.50;
+  double position_reached_tolerance_n_ = 1.0;
+  double position_reached_confirm_s_ = 1.0;
+  double hard_overforce_n_ = 150.0;
+  double hard_overforce_confirm_s_ = 0.20;
   double wrench_timeout_s_ = 0.10;
   double ee_state_timeout_s_ = 0.20;
   double motion_pause_timeout_s_ = 0.10;

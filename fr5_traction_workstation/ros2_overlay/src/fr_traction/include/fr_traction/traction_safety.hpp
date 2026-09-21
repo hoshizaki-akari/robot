@@ -21,7 +21,11 @@ enum class SafetyFault : unsigned char
   UI_HEARTBEAT_TIMEOUT
 };
 
-struct SafetyLimits {};
+struct SafetyLimits
+{
+  double hard_overforce_n = 150.0;
+  double hard_overforce_confirm_s = 0.20;
+};
 
 struct SafetySample
 {
@@ -46,6 +50,7 @@ public:
 
 private:
   SafetyLimits limits_;
+  double hard_overforce_started_at_s_ = -1.0;
 };
 
 }  // namespace fr_traction

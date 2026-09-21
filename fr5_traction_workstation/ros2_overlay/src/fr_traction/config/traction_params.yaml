@@ -32,8 +32,8 @@ traction_controller:
     traction_sign_z: -1.0
     # Position traction uses a dedicated predictive velocity loop. It keeps
     # the 20 mm/s far-field response, brakes from the measured force trend,
-    # and enters the existing +/-0.2 N, 0.5 s hold only after motion settles.
-    position_tolerance_n: 0.20
+    # and enters the +/-1 N completion band only after motion settles.
+    position_tolerance_n: 1.0
     position_far_gain_mps_per_n: 0.0060
     position_near_gain_mps_per_n: 0.0045
     position_near_window_n: 2.0
@@ -106,8 +106,8 @@ traction_manager:
     calibration_min_samples: 40
     calibration_max_angle_p95_deg: 15.0
     target_force_min_n: 1.0
-    target_force_max_n: 20.0
-    validated_target_max_n: 20.0
+    target_force_max_n: 100.0
+    validated_target_max_n: 100.0
     force_tolerance_n: 1.0
     # A 0.15 N deadband prevents the former 0.5 N shortfall while remaining
     # wider than the normal sensor noise after filtering.
@@ -115,10 +115,14 @@ traction_manager:
     # Covers the longest configurable position-driven return plus generous
     # communication margin. Force control remains disabled throughout it.
     release_timeout_s: 300.0
-    # Position traction stops once total rope tension stays within ±0.2 N for
-    # 0.5 s. Later force changes do not restart control in this mode.
-    position_reached_tolerance_n: 0.20
-    position_reached_confirm_s: 0.50
+    # Position traction stops once total rope tension stays within ±1 N for
+    # 1 s. Later force changes do not restart control in this mode.
+    position_reached_tolerance_n: 1.0
+    position_reached_confirm_s: 1.0
+    # A single spike does not stop motion. The measured rope tension must stay
+    # above 150 N continuously for 0.2 s before a hard-overforce stop is latched.
+    hard_overforce_n: 150.0
+    hard_overforce_confirm_s: 0.20
     # Two-stage stale-data handling: motion is disabled after 0.25 s, while
     # wrench/pose gaps still fault at 1.2 s. The FR5 SDK health heartbeat is
     # emitted by the same timer as ServoCart; a measured 0.607 s RPC gap needs

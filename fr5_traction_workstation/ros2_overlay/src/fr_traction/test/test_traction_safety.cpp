@@ -48,8 +48,8 @@ TEST(TractionSafety, AxialForceDoesNotLatchAnOverforceFault)
   sample.metrics.actual_force_n = 30.0;
   EXPECT_EQ(monitor.update(sample, 0.0, false), fr_traction::SafetyFault::NONE);
 
-  sample.raw_wrench = {0.0, 0.0, -100.0};
-  sample.metrics.actual_force_n = 100.0;
+  sample.raw_wrench = {0.0, 0.0, -149.9};
+  sample.metrics.actual_force_n = 149.9;
   EXPECT_EQ(monitor.update(sample, 1.0, false), fr_traction::SafetyFault::NONE);
 
   // A direction change may temporarily place all of the rope tension in the
@@ -59,6 +59,28 @@ TEST(TractionSafety, AxialForceDoesNotLatchAnOverforceFault)
   sample.metrics.lateral_force_n = 30.0;
   EXPECT_EQ(monitor.update(sample, 2.0, false), fr_traction::SafetyFault::NONE);
   EXPECT_EQ(monitor.update(sample, 20.0, false), fr_traction::SafetyFault::NONE);
+}
+
+TEST(TractionSafety, HardOverforceRequiresContinuousConfirmation)
+{
+  fr_traction::SafetyLimits limits;
+  limits.hard_overforce_n = 150.0;
+  limits.hard_overforce_confirm_s = 0.20;
+  fr_traction::SafetyMonitor monitor(limits);
+  auto sample = nominal_sample();
+  sample.raw_wrench = {0.0, 0.0, -151.0};
+  sample.metrics.actual_force_n = 151.0;
+  EXPECT_EQ(monitor.update(sample, 1.00, false), fr_traction::SafetyFault::NONE);
+  EXPECT_EQ(monitor.update(sample, 1.19, false), fr_traction::SafetyFault::NONE);
+
+  sample.raw_wrench = {0.0, 0.0, -149.0};
+  sample.metrics.actual_force_n = 149.0;
+  EXPECT_EQ(monitor.update(sample, 1.20, false), fr_traction::SafetyFault::NONE);
+
+  sample.raw_wrench = {0.0, 0.0, -151.0};
+  sample.metrics.actual_force_n = 151.0;
+  EXPECT_EQ(monitor.update(sample, 2.00, false), fr_traction::SafetyFault::NONE);
+  EXPECT_EQ(monitor.update(sample, 2.21, false), fr_traction::SafetyFault::HARD_OVERFORCE);
 }
 
 TEST(TractionSafety, ChecksOptionalUiHeartbeatWithoutSoftwareTravelLimit)

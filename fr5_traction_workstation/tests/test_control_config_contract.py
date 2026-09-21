@@ -16,7 +16,7 @@ class ControlConfigurationContractTest(unittest.TestCase):
         self.assertIn("pretension_max_travel_m", manager)
         self.assertIn("tension_search_max_mm", driver)
 
-    def test_fixed_zero_and_motion_rate_are_configured(self):
+    def test_persistent_zero_and_motion_rate_are_configured(self):
         launch = (ROS / "launch" / "traction_system.launch.py").read_text(encoding="utf-8")
         driver = (ROS / "scripts" / "fr5_direct_driver_node.py").read_text(encoding="utf-8")
         self.assertIn('"motion_rate_hz": 100.0', launch)
@@ -27,7 +27,10 @@ class ControlConfigurationContractTest(unittest.TestCase):
         self.assertIn("cmdT=self._motion_period_s", driver)
         self.assertIn('"fixed_zero_pose_mm_deg"', launch)
         self.assertIn("500.7035522460938", launch)
-        self.assertIn("fixed zero pose unchanged", driver)
+        self.assertIn('"zero_pose_file"', driver)
+        self.assertIn("_load_zero_pose", driver)
+        self.assertIn("_save_zero_pose", driver)
+        self.assertIn("os.replace", driver)
 
     def test_driver_bounds_command_rpc_and_return_waits_for_stop_handoff(self):
         driver = (ROS / "scripts" / "fr5_direct_driver_node.py").read_text(encoding="utf-8")
@@ -150,7 +153,9 @@ class ControlConfigurationContractTest(unittest.TestCase):
         ).read_text(encoding="utf-8"))
         self.assertIn("TractionCommand::POSITIONING", manager)
         self.assertIn("PositionControlDiagnostics::SETTLING", manager)
-        self.assertIn("position_tolerance_n: 0.20", parameters)
+        self.assertIn("position_tolerance_n: 1.0", parameters)
+        self.assertIn("position_reached_tolerance_n: 1.0", parameters)
+        self.assertIn("position_reached_confirm_s: 1.0", parameters)
         self.assertIn("traction_max_speed_mps: 0.020", parameters)
         self.assertIn("position_far_gain_mps_per_n: 0.0060", parameters)
         self.assertIn("position_near_gain_mps_per_n: 0.0045", parameters)

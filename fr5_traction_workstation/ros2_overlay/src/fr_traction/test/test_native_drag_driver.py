@@ -119,7 +119,9 @@ def fake_driver(sdk, raw_force):
         _hardware_emergency_latched=False,
         _latest_pose=[0.0] * 6,
         _latest_joints=[0.0] * 6,
+        _latest_joint_speeds=[0.0] * 6,
         _latest_wrench=list(raw_force),
+        _traction_mode=module.TractionCommand.DISABLED,
         _last_realtime_state_at=module.time.monotonic(),
         _realtime_state_timeout_s=0.5,
     )
@@ -168,6 +170,35 @@ def fake_driver(sdk, raw_force):
         Fr5DirectDriver._disable_after_failed_native_stop(driver, context)
     )
     return driver
+
+
+def test_set_zero_persists_current_stationary_pose(tmp_path):
+    driver = fake_driver(OldSdk(), [0.0] * 6)
+    driver._latest_pose = [101.0, 202.0, 303.0, 1.0, 2.0, 3.0]
+    driver._zero_pose = [0.0] * 6
+    driver._zero_pose_file = tmp_path / "zero_pose.json"
+    driver._save_zero_pose = lambda pose: Fr5DirectDriver._save_zero_pose(driver, pose)
+    response = SimpleNamespace(success=False, message="")
+
+    Fr5DirectDriver._on_set_zero(driver, None, response)
+
+    assert response.success
+    assert driver._zero_pose == driver._latest_pose
+    payload = module.json.loads(driver._zero_pose_file.read_text(encoding="utf-8"))
+    assert payload["pose_mm_deg"] == driver._latest_pose
+
+
+def test_set_zero_rejects_a_moving_robot(tmp_path):
+    driver = fake_driver(OldSdk(), [0.0] * 6)
+    driver._latest_joint_speeds = [0.0, 0.0, 0.6, 0.0, 0.0, 0.0]
+    driver._zero_pose_file = tmp_path / "zero_pose.json"
+    driver._save_zero_pose = lambda pose: Fr5DirectDriver._save_zero_pose(driver, pose)
+    response = SimpleNamespace(success=False, message="")
+
+    Fr5DirectDriver._on_set_zero(driver, None, response)
+
+    assert not response.success
+    assert not driver._zero_pose_file.exists()
 
 
 def test_old_sdk_uses_vendor_threshold_independent_of_raw_idle_bias():

@@ -52,7 +52,7 @@ public:
     traction_sign_x_ = declare_parameter("traction_sign_x", 1.0);
     traction_sign_y_ = declare_parameter("traction_sign_y", 1.0);
     traction_sign_z_ = declare_parameter("traction_sign_z", -1.0);
-    position_tolerance_n_ = declare_parameter("position_tolerance_n", 0.20);
+    position_tolerance_n_ = declare_parameter("position_tolerance_n", 1.0);
     position_far_gain_mps_per_n_ = declare_parameter(
       "position_far_gain_mps_per_n", 0.0060);
     position_near_gain_mps_per_n_ = declare_parameter(
@@ -504,7 +504,7 @@ private:
   double traction_sign_x_ = 1.0;
   double traction_sign_y_ = 1.0;
   double traction_sign_z_ = -1.0;
-  double position_tolerance_n_ = 0.20;
+  double position_tolerance_n_ = 1.0;
   double position_far_gain_mps_per_n_ = 0.0040;
   double position_near_gain_mps_per_n_ = 0.0015;
   double position_near_window_n_ = 2.0;

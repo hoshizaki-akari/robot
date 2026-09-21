@@ -46,6 +46,7 @@ OPERATION_NAMES = {
     "/api/traction/emergency-stop": "急停",
     "/api/traction/emergency-recover": "急停恢复",
     "/api/traction/reset-fault": "故障复位",
+    "/api/traction/set-zero": "设置当前位置为零位",
     "/api/traction/return-zero": "回零",
     "/api/system/shutdown": "关闭程序",
 }
@@ -159,7 +160,7 @@ async def record_operation(request: Request, call_next):
 
 
 class TargetRequest(BaseModel):
-    target_force_n: float = Field(ge=1.0, le=20.0)
+    target_force_n: float = Field(ge=1.0, le=100.0)
 
 
 class OperationModeRequest(BaseModel):
@@ -299,6 +300,17 @@ def emergency_recover() -> dict:
 @app.post("/api/traction/reset-fault")
 def reset_fault() -> dict:
     return _call("reset_fault")
+
+
+@app.post("/api/traction/set-zero")
+def set_zero(request: Request) -> dict:
+    role = unquote(request.headers.get("x-role", ""))
+    if role != "管理员":
+        raise HTTPException(status_code=403, detail="仅管理员可以设置零位")
+    state = bridge.snapshot().get("traction", {}).get("state")
+    if state not in (1, 2, 5, 8):
+        raise HTTPException(status_code=409, detail="请先停止机械臂，再设置当前位置为零位")
+    return _call("set_zero_pose")
 
 
 @app.post("/api/traction/return-zero")

@@ -65,6 +65,7 @@
     .status.offline { color: var(--red); }
 
     .arm-panel { flex: 1.05; background: #323232; min-height: 0; }
+    .arm-panel .card-title { color: #fff; }
     .arm-img-wrap { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
     .arm-img-wrap img { width: 100%; height: 100%; object-fit: contain; }
     #robotViewer { width: 100%; height: 100%; min-height: 210px; }
@@ -77,7 +78,7 @@
     #forceCanvas { flex: 1; width: 100%; min-height: 0; border-radius: 10px; background: #f8fafc; border: 1px solid var(--line); }
 
     .operation-panel { flex: 1; min-height: 0; padding-bottom: 18px; }
-    .operation-title { flex: 0 0 58px; }
+    .operation-title { flex: 0 0 58px; justify-content: flex-end; }
     .compact-status { display: flex; align-items: center; gap: 18px; font-size: 14px; font-weight: 600; }
     .compact-status-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
     .compact-status-item::before {
@@ -154,6 +155,7 @@
     .action-btn:active:not(:disabled) { transform: translateY(2px); }
     .action-btn.start { background: var(--green); }
     .action-btn.stop { background: var(--orange); }
+    .action-btn.zero { background: #fde68a; color: #854d0e; }
     .action-btn.emergency { background: var(--red); }
     .action-btn.emergency.recover { background: var(--green); }
 
@@ -276,7 +278,6 @@
     <section class="right-area">
       <div class="card operation-panel">
         <div class="card-title operation-title">
-          <span>牵引力调节</span>
           <div class="compact-status" aria-label="实时状态">
             <span class="compact-status-item"><span class="compact-status-label">任务</span><strong class="state-value" id="workStatus">设备就绪</strong></span>
             <span class="compact-status-item"><span class="compact-status-label">牵引带</span><strong class="state-value" id="tensionState">松弛</strong></span>
@@ -295,15 +296,15 @@
           </div>
           <div class="force-board">
             <div class="force-metric">
-              <div class="force-metric-label">目标牵引力</div>
+              <div class="force-metric-label">目标</div>
               <div class="force-number">
-                <input class="force-value-target" id="targetForceVal" type="number" min="1" max="20" step="0.1" value="10" inputmode="decimal" aria-label="目标牵引力">
+                <input class="force-value-target" id="targetForceVal" type="number" min="1" max="100" step="0.1" value="10" inputmode="decimal" aria-label="目标牵引力">
                 <span class="force-unit-target">N</span>
               </div>
             </div>
             <div class="force-divider" aria-hidden="true"></div>
             <div class="force-metric">
-              <div class="force-metric-label">当前牵引力</div>
+              <div class="force-metric-label">当前</div>
               <div class="force-number">
                 <strong class="actual-force-value" id="actualForceVal">0.0</strong>
                 <span class="actual-force-unit">N</span>
@@ -317,11 +318,11 @@
         </div>
         <div class="control-grid">
           <button class="action-btn start" id="prepareBtn" title="牵引带松弛时点击">初始校准</button>
-          <button class="action-btn start" id="calibrateBtn" disabled title="张紧后保持法兰不动">方向确定</button>
           <button class="action-btn start" id="startBtn" disabled>开始牵引</button>
+          <button class="action-btn zero" id="returnZeroBtn" disabled>回零</button>
+          <button class="action-btn start" id="calibrateBtn" disabled title="张紧后保持法兰不动">方向确定</button>
           <button class="action-btn stop" id="stopBtn" disabled>结束牵引</button>
           <button class="action-btn emergency" id="emergencyBtn" disabled>急停</button>
-          <button class="action-btn stop" id="returnZeroBtn" disabled>回零</button>
         </div>
       </div>
     </section>
@@ -359,8 +360,10 @@
     <div class="modal small">
       <div class="modal-header"><h2>牵引参数设置</h2><button class="close-btn" data-close="settingsModal">×</button></div>
       <div class="modal-body">
-        <div class="form-item"><label>默认目标牵引力（N）</label><input id="settingTarget" type="number" min="1" max="20" step="0.1"></div>
+        <div class="form-item"><label>默认目标牵引力（N）</label><input id="settingTarget" type="number" min="1" max="100" step="0.1"></div>
         <button class="primary-btn" id="saveSettingsBtn">保存参数</button>
+        <button class="secondary-btn" id="setZeroPoseBtn" style="width:100%; margin-top:14px;">设置当前位置为零位</button>
+        <div class="permission-note" id="setZeroPoseNote">设置后，回零将返回当前机械臂位姿；仅管理员可操作。</div>
       </div>
     </div>
   </div>
@@ -394,6 +397,6 @@
     uses /api/traction/* and the ROS2 traction manager; it does not simulate force,
     persist traction records in the browser, or issue robot SDK commands.
   </script>
-  <script src="/assets/090105.js?v=20260918-smooth-drag-shutdown"></script>
+  <script src="/assets/090105.js?v=20260921-live-target-zero-pose"></script>
 </body>
 </html>

@@ -18,6 +18,7 @@ void SafetyMonitor::set_limits(const SafetyLimits & limits)
 
 void SafetyMonitor::reset()
 {
+  hard_overforce_started_at_s_ = -1.0;
 }
 
 SafetyFault SafetyMonitor::update(
@@ -45,10 +46,19 @@ SafetyFault SafetyMonitor::update(
   {
     return SafetyFault::WRENCH_INVALID;
   }
-  // Force magnitude, lateral force and software travel are control/diagnostic
-  // inputs. The robot controller's native reach protection remains in force;
-  // this layer only latches invalid/stale feedback, controller health and the
-  // optional UI heartbeat.
+  if (sample.metrics.actual_force_n > limits_.hard_overforce_n) {
+    if (hard_overforce_started_at_s_ < 0.0) {
+      hard_overforce_started_at_s_ = now_s;
+    }
+    if (now_s - hard_overforce_started_at_s_ >= limits_.hard_overforce_confirm_s) {
+      return SafetyFault::HARD_OVERFORCE;
+    }
+  } else {
+    hard_overforce_started_at_s_ = -1.0;
+  }
+  // Lateral force and software travel remain control/diagnostic inputs. The
+  // only software force trip is the separately debounced 150 N hard limit;
+  // native controller reach protection remains in force as well.
   if (require_ui_heartbeat && !sample.ui_heartbeat_fresh) {
     return SafetyFault::UI_HEARTBEAT_TIMEOUT;
   }

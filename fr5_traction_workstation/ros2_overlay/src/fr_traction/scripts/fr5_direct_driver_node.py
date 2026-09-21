@@ -2,8 +2,10 @@
 """Single-owner FR5 feedback, native drag and Cartesian-servo bridge."""
 
 import inspect
+import json
 import math
 import os
+from pathlib import Path
 import sys
 import threading
 import time
@@ -173,6 +175,14 @@ class Fr5DirectDriver(Node):
         ):
             raise ValueError("fixed_zero_pose_mm_deg must contain six finite values")
         self._fixed_zero_pose = [float(value) for value in fixed_zero_pose]
+        default_zero_pose_file = os.path.join(
+            os.path.expanduser("~"), ".local", "state", "fr5-traction", "zero_pose.json"
+        )
+        self._zero_pose_file = Path(
+            os.path.expanduser(
+                str(self.declare_parameter("zero_pose_file", default_zero_pose_file).value)
+            )
+        )
         self._realtime_state_timeout_s = float(
             self.declare_parameter("realtime_state_timeout_s", 0.5).value
         )
@@ -358,10 +368,11 @@ class Fr5DirectDriver(Node):
         self._auto_tension_increment = [0.0, 0.0, -0.02, 0.0, 0.0, 0.0]
         self._latest_pose = None
         self._latest_joints = None
+        self._latest_joint_speeds = None
         self._latest_wrench = None
         self._last_realtime_state = None
         self._last_realtime_state_at = 0.0
-        self._zero_pose = list(self._fixed_zero_pose)
+        self._zero_pose = self._load_zero_pose()
         self._pretraction_pose = None
         self._pretraction_joints = None
         self._healthy = True
@@ -958,9 +969,69 @@ class Fr5DirectDriver(Node):
         return response
 
     def _on_set_zero(self, _request, response):
-        response.success = False
-        response.message = "The return-zero pose is fixed by the project configuration."
+        now = time.monotonic()
+        busy = (
+            self._servo_enabled
+            or self._servo_cleanup_pending
+            or self._native_drag_active
+            or self._return_active
+            or self._auto_tension_active
+            or self._traction_mode != TractionCommand.DISABLED
+        )
+        feedback_stale = (
+            self._latest_pose is None
+            or self._latest_joint_speeds is None
+            or now - self._last_realtime_state_at > self._realtime_state_timeout_s
+        )
+        moving = self._latest_joint_speeds is not None and any(
+            abs(float(speed)) > 0.5 for speed in self._latest_joint_speeds
+        )
+        if busy or feedback_stale or moving:
+            response.success = False
+            response.message = (
+                "Zero-pose update rejected: FR5 must be idle, stationary and reporting fresh data."
+            )
+            return response
+        if self._hardware_fault_latched or self._hardware_emergency_latched:
+            response.success = False
+            response.message = "Zero-pose update rejected: clear the FR5 fault first."
+            return response
+        pose = [float(value) for value in self._latest_pose]
+        try:
+            self._save_zero_pose(pose)
+        except OSError as error:
+            response.success = False
+            response.message = f"Zero-pose update failed: {error}"
+            return response
+        self._zero_pose = pose
+        response.success = True
+        response.message = "Current FR5 pose saved as the persistent return-zero pose."
         return response
+
+    def _load_zero_pose(self):
+        try:
+            payload = json.loads(self._zero_pose_file.read_text(encoding="utf-8"))
+            pose = payload.get("pose_mm_deg")
+            if len(pose) != 6 or not all(math.isfinite(float(value)) for value in pose):
+                raise ValueError("pose_mm_deg must contain six finite values")
+            self.get_logger().info(f"Loaded persistent zero pose from {self._zero_pose_file}.")
+            return [float(value) for value in pose]
+        except FileNotFoundError:
+            return list(self._fixed_zero_pose)
+        except (AttributeError, OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+            self.get_logger().warning(
+                f"Ignoring invalid persistent zero pose {self._zero_pose_file}: {error}"
+            )
+            return list(self._fixed_zero_pose)
+
+    def _save_zero_pose(self, pose):
+        self._zero_pose_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._zero_pose_file.with_suffix(".tmp")
+        payload = {"version": 1, "pose_mm_deg": pose, "saved_at_unix_s": time.time()}
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        os.replace(temporary, self._zero_pose_file)
 
     def _on_slack_calibration(self, message):
         if not message.data:
@@ -1331,6 +1402,7 @@ class Fr5DirectDriver(Node):
                 if state_snapshot is not None:
                     joints, pose, speeds, wrench = state_snapshot
                     self._latest_joints, self._latest_pose = list(joints), list(pose)
+                    self._latest_joint_speeds = list(speeds)
                     self._latest_wrench = list(wrench)
                     self._publish_feedback(
                         self.get_clock().now().to_msg(), joints, speeds, wrench, pose

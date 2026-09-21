@@ -37,8 +37,10 @@ class UiContractTest(unittest.TestCase):
         self.assertIn("<th>原因</th>", page)
         self.assertNotIn("尚未感知到有效张力", page)
         self.assertIn("/api/traction/return-zero", script)
-        self.assertNotIn("设置零点", page)
-        self.assertNotIn("setZeroBtn", script)
+        self.assertIn("设置当前位置为零位", page)
+        self.assertIn("setZeroPoseBtn", script)
+        self.assertIn("/api/traction/set-zero", script)
+        self.assertIn('@app.post("/api/traction/set-zero")', app)
         self.assertNotIn("resetBtn", page)
         self.assertIn("Always send the value currently shown", script)
         self.assertIn("finishRequested", script)
@@ -60,6 +62,22 @@ class UiContractTest(unittest.TestCase):
         self.assertIn("方向校准成功", script)
         self.assertNotIn("最大行程", page)
         self.assertNotIn("settingTravelLimit", script)
+        self.assertIn('max="100"', page)
+        self.assertIn("const TARGET_FORCE_MAX = 100", script)
+        self.assertIn("liveConstantForceAdjustment", script)
+        self.assertIn("Math.ceil((peak * 1.15) / 20) * 20", script)
+        action_ids = re.findall(r'class="action-btn[^"]*" id="([^"]+)"', page)
+        self.assertEqual(
+            action_ids,
+            [
+                "prepareBtn", "startBtn", "returnZeroBtn",
+                "calibrateBtn", "stopBtn", "emergencyBtn",
+            ],
+        )
+        self.assertIn('<div class="force-metric-label">目标</div>', page)
+        self.assertIn('<div class="force-metric-label">当前</div>', page)
+        self.assertNotIn('<span>牵引力调节</span>', page)
+        self.assertIn(".arm-panel .card-title { color: #fff; }", page)
 
     def test_no_old_platform_b_dependency(self):
         page = (ROOT / "static" / "090105.html").read_text(encoding="utf-8")
