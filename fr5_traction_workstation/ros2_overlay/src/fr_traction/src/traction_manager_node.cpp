@@ -90,9 +90,9 @@ public:
     // Use a two-stage command ramp: move quickly through the large error, then
     // slow down inside the final window so the compliant rope is not hit with
     // a uniform force step all the way to the target.
-    target_ramp_fast_nps_ = declare_parameter("target_ramp_fast_nps", 3.0);
-    target_ramp_slow_nps_ = declare_parameter("target_ramp_slow_nps", 0.5);
-    target_ramp_slow_window_n_ = declare_parameter("target_ramp_slow_window_n", 1.0);
+    target_ramp_fast_nps_ = declare_parameter("target_ramp_fast_nps", 12.0);
+    target_ramp_slow_nps_ = declare_parameter("target_ramp_slow_nps", 1.5);
+    target_ramp_slow_window_n_ = declare_parameter("target_ramp_slow_window_n", 5.0);
     pretension_detect_n_ = declare_parameter("pretension_detect_n", 1.0);
     pretension_target_n_ = declare_parameter("pretension_target_n", 3.0);
     calibration_min_force_n_ = declare_parameter("calibration_min_force_n", 0.5);
@@ -1455,13 +1455,9 @@ private:
 
   double ramped_command_target(double dt_s) const
   {
-    const double error = target_force_n_ - current_command_target_n_;
-    const double remaining = std::abs(error);
-    if (remaining <= 1e-9) {return target_force_n_;}
-    const double rate = remaining <= target_ramp_slow_window_n_ ?
-      target_ramp_slow_nps_ : target_ramp_fast_nps_;
-    const double step = std::min(remaining, rate * dt_s);
-    return current_command_target_n_ + std::copysign(step, error);
+    return next_force_command_target(
+      current_command_target_n_, target_force_n_, dt_s,
+      target_ramp_fast_nps_, target_ramp_slow_nps_, target_ramp_slow_window_n_);
   }
 
   void control_tick()
@@ -1899,9 +1895,9 @@ private:
   double calibration_max_angle_p95_deg_ = 15.0;
   double target_force_min_n_ = 1.0;
   double target_force_max_n_ = 100.0;
-  double target_ramp_fast_nps_ = 3.0;
-  double target_ramp_slow_nps_ = 0.5;
-  double target_ramp_slow_window_n_ = 1.0;
+  double target_ramp_fast_nps_ = 12.0;
+  double target_ramp_slow_nps_ = 1.5;
+  double target_ramp_slow_window_n_ = 5.0;
   double validated_target_max_n_ = 100.0;
   double force_tolerance_n_ = 1.0;
   double force_deadband_n_ = 0.15;

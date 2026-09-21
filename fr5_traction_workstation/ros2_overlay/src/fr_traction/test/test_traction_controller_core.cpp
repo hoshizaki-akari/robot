@@ -205,6 +205,35 @@ TEST(TractionControllerCore, ForceReversalRespectsAccelerationAndJerkLimits)
   }
 }
 
+TEST(TractionControllerCore, ConstantForceDownStepStopsPullingPromptly)
+{
+  constexpr double dt = 0.01;
+  TractionControllerCore core(10.0, 80.0, 0.15, 0.020, 0.02);
+  const Vec3 direction{1.0, 0.0, 0.0};
+
+  ControllerOutput output;
+  for (int step = 0; step < 100; ++step) {
+    output = core.update(
+      ControlMode::TRACTION, direction, 65.0, {60.0, 0.0, 0.0}, dt);
+    ASSERT_TRUE(output.valid);
+  }
+  ASSERT_GT(output.scalar_velocity_mps, 0.0);
+
+  int first_non_positive_step = -1;
+  for (int step = 0; step < 50; ++step) {
+    output = core.update(
+      ControlMode::TRACTION, direction, 45.0, {60.0, 0.0, 0.0}, dt);
+    ASSERT_TRUE(output.valid);
+    if (output.scalar_velocity_mps <= 0.0) {
+      first_non_positive_step = step;
+      break;
+    }
+  }
+
+  ASSERT_GE(first_non_positive_step, 0);
+  EXPECT_LT(first_non_positive_step * dt, 0.30);
+}
+
 TEST(TractionControllerCore, ConstantForceRejectsHighStiffnessOscillation)
 {
   constexpr double dt = 0.01;

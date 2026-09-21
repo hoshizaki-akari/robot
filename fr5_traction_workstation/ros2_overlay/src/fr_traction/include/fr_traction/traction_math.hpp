@@ -33,6 +33,11 @@ struct ForceMetrics
 
 bool project_force(const Vec3 & force, const Vec3 & direction, ForceMetrics & result);
 
+double next_force_command_target(
+  double current_target_n, double requested_target_n, double dt_s,
+  double maximum_increase_rate_nps, double minimum_increase_rate_nps,
+  double slowdown_window_n);
+
 class FirstOrderLowPass
 {
 public:

@@ -87,6 +87,44 @@ TEST(TractionMath, DirectionCalibrationIgnoresChangingTensionMagnitude)
   EXPECT_LT(result.angle_p95_deg, 2.0);
 }
 
+TEST(TractionMath, ForceCommandTargetAppliesReductionsImmediately)
+{
+  EXPECT_DOUBLE_EQ(
+    next_force_command_target(65.0, 45.0, 0.01, 12.0, 1.5, 5.0),
+    45.0);
+  EXPECT_DOUBLE_EQ(
+    next_force_command_target(55.0, 45.0, 0.01, 12.0, 1.5, 5.0),
+    45.0);
+}
+
+TEST(TractionMath, ForceCommandTargetRisesFastThenSlowsNearTarget)
+{
+  constexpr double dt_s = 0.01;
+  constexpr double requested_target_n = 65.0;
+  double command_target_n = 45.0;
+  const double first_target_n = next_force_command_target(
+    command_target_n, requested_target_n, dt_s, 12.0, 1.5, 5.0);
+  EXPECT_NEAR(first_target_n - command_target_n, 0.12, 1e-12);
+
+  int steps = 0;
+  while (command_target_n < requested_target_n && steps < 1000) {
+    const double next_target_n = next_force_command_target(
+      command_target_n, requested_target_n, dt_s, 12.0, 1.5, 5.0);
+    EXPECT_GT(next_target_n, command_target_n);
+    EXPECT_LE(next_target_n, requested_target_n);
+    command_target_n = next_target_n;
+    ++steps;
+  }
+
+  EXPECT_DOUBLE_EQ(command_target_n, requested_target_n);
+  EXPECT_LT(steps * dt_s, 2.5);
+
+  const double near_target_step_n = next_force_command_target(
+    64.5, requested_target_n, dt_s, 12.0, 1.5, 5.0) - 64.5;
+  EXPECT_GT(near_target_step_n, 0.0);
+  EXPECT_LT(near_target_step_n, 0.12);
+}
+
 TEST(TractionMath, PositionControllerApproachesAndSettlesWithoutRepeatedOvershoot)
 {
   PositionTractionController controller;

@@ -71,6 +71,32 @@ bool project_force(const Vec3 & force, const Vec3 & direction, ForceMetrics & re
   return finite(result.lateral_force_vector) && std::isfinite(result.lateral_force_n);
 }
 
+double next_force_command_target(
+  double current_target_n, double requested_target_n, double dt_s,
+  double maximum_increase_rate_nps, double minimum_increase_rate_nps,
+  double slowdown_window_n)
+{
+  if (!std::isfinite(current_target_n) || !std::isfinite(requested_target_n) ||
+    !std::isfinite(dt_s) || dt_s <= 0.0 ||
+    !std::isfinite(maximum_increase_rate_nps) || maximum_increase_rate_nps <= 0.0 ||
+    !std::isfinite(minimum_increase_rate_nps) || minimum_increase_rate_nps <= 0.0 ||
+    minimum_increase_rate_nps > maximum_increase_rate_nps ||
+    !std::isfinite(slowdown_window_n) || slowdown_window_n <= 0.0)
+  {
+    return requested_target_n;
+  }
+  // A lower requested force must take effect immediately. Ramping downward
+  // leaves the old, higher setpoint active and therefore makes the robot keep
+  // pulling while the operator has explicitly requested unloading.
+  if (requested_target_n <= current_target_n) {return requested_target_n;}
+
+  const double remaining_n = requested_target_n - current_target_n;
+  const double blend = std::clamp(remaining_n / slowdown_window_n, 0.0, 1.0);
+  const double rate_nps = minimum_increase_rate_nps +
+    blend * (maximum_increase_rate_nps - minimum_increase_rate_nps);
+  return std::min(requested_target_n, current_target_n + rate_nps * dt_s);
+}
+
 FirstOrderLowPass::FirstOrderLowPass(double cutoff_hz)
 : cutoff_hz_(cutoff_hz)
 {
