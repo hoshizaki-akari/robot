@@ -109,7 +109,6 @@ def fake_driver(sdk, raw_force):
         _native_drag_max_joint_speed_deg_s=50.0,
         _startup_rpc_timeout_s=10.0,
         _native_drag_active=False,
-        _native_drag_auto_arm_active=False,
         _servo_cleanup_pending=False,
         _native_drag_tool_xy_flip=True,
         _force_reference_custom_active=False,
@@ -165,9 +164,6 @@ def fake_driver(sdk, raw_force):
     driver._stop_native_drag_best_effort = lambda context: (
         Fr5DirectDriver._stop_native_drag_best_effort(driver, context)
     )
-    driver._disarm_native_drag_auto = lambda context: (
-        Fr5DirectDriver._disarm_native_drag_auto(driver, context)
-    )
     driver._disable_after_failed_native_stop = lambda context: (
         Fr5DirectDriver._disable_after_failed_native_stop(driver, context)
     )
@@ -180,15 +176,13 @@ def test_old_sdk_uses_vendor_threshold_independent_of_raw_idle_bias():
     response = SimpleNamespace(success=False, message="")
     Fr5DirectDriver._on_native_drag_start(driver, None, response)
     assert response.success
-    assert sdk.robot_state_pkg.robot_mode == 1
-    assert sdk.auto_flags == [1]
+    assert sdk.auto_flags == [0]
     assert sdk.calls[0][1][:3] == [5.0, 5.0, 5.0]
     assert sdk.drag_state == 1
     assert sdk.references == [(2, [0.0, 0.0, 0.0, 0.0, 0.0, 180.0])]
     Fr5DirectDriver._on_native_drag_stop(driver, None, response)
     assert response.success
     assert sdk.drag_state == 0
-    assert sdk.auto_flags == [1, 0]
     assert not driver._native_drag_active
     assert sdk.references[-1] == (1, [0.0] * 6)
 
@@ -260,7 +254,7 @@ def test_reference_switch_failure_rejects_drag_and_attempts_base_restore():
     assert not response.success
     assert sdk.drag_state == 0
     assert [ref for ref, _ in sdk.references] == [2, 1]
-    assert sdk.auto_flags == [1, 0]
+    assert sdk.auto_flags == [0]
     assert not driver._force_reference_custom_active
 
 
@@ -312,14 +306,14 @@ def test_emergency_recovery_closes_interrupted_servo_before_restarting_drag():
     assert sdk.robot_state_pkg.rbtEnableState == 0
     Fr5DirectDriver._on_native_drag_start(driver, None, response)
     assert response.success
-    assert sdk.robot_state_pkg.robot_mode == 0
-    assert sdk.robot_state_pkg.rbtEnableState == 1
+    assert sdk.robot_state_pkg.robot_mode == 1
+    assert sdk.robot_state_pkg.rbtEnableState == 0
     assert sdk.drag_state == 1
-    assert sdk.auto_flags == [1]
+    assert sdk.auto_flags == [0]
     Fr5DirectDriver._on_hardware_emergency_stop(driver, None, response)
     assert response.success
     assert sdk.drag_state == 0
-    assert sdk.auto_flags == [1, 0]
+    assert sdk.auto_flags == [0]
 
 
 def test_servo_traction_and_next_native_drag_prepare_automatic_mode():
@@ -448,18 +442,25 @@ def test_failed_servo_cleanup_keeps_emergency_latched():
     assert ("RobotEnable", (0,)) in commands
 
 
-def test_drag_enables_robot_only_when_starting_motion():
+def test_drag_start_preserves_controller_mode_and_enable_state():
     sdk = OldSdk()
     sdk.robot_state_pkg.rbtEnableState = 0
     driver = fake_driver(sdk, [0.0] * 6)
+    commands = []
+    original_command = driver._run_hardware_command
+    driver._run_hardware_command = lambda command, *args: (
+        commands.append((command, args)) or original_command(command, *args)
+    )
     response = SimpleNamespace(success=False, message="")
     Fr5DirectDriver._on_native_drag_start(driver, None, response)
     assert response.success
-    assert sdk.robot_state_pkg.rbtEnableState == 1
+    assert sdk.robot_state_pkg.robot_mode == 1
+    assert sdk.robot_state_pkg.rbtEnableState == 0
+    assert commands == []
     assert sdk.drag_state == 1
 
 
-def test_drag_rejects_failed_enable_without_entering_drag():
+def test_drag_start_does_not_call_robot_enable():
     sdk = OldSdk()
     sdk.robot_state_pkg.rbtEnableState = 0
     driver = fake_driver(sdk, [0.0] * 6)
@@ -469,9 +470,8 @@ def test_drag_rejects_failed_enable_without_entering_drag():
     )
     response = SimpleNamespace(success=False, message="")
     Fr5DirectDriver._on_native_drag_start(driver, None, response)
-    assert not response.success
-    assert "RobotEnable(1) failed: 42" in response.message
-    assert sdk.drag_state == 0
+    assert response.success
+    assert sdk.drag_state == 1
 
 
 def test_recovery_reactivates_inactive_force_sensor_before_drag():

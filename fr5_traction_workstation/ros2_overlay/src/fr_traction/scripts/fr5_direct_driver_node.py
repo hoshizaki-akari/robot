@@ -343,7 +343,6 @@ class Fr5DirectDriver(Node):
         self._servo_enabled = False
         self._servo_cleanup_pending = False
         self._native_drag_active = False
-        self._native_drag_auto_arm_active = False
         self._force_reference_custom_active = False
         self._return_active = False
         self._return_started_at = 0.0
@@ -384,9 +383,6 @@ class Fr5DirectDriver(Node):
         # force drag enabled. Never hand control to a fresh UI in that state.
         if self._native_drag_state():
             self._native_drag_active = True
-            # The previous process may have left the vendor auto-arm flag on.
-            # Force a disarm when closing that inherited drag session.
-            self._native_drag_auto_arm_active = True
             if self._stop_native_drag_best_effort("driver startup") != 0:
                 self._disable_after_failed_native_stop("driver startup")
                 raise RuntimeError("FR5 native force drag remained active at startup")
@@ -575,28 +571,8 @@ class Fr5DirectDriver(Node):
             time.sleep(0.1)
         return False
 
-    def _disarm_native_drag_auto(self, context):
-        if not self._native_drag_auto_arm_active:
-            return 0
-        try:
-            code = int(self._robot.SetForceSensorDragAutoFlag(0))
-        except Exception as error:  # noqa: BLE001 - vendor transport exceptions vary.
-            self.get_logger().warning(
-                f"Native drag auto-arm disable during {context} failed: {error}"
-            )
-            self._reset_command_proxy()
-            return -7
-        if code != 0:
-            self.get_logger().warning(
-                f"Native drag auto-arm disable during {context} returned {code}."
-            )
-            return -7
-        self._native_drag_auto_arm_active = False
-        return 0
-
     def _stop_native_drag_best_effort(self, context):
         if not self._native_drag_active:
-            disarm_code = self._disarm_native_drag_auto(context)
             if self._force_reference_custom_active:
                 try:
                     self._set_drag_force_reference(False)
@@ -606,7 +582,7 @@ class Fr5DirectDriver(Node):
                     )
                     self._reset_command_proxy()
                     return -6
-            return disarm_code
+            return 0
         try:
             code = self._set_native_drag(False)
         except Exception as error:  # noqa: BLE001 - vendor exceptions vary.
@@ -629,10 +605,6 @@ class Fr5DirectDriver(Node):
                 self._reset_command_proxy()
                 return -4
             self._native_drag_active = False
-            # Automatic-mode native drag is armed explicitly at session start.
-            # Disarm it after a confirmed stop so clearing a later fault cannot
-            # restart assisted drag without a new operator request.
-            disarm_code = self._disarm_native_drag_auto(context)
             if self._force_reference_custom_active:
                 try:
                     self._set_drag_force_reference(False)
@@ -642,7 +614,6 @@ class Fr5DirectDriver(Node):
                     )
                     self._reset_command_proxy()
                     return -6
-            return disarm_code
         else:
             self.get_logger().warning(
                 f"Native force drag stop during {context} returned {code}."
@@ -655,7 +626,6 @@ class Fr5DirectDriver(Node):
         self._hardware_fault_latched = True
         self._run_hardware_command("StopMotion")
         disable_code, _ = self._run_hardware_command("RobotEnable", 0)
-        self._disarm_native_drag_auto(context)
         if disable_code == 0:
             self._native_drag_active = False
         self._publish_health(False)
@@ -687,26 +657,6 @@ class Fr5DirectDriver(Node):
                 "previous Cartesian servo cleanup is unavailable."
             )
             return response
-        # Preserve the ee9830d native-drag path when manual mode is already
-        # enabled: do not change the controller mode out from under drag.
-        # Emergency recovery may leave manual mode intentionally unenabled;
-        # only in that case hand off to enabled automatic mode.
-        state = self._robot.robot_state_pkg
-        manual_enabled = (
-            int(state.robot_mode) == 1 and int(state.rbtEnableState) == 1
-        )
-        expected_mode = 1 if manual_enabled else 0
-        if not manual_enabled:
-            mode_error = self._ensure_enabled_for_motion(0)
-            if mode_error is not None:
-                response.success = False
-                response.message = "FR5 native force drag rejected: " + mode_error
-                return response
-        readiness_error = self._robot_motion_readiness_error(expected_mode=expected_mode)
-        if readiness_error is not None:
-            response.success = False
-            response.message = "FR5 native force drag rejected: " + readiness_error
-            return response
         # The raw stream can include the sensor/tool payload even after the
         # software slack tare. Its absolute magnitude is not evidence of a
         # user pull and must not block SDK drag activation (session 1789878276624).
@@ -715,18 +665,15 @@ class Fr5DirectDriver(Node):
             response.message = "Native drag rejected: invalid force sensor data."
             return response
         try:
-            # This start path selects automatic mode. The vendor's assisted-
-            # drag sequence arms the force sensor before EndForceDragControl;
-            # leaving the flag off can report drag ON without physical motion
-            # after an emergency recovery. The stop path disarms it again.
-            auto_code = int(self._robot.SetForceSensorDragAutoFlag(1))
+            # Never automatically re-arm drag after a controller error is
+            # cleared; the operator must deliberately start a new session.
+            auto_code = int(self._robot.SetForceSensorDragAutoFlag(0))
             if auto_code != 0:
                 response.success = False
                 response.message = (
                     "SetForceSensorDragAutoFlag failed: " + str(auto_code)
                 )
                 return response
-            self._native_drag_auto_arm_active = True
             if self._native_drag_tool_xy_flip:
                 self._set_drag_force_reference(True)
             code = self._set_native_drag(True)
@@ -767,8 +714,7 @@ class Fr5DirectDriver(Node):
         return response
 
     def _on_native_drag_stop(self, _request, response):
-        if (not self._native_drag_active and not self._force_reference_custom_active
-                and not self._native_drag_auto_arm_active):
+        if not self._native_drag_active and not self._force_reference_custom_active:
             response.success = True
             response.message = "FR5 native force drag is already stopped."
             return response
