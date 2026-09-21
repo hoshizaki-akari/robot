@@ -34,6 +34,11 @@ class OldSdk:
         self.drag_state = 0
         self.auto_flags = []
         self.calls = []
+        self.references = []
+
+    def FT_SetRCS(self, ref, coord):
+        self.references.append((ref, list(coord)))
+        return 0
 
     def SetForceSensorDragAutoFlag(self, status):
         self.auto_flags.append(status)
@@ -83,7 +88,10 @@ def fake_driver(sdk, raw_force):
         _native_drag_threshold=[5.0] * 6,
         _native_drag_max_force_n=50.0,
         _native_drag_max_joint_speed_deg_s=50.0,
+        _startup_rpc_timeout_s=10.0,
         _native_drag_active=False,
+        _native_drag_tool_xy_flip=True,
+        _force_reference_custom_active=False,
         _servo_enabled=False,
         _return_active=False,
         _auto_tension_active=False,
@@ -97,10 +105,13 @@ def fake_driver(sdk, raw_force):
     )
     logger = FakeLogger()
     driver.get_logger = lambda: logger
-    driver._reset_command_proxy = lambda: None
+    driver._reset_command_proxy = lambda timeout_s=None: None
     driver._run_hardware_command = lambda command, *args: (0, "")
     driver._publish_health = lambda healthy: None
     driver._set_native_drag = lambda enabled: Fr5DirectDriver._set_native_drag(driver, enabled)
+    driver._set_drag_force_reference = lambda custom: (
+        Fr5DirectDriver._set_drag_force_reference(driver, custom)
+    )
     driver._native_drag_state = lambda: Fr5DirectDriver._native_drag_state(driver)
     driver._wait_native_drag_state = lambda expected: (
         Fr5DirectDriver._wait_native_drag_state(driver, expected)
@@ -123,10 +134,12 @@ def test_old_sdk_uses_vendor_threshold_independent_of_raw_idle_bias():
     assert sdk.auto_flags == [0]
     assert sdk.calls[0][1][:3] == [5.0, 5.0, 5.0]
     assert sdk.drag_state == 1
+    assert sdk.references == [(2, [0.0, 0.0, 0.0, 0.0, 0.0, 180.0])]
     Fr5DirectDriver._on_native_drag_stop(driver, None, response)
     assert response.success
     assert sdk.drag_state == 0
     assert not driver._native_drag_active
+    assert sdk.references[-1] == (1, [0.0] * 6)
 
 
 def test_new_sdk_accepts_extra_controller_flags():
@@ -171,3 +184,58 @@ def test_failed_native_stop_disables_robot_instead_of_reporting_ready():
     assert not response.success
     assert driver._hardware_emergency_latched
     assert ("RobotEnable", (0,)) in hardware_commands
+
+
+def test_drag_reference_rotation_preserves_tool_z_and_base_feedback():
+    convert = module._custom_drag_wrench_to_base
+    assert convert([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [0.0] * 6) == [
+        -1.0, -2.0, 3.0, -4.0, -5.0, 6.0,
+    ]
+    rotated = convert([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [0, 0, 0, 0, 0, 90])
+    assert all(abs(a - b) < 1e-9 for a, b in zip(rotated, [2, -1, 3, 5, -4, 6]))
+
+
+def test_reference_switch_failure_rejects_drag_and_attempts_base_restore():
+    class RejectCustomReference(OldSdk):
+        def FT_SetRCS(self, ref, coord):
+            super().FT_SetRCS(ref, coord)
+            return 42 if ref == 2 else 0
+
+    sdk = RejectCustomReference()
+    driver = fake_driver(sdk, [0.0] * 6)
+    response = SimpleNamespace(success=False, message="")
+    Fr5DirectDriver._on_native_drag_start(driver, None, response)
+    assert not response.success
+    assert sdk.drag_state == 0
+    assert [ref for ref, _ in sdk.references] == [2, 1]
+    assert not driver._force_reference_custom_active
+
+
+def test_disabling_xy_flip_keeps_existing_base_reference():
+    sdk = OldSdk()
+    driver = fake_driver(sdk, [0.0] * 6)
+    driver._native_drag_tool_xy_flip = False
+    response = SimpleNamespace(success=False, message="")
+    Fr5DirectDriver._on_native_drag_start(driver, None, response)
+    assert response.success
+    assert sdk.references == []
+    Fr5DirectDriver._on_native_drag_stop(driver, None, response)
+    assert response.success
+    assert sdk.references == []
+
+
+def test_base_restore_failure_reports_error_and_latches_stop():
+    class RejectBaseReference(OldSdk):
+        def FT_SetRCS(self, ref, coord):
+            super().FT_SetRCS(ref, coord)
+            return 43 if ref == 1 else 0
+
+    sdk = RejectBaseReference()
+    driver = fake_driver(sdk, [0.0] * 6)
+    response = SimpleNamespace(success=False, message="")
+    Fr5DirectDriver._on_native_drag_start(driver, None, response)
+    assert response.success
+    Fr5DirectDriver._on_native_drag_stop(driver, None, response)
+    assert not response.success
+    assert driver._hardware_emergency_latched
+    assert driver._force_reference_custom_active

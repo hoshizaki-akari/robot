@@ -48,6 +48,26 @@ def _quaternion_from_rpy_degrees(roll, pitch, yaw):
     )
 
 
+def _custom_drag_wrench_to_base(wrench, pose):
+    """Convert the drag-only tool frame, rotated 180 deg about Z, to base."""
+    roll, pitch, yaw = map(math.radians, pose[3:6])
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    rotation = (
+        (cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr),
+        (sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr),
+        (-sp, cp * sr, cp * cr),
+    )
+    result = []
+    for start in (0, 3):
+        # R_tool_custom = diag(-1, -1, 1); no moment-arm term since
+        # the drag reference has zero translation from the tool origin.
+        vector = (-wrench[start], -wrench[start + 1], wrench[start + 2])
+        result.extend(sum(row[i] * vector[i] for i in range(3)) for row in rotation)
+    return result
+
+
 class _TimeoutTransport(xmlrpc.client.Transport):
     """Apply a real socket timeout to the vendor SDK's command connection."""
 
@@ -175,6 +195,12 @@ class Fr5DirectDriver(Node):
         # Use the vendor's recommended lower translational threshold (5 N).
         self._native_drag_threshold = self._six_finite_parameter(
             "native_drag_threshold", [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+        )
+        # The observed native drag motion has inverted tool X/Y signs while Z
+        # agrees. Try a 180-degree tool-Z reference for this mode only; the
+        # firmware's physical direction still requires a short on-robot check.
+        self._native_drag_tool_xy_flip = bool(
+            self.declare_parameter("native_drag_tool_xy_flip", True).value
         )
         if any(value <= 0.0 for value in self._native_drag_threshold):
             raise ValueError("native_drag_threshold must contain positive values")
@@ -316,6 +342,7 @@ class Fr5DirectDriver(Node):
         self._last_motion_at = 0.0
         self._servo_enabled = False
         self._native_drag_active = False
+        self._force_reference_custom_active = False
         self._return_active = False
         self._return_started_at = 0.0
         self._return_duration_s = 0.0
@@ -501,6 +528,25 @@ class Fr5DirectDriver(Node):
             return int(method(status, 0, 0, 0, 0, *common))
         return int(method(status, 0, 0, *common))
 
+    def _set_drag_force_reference(self, custom):
+        """Set the native drag FT frame; use bounded RPC, not SDK retry loop."""
+        ref = 2 if custom else 1
+        coord = [0.0, 0.0, 0.0, 0.0, 0.0, 180.0 if custom else 0.0]
+        if custom:
+            # A timed-out response may still mean the controller accepted the
+            # command. Force the failure path to attempt a base-frame restore.
+            self._force_reference_custom_active = True
+        # The configuration RPC may take longer than a ServoCart command.
+        self._reset_command_proxy(self._startup_rpc_timeout_s)
+        try:
+            proxy = getattr(self._robot, "robot", self._robot)
+            code = int(proxy.FT_SetRCS(ref, coord))
+        finally:
+            self._reset_command_proxy()
+        if code != 0:
+            raise RuntimeError(f"FT_SetRCS({ref}) failed: {code}")
+        self._force_reference_custom_active = custom
+
     def _native_drag_state(self):
         state = self._robot.GetForceAndTorqueDragState()
         if not isinstance(state, (tuple, list)) or len(state) < 3:
@@ -518,6 +564,15 @@ class Fr5DirectDriver(Node):
 
     def _stop_native_drag_best_effort(self, context):
         if not self._native_drag_active:
+            if self._force_reference_custom_active:
+                try:
+                    self._set_drag_force_reference(False)
+                except Exception as error:  # noqa: BLE001 - vendor exceptions vary.
+                    self.get_logger().warning(
+                        f"Force reference restore during {context} failed: {error}"
+                    )
+                    self._reset_command_proxy()
+                    return -6
             return 0
         try:
             code = self._set_native_drag(False)
@@ -541,6 +596,15 @@ class Fr5DirectDriver(Node):
                 self._reset_command_proxy()
                 return -4
             self._native_drag_active = False
+            if self._force_reference_custom_active:
+                try:
+                    self._set_drag_force_reference(False)
+                except Exception as error:  # noqa: BLE001 - vendor exceptions vary.
+                    self.get_logger().warning(
+                        f"Force reference restore during {context} failed: {error}"
+                    )
+                    self._reset_command_proxy()
+                    return -6
         else:
             self.get_logger().warning(
                 f"Native force drag stop during {context} returned {code}."
@@ -600,14 +664,20 @@ class Fr5DirectDriver(Node):
                     "SetForceSensorDragAutoFlag failed: " + str(auto_code)
                 )
                 return response
+            if self._native_drag_tool_xy_flip:
+                self._set_drag_force_reference(True)
             code = self._set_native_drag(True)
         except Exception as error:  # noqa: BLE001 - vendor exceptions vary.
             self.get_logger().error(f"Native force drag start failed: {error}")
             self._reset_command_proxy()
+            if self._stop_native_drag_best_effort("failed drag start") != 0:
+                self._disable_after_failed_native_stop("failed drag start")
             response.success = False
             response.message = f"FR5 native force drag start failed: {error}"
             return response
         if code != 0:
+            if self._stop_native_drag_best_effort("rejected drag start") != 0:
+                self._disable_after_failed_native_stop("rejected drag start")
             response.success = False
             response.message = f"EndForceDragControl start failed: {code}"
             return response
@@ -634,7 +704,7 @@ class Fr5DirectDriver(Node):
         return response
 
     def _on_native_drag_stop(self, _request, response):
-        if not self._native_drag_active:
+        if not self._native_drag_active and not self._force_reference_custom_active:
             response.success = True
             response.message = "FR5 native force drag is already stopped."
             return response
@@ -957,6 +1027,8 @@ class Fr5DirectDriver(Node):
         pose = [state.tl_cur_pos[index] for index in range(6)]
         speeds = [state.actual_qd[index] for index in range(6)]
         wrench = [state.ft_sensor_data[index] for index in range(6)]
+        if self._force_reference_custom_active:
+            wrench = _custom_drag_wrench_to_base(wrench, pose)
         return joints, pose, speeds, wrench
 
     def _servo_cart(self, mode, desc_pos):

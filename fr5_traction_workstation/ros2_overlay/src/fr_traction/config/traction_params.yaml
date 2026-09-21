@@ -19,9 +19,8 @@ traction_controller:
     drag_max_speed_mps: 0.050
     drag_max_acceleration_mps2: 0.60
     drag_max_jerk_mps3: 12.0
-    # Assisted drag consumes force in tool coordinates and sends tool-frame
-    # Cartesian increments. Change only the individual sign if a physical
-    # axis check proves that one sensor axis is inverted.
+    # Legacy host-side drag path only. Native EndForceDragControl bypasses
+    # these signs; its X/Y correction is in fr5_direct_driver_node.py.
     drag_sign_x: -1.0
     drag_sign_y: -1.0
     drag_sign_z: 1.0
