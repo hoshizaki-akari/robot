@@ -180,6 +180,7 @@ def test_old_sdk_uses_vendor_threshold_independent_of_raw_idle_bias():
     response = SimpleNamespace(success=False, message="")
     Fr5DirectDriver._on_native_drag_start(driver, None, response)
     assert response.success
+    assert sdk.robot_state_pkg.robot_mode == 1
     assert sdk.auto_flags == [1]
     assert sdk.calls[0][1][:3] == [5.0, 5.0, 5.0]
     assert sdk.drag_state == 1

@@ -687,15 +687,22 @@ class Fr5DirectDriver(Node):
                 "previous Cartesian servo cleanup is unavailable."
             )
             return response
-        # Controller-assisted drag worked in automatic mode before the
-        # recovery handoff. Manual mode can remain physically de-energized
-        # without a held three-position enabling switch.
-        mode_error = self._ensure_enabled_for_motion(0)
-        if mode_error is not None:
-            response.success = False
-            response.message = "FR5 native force drag rejected: " + mode_error
-            return response
-        readiness_error = self._robot_motion_readiness_error(expected_mode=0)
+        # Preserve the ee9830d native-drag path when manual mode is already
+        # enabled: do not change the controller mode out from under drag.
+        # Emergency recovery may leave manual mode intentionally unenabled;
+        # only in that case hand off to enabled automatic mode.
+        state = self._robot.robot_state_pkg
+        manual_enabled = (
+            int(state.robot_mode) == 1 and int(state.rbtEnableState) == 1
+        )
+        expected_mode = 1 if manual_enabled else 0
+        if not manual_enabled:
+            mode_error = self._ensure_enabled_for_motion(0)
+            if mode_error is not None:
+                response.success = False
+                response.message = "FR5 native force drag rejected: " + mode_error
+                return response
+        readiness_error = self._robot_motion_readiness_error(expected_mode=expected_mode)
         if readiness_error is not None:
             response.success = False
             response.message = "FR5 native force drag rejected: " + readiness_error
