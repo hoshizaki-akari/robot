@@ -158,9 +158,10 @@ window.updateTractionDirection = (...directionCandidates) => {
     .map(validDirection)
     .find(direction => direction !== null);
   if (nextDirection) {
-    // Display-only mapping established by physical three-axis verification.
-    // Keep control and logging in base_link; map the arrow to the observed tool axes.
-    tractionDirection.set(-nextDirection.x, nextDirection.y, -nextDirection.z).normalize();
+    // Display-only base_link -> tool conversion established by physical
+    // three-axis verification: tool X = base Z, tool Y = base Y,
+    // tool Z = -base X. Control and logging remain unchanged in base_link.
+    tractionDirection.set(nextDirection.z, nextDirection.y, -nextDirection.x).normalize();
   }
 };
 

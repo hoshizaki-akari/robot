@@ -77,7 +77,7 @@ class UiContractTest(unittest.TestCase):
         self.assertIn("updateTractionDirection", viewer)
         self.assertIn("new THREE.ArrowHelper", viewer)
         self.assertIn(
-            "tractionDirection.set(-nextDirection.x, nextDirection.y, -nextDirection.z)",
+            "tractionDirection.set(nextDirection.z, nextDirection.y, -nextDirection.x)",
             viewer,
         )
         self.assertIn("const measuredDirection", script)
@@ -101,6 +101,23 @@ class UiContractTest(unittest.TestCase):
     def test_no_old_platform_b_dependency(self):
         page = (ROOT / "static" / "090105.html").read_text(encoding="utf-8")
         self.assertNotIn("platform_b/", page)
+
+    def test_physical_base_to_tool_arrow_transform(self):
+        def base_to_tool(vector):
+            base_x, base_y, base_z = vector
+            return base_z, base_y, -base_x
+
+        verified_positive_directions = {
+            "tool_x": ((0, 0, 1), (1, 0, 0)),
+            "tool_y": ((0, 1, 0), (0, 1, 0)),
+            "tool_z": ((-1, 0, 0), (0, 0, 1)),
+        }
+        for base_vector, expected_tool_vector in verified_positive_directions.values():
+            self.assertEqual(base_to_tool(base_vector), expected_tool_vector)
+            self.assertEqual(
+                base_to_tool(tuple(-value for value in base_vector)),
+                tuple(-value for value in expected_tool_vector),
+            )
 
 
 
