@@ -131,7 +131,7 @@
     }
     .force-section-title { padding: 7px 0 5px; border-bottom: 1px solid #dbe5f0; }
     .force-control-body {
-      flex: 1; min-height: 0; display: grid; grid-template-rows: minmax(100px, 1fr) 58px minmax(96px, .9fr);
+      flex: 1; min-height: 0; display: grid; grid-template-rows: minmax(100px, 1fr) 70px minmax(96px, .9fr);
       align-items: center; padding: 0 28px;
     }
     .force-metric { min-width: 0; text-align: center; }
@@ -158,22 +158,22 @@
     }
     .slider-bound { color: var(--navy); font-size: 28px; font-weight: 900; text-align: center; }
     .force-slider {
-      width: 100%; height: 54px; margin: 0; appearance: none; background: transparent;
+      width: 100%; height: 70px; margin: 0; appearance: none; background: transparent;
       cursor: pointer; touch-action: pan-y;
     }
     .force-slider::-webkit-slider-runnable-track {
-      height: 24px; border-radius: 14px; background: linear-gradient(90deg, #267cf5 var(--slider-progress, 9%), #dbe7f3 var(--slider-progress, 9%));
+      height: 32px; border-radius: 18px; background: linear-gradient(90deg, #267cf5 var(--slider-progress, 9%), #dbe7f3 var(--slider-progress, 9%));
       box-shadow: inset 0 1px 3px rgba(15,23,42,.14);
     }
     .force-slider::-webkit-slider-thumb {
-      width: 52px; height: 52px; margin-top: -14px; appearance: none; border-radius: 50%;
-      background: #1769e8; border: 7px solid #fff; box-shadow: 0 3px 12px rgba(30,64,175,.4);
+      width: 64px; height: 64px; margin-top: -16px; appearance: none; border-radius: 50%;
+      background: #1769e8; border: 8px solid #fff; box-shadow: 0 4px 14px rgba(30,64,175,.42);
     }
-    .force-slider::-moz-range-track { height: 24px; border-radius: 14px; background: #dbe7f3; }
-    .force-slider::-moz-range-progress { height: 24px; border-radius: 14px; background: #267cf5; }
+    .force-slider::-moz-range-track { height: 32px; border-radius: 18px; background: #dbe7f3; }
+    .force-slider::-moz-range-progress { height: 32px; border-radius: 18px; background: #267cf5; }
     .force-slider::-moz-range-thumb {
-      width: 38px; height: 38px; border-radius: 50%; background: #1769e8;
-      border: 7px solid #fff; box-shadow: 0 3px 12px rgba(30,64,175,.4);
+      width: 56px; height: 56px; border-radius: 50%; background: #1769e8;
+      border: 8px solid #fff; box-shadow: 0 4px 14px rgba(30,64,175,.42);
     }
     .force-slider:disabled { cursor: not-allowed; filter: grayscale(.8); opacity: .45; }
     .actual-metric {
@@ -256,7 +256,7 @@
       .mode-btn { min-height: 84px; font-size: 25px; }
       .force-adjustment { margin: 0 16px 2px; }
       .force-section-title { padding-top: 4px; padding-bottom: 4px; }
-      .force-control-body { grid-template-rows: minmax(96px, 1fr) 58px minmax(92px, .9fr); padding-bottom: 0; }
+      .force-control-body { grid-template-rows: minmax(96px, 1fr) 70px minmax(92px, .9fr); padding-bottom: 0; }
       .force-metric-label { font-size: 48px; }
       .force-value-target, .actual-metric .actual-force-value { font-size: 116px; }
       .force-unit-target, .actual-metric .actual-force-unit { font-size: 52px; }
@@ -371,7 +371,7 @@
     </section>
     <div class="control-grid">
       <button class="action-btn start" id="prepareBtn" title="牵引带松弛时点击"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5M9 12h6M12 9v6"/></svg></span><span class="btn-label">初始校准</span></button>
-      <button class="action-btn direction" id="calibrateBtn" disabled title="张紧后保持法兰不动"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M8 7l4-4 4 4M8 17l4 4 4-4M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg></span><span class="btn-label">方向确定</span></button>
+      <button class="action-btn direction" id="calibrateBtn" disabled title="张紧后保持法兰不动"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M12 4v3M12 17v3M4 12h3M17 12h3"/><path d="m12 7 2.2 5.2L12 17l-2.2-4.8z" fill="currentColor" stroke="none"/></svg></span><span class="btn-label">方向确定</span></button>
       <button class="action-btn start" id="startBtn" disabled><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.8a1 1 0 0 1 1.5-.86l10.4 7.2a1 1 0 0 1 0 1.72l-10.4 7.2A1 1 0 0 1 7 19.2z"/></svg></span><span class="btn-label" id="startLabel">开始牵引</span></button>
       <button class="action-btn stop" id="stopBtn" disabled><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="1.5"/></svg></span><span class="btn-label" id="stopLabel">结束牵引</span></button>
       <button class="action-btn zero" id="returnZeroBtn" disabled><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5L12 4l9 7.5"/><path d="M5.5 10.5V20h13v-9.5M9.5 20v-5h5v5"/></svg></span><span class="btn-label">回零</span></button>
