@@ -163,7 +163,7 @@ function applyPermissions() {
   if ($('emergencyBtn')) {
     const recovering = tractionState === 10;
     $('emergencyBtn').disabled = !permission.operate || !dataOnline || emergencyPending;
-    $('emergencyBtn').textContent = recovering ? '急停恢复' : '急停';
+    $('emergencyLabel').textContent = recovering ? '急停恢复' : '急停';
     $('emergencyBtn').classList.toggle('recover', recovering);
   }
   if ($('returnZeroBtn')) $('returnZeroBtn').disabled = !permission.operate || !dataOnline || motionActive || ![1, 2, 5, 8].includes(tractionState);
@@ -174,8 +174,8 @@ function applyPermissions() {
     button.disabled = !permission.operate || !dataOnline || motionActive || ![1, 2, 5, 8].includes(tractionState);
     button.classList.toggle('active', Number(button.dataset.mode) === operationMode);
   });
-  $('startBtn').textContent = operationMode === 2 ? '开始拖拽' : '开始牵引';
-  $('stopBtn').textContent = operationMode === 2 ? '结束拖拽' : '结束牵引';
+  $('startLabel').textContent = operationMode === 2 ? '开始拖拽' : '开始牵引';
+  $('stopLabel').textContent = operationMode === 2 ? '结束拖拽' : '结束牵引';
   $('recordsBtn').disabled = !permission.records;
 }
 

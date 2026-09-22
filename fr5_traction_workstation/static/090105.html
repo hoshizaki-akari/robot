@@ -25,17 +25,22 @@
 
     .top-bar {
       height: 64px; padding: 0 22px; background: var(--navy); color: #fff;
-      display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+      display: flex; align-items: center; justify-content: space-between; gap: 20px;
       box-shadow: 0 3px 12px rgba(15, 23, 42, .18);
     }
-    .top-left, .top-right { display: flex; align-items: center; gap: 10px; }
-    .top-right { justify-content: flex-end; }
-    .top-bar h1 { font-size: 24px; font-weight: 700; letter-spacing: 3px; }
+    .brand-group, .top-right { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .brand-group { gap: 11px; }
+    .brand-icon { width: 29px; height: 29px; flex: 0 0 29px; color: #dbeafe; }
+    .brand-icon svg { display: block; width: 100%; height: 100%; }
+    .top-bar h1 { font-size: 24px; font-weight: 700; letter-spacing: 3px; white-space: nowrap; }
     .nav-btn {
       border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.12);
-      color: #fff; padding: 8px 16px; border-radius: 7px; font-size: 15px;
+      color: #fff; padding: 8px 14px; border-radius: 7px; font-size: 15px;
+      display: inline-flex; align-items: center; justify-content: center; gap: 7px;
       cursor: pointer; transition: .18s;
     }
+    .nav-icon { width: 18px; height: 18px; flex: 0 0 18px; }
+    .nav-icon svg { display: block; width: 100%; height: 100%; }
     .nav-btn:hover { background: rgba(255,255,255,.24); }
     .nav-btn.shutdown { border-color: rgba(254,202,202,.55); background: rgba(220,38,38,.28); }
     .nav-btn.shutdown:hover { background: rgba(220,38,38,.48); }
@@ -107,9 +112,14 @@
     .mode-btn {
       min-height: 84px; border: 2px solid #aebdce; border-radius: 12px; padding: 8px 14px;
       background: #fff; color: #334155; font-size: clamp(23px, 1.5vw, 29px); font-weight: 900;
-      line-height: 1; letter-spacing: .24em; text-indent: .24em; cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center; gap: 14px;
+      line-height: 1; letter-spacing: .16em; text-indent: .16em; cursor: pointer;
       box-shadow: 0 3px 8px rgba(15,23,42,.06); transition: .15s;
     }
+    .mode-icon { width: 34px; height: 34px; flex: 0 0 34px; }
+    .mode-icon svg { display: block; width: 100%; height: 100%; }
+    .mode-btn[data-mode="2"] { background: #eef6ff; border-color: #c4dafa; color: #173a68; }
+    .mode-btn[data-mode="1"] { background: #f2f6fc; border-color: #c4d0e0; color: #173a68; }
     .mode-btn.active {
       border-color: var(--blue); background: var(--blue); color: #fff;
       box-shadow: 0 5px 14px rgba(59,130,246,.28);
@@ -176,9 +186,12 @@
     .action-btn {
       min-width: 0; border: 0; border-radius: 14px; color: #fff;
       font-size: clamp(22px, 1.65vw, 31px); font-weight: 900;
+      display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px;
       line-height: 1; letter-spacing: .08em; text-indent: .08em;
       cursor: pointer; box-shadow: 0 5px 14px rgba(15,23,42,.13); transition: .15s;
     }
+    .btn-icon { width: 31px; height: 31px; flex: 0 0 31px; }
+    .btn-icon svg { display: block; width: 100%; height: 100%; }
     .action-btn:active:not(:disabled) { transform: translateY(2px); }
     .action-btn.start { background: var(--green); }
     .action-btn.direction { background: #2563eb; }
@@ -251,36 +264,51 @@
     }
 
     @media (max-width: 1050px) {
-      .top-bar { grid-template-columns: auto 1fr auto; padding: 0 12px; }
-      .top-bar h1 { font-size: 18px; text-align: center; }
+      .top-bar { padding: 0 12px; gap: 8px; }
+      .brand-group { gap: 6px; }
+      .brand-icon { width: 24px; height: 24px; flex-basis: 24px; }
+      .top-bar h1 { font-size: 18px; }
       .user-chip span:first-child { display: none; }
+      .nav-btn { padding: 7px 9px; font-size: 13px; }
+      .nav-icon { width: 16px; height: 16px; flex-basis: 16px; }
       .main-container { grid-template-columns: minmax(280px, 34%) minmax(0, 1fr); gap: 9px; padding: 9px; }
       .compact-status { gap: 8px; font-size: 12px; }
       .compact-status-label { display: none; }
       .state-value { font-size: 12px; }
       .mode-grid { gap: 8px; padding: 4px 10px 6px; }
-      .mode-btn { min-height: 48px; font-size: 20px; letter-spacing: .12em; text-indent: .12em; }
+      .mode-btn { min-height: 48px; font-size: 20px; gap: 7px; letter-spacing: .08em; text-indent: .08em; }
+      .mode-icon { width: 24px; height: 24px; flex-basis: 24px; }
       .force-adjustment { margin: 0 10px 8px; }
       .force-control-body { padding-left: 14px; padding-right: 14px; }
       .force-metric-label, .actual-metric .force-metric-label { font-size: 34px; }
       .force-value-target, .actual-metric .actual-force-value { font-size: 76px; }
       .force-unit-target, .actual-metric .actual-force-unit { font-size: 34px; }
       .control-grid { gap: 7px; }
-      .action-btn { font-size: 18px; letter-spacing: 0; text-indent: 0; }
+      .action-btn { font-size: 18px; gap: 4px; letter-spacing: 0; text-indent: 0; }
+      .btn-icon { width: 25px; height: 25px; flex-basis: 25px; }
     }
   </style>
 </head>
 <body>
   <header class="top-bar">
-    <div class="top-left">
-      <button class="nav-btn" id="settingsBtn">参数设置</button>
-      <button class="nav-btn" id="recordsBtn">牵引记录</button>
+    <div class="brand-group">
+      <span class="brand-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="5" y="7" width="14" height="12" rx="3"/><path d="M9 7V5h6v2M8 12h.01M16 12h.01M9 16h6M12 3v2"/><path d="M3 11v4M21 11v4"/>
+        </svg>
+      </span>
+      <h1>骨伤牵引机器人工作站</h1>
     </div>
-    <h1>骨伤牵引机器人工作站</h1>
     <div class="top-right">
+      <button class="nav-btn" id="settingsBtn">
+        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.2 1.9 2.2.4 1.6-1.1 1.8 1.8-1.1 1.6.4 2.2L21 11v2l-2.9 1.2-.4 2.2 1.1 1.6-1.8 1.8-1.6-1.1-2.2.4L12 21l-1.2-1.9-2.2-.4L7 19.8l-1.8-1.8 1.1-1.6-.4-2.2L3 13v-2l2.9-1.2.4-2.2-1.1-1.6L7 4.2l1.6 1.1 2.2-.4L12 3z"/><circle cx="12" cy="12" r="3"/></svg></span><span>参数设置</span>
+      </button>
+      <button class="nav-btn" id="recordsBtn">
+        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v5h5M9 13h6M9 17h6M9 9h2"/></svg></span><span>牵引记录</span>
+      </button>
       <div class="user-chip"><span id="currentUser">未登录</span><span class="role-tag" id="currentRole">访客</span></div>
-      <button class="nav-btn" id="logoutBtn">退出登录</button>
-      <button class="nav-btn shutdown" id="shutdownBtn">关闭程序</button>
+      <button class="nav-btn" id="logoutBtn"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 5H5v14h5M14 8l4 4-4 4M9 12h9"/></svg></span><span>退出登录</span></button>
+      <button class="nav-btn shutdown" id="shutdownBtn"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v8M7.8 5.5a8 8 0 1 0 8.4 0"/></svg></span><span>关闭程序</span></button>
     </div>
   </header>
 
@@ -316,9 +344,9 @@
         </div>
         <div class="mode-section-title">牵引模式</div>
         <div class="mode-grid" aria-label="工作模式">
-          <button class="mode-btn" data-mode="2">省力拖拽</button>
-          <button class="mode-btn" data-mode="1">位置牵引</button>
-          <button class="mode-btn active" data-mode="0">恒力牵引</button>
+          <button class="mode-btn" data-mode="2"><span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11V6a1.5 1.5 0 0 1 3 0v4M10 10V4.8a1.5 1.5 0 0 1 3 0V10M13 10V6a1.5 1.5 0 0 1 3 0v5M16 11V8.5a1.5 1.5 0 0 1 3 0v5.2c0 4-2.8 6.3-6.4 6.3H10c-2.2 0-3.5-1-4.5-2.7L3.4 13a1.5 1.5 0 0 1 2.6-1.5L7 13.2"/></svg></span><span>省力拖拽</span></button>
+          <button class="mode-btn" data-mode="1"><span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M8 7l4-4 4 4M8 17l4 4 4-4"/></svg></span><span>位置牵引</span></button>
+          <button class="mode-btn active" data-mode="0"><span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h5l2-6 4 12 2-6h7"/></svg></span><span>恒力牵引</span></button>
         </div>
         <div class="force-adjustment">
           <div class="force-section-title">牵引力调节</div>
@@ -341,12 +369,12 @@
       </div>
     </section>
     <div class="control-grid">
-      <button class="action-btn start" id="prepareBtn" title="牵引带松弛时点击">初始校准</button>
-      <button class="action-btn direction" id="calibrateBtn" disabled title="张紧后保持法兰不动">方向确定</button>
-      <button class="action-btn start" id="startBtn" disabled>开始牵引</button>
-      <button class="action-btn stop" id="stopBtn" disabled>结束牵引</button>
-      <button class="action-btn zero" id="returnZeroBtn" disabled>回零</button>
-      <button class="action-btn emergency" id="emergencyBtn" disabled>急停</button>
+      <button class="action-btn start" id="prepareBtn" title="牵引带松弛时点击"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5M9 12h6M12 9v6"/></svg></span><span class="btn-label">初始校准</span></button>
+      <button class="action-btn direction" id="calibrateBtn" disabled title="张紧后保持法兰不动"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M8 7l4-4 4 4M8 17l4 4 4-4M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg></span><span class="btn-label">方向确定</span></button>
+      <button class="action-btn start" id="startBtn" disabled><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.8a1 1 0 0 1 1.5-.86l10.4 7.2a1 1 0 0 1 0 1.72l-10.4 7.2A1 1 0 0 1 7 19.2z"/></svg></span><span class="btn-label" id="startLabel">开始牵引</span></button>
+      <button class="action-btn stop" id="stopBtn" disabled><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="1.5"/></svg></span><span class="btn-label" id="stopLabel">结束牵引</span></button>
+      <button class="action-btn zero" id="returnZeroBtn" disabled><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5L12 4l9 7.5"/><path d="M5.5 10.5V20h13v-9.5M9.5 20v-5h5v5"/></svg></span><span class="btn-label">回零</span></button>
+      <button class="action-btn emergency" id="emergencyBtn" disabled><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3.1 22 20.5a1.1 1.1 0 0 1-1 1.7H3a1.1 1.1 0 0 1-1-1.7zM12 8v6m0 3.1v.1" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="btn-label" id="emergencyLabel">急停</span></button>
     </div>
   </main>
 
