@@ -76,6 +76,10 @@ class UiContractTest(unittest.TestCase):
         self.assertIn('@app.post("/api/settings")', app)
         self.assertIn("updateTractionDirection", viewer)
         self.assertIn("new THREE.ArrowHelper", viewer)
+        self.assertIn(
+            "tractionDirection.set(nextDirection.z, nextDirection.y, -nextDirection.x)",
+            viewer,
+        )
         action_ids = re.findall(r'class="action-btn[^"]*" id="([^"]+)"', page)
         self.assertEqual(
             action_ids,
@@ -92,6 +96,29 @@ class UiContractTest(unittest.TestCase):
     def test_no_old_platform_b_dependency(self):
         page = (ROOT / "static" / "090105.html").read_text(encoding="utf-8")
         self.assertNotIn("platform_b/", page)
+
+    def test_verified_tool_to_viewer_axis_mapping(self):
+        def base_to_viewer(vector):
+            x_value, y_value, z_value = vector
+            return z_value, y_value, -x_value
+
+        verified_base_vectors = {
+            "tool_x_positive": (0, 0, 1),
+            "tool_y_positive": (0, 1, 0),
+            "tool_z_positive": (-1, 0, 0),
+        }
+        expected_viewer_vectors = {
+            "tool_x_positive": (1, 0, 0),
+            "tool_y_positive": (0, 1, 0),
+            "tool_z_positive": (0, 0, 1),
+        }
+        for name, base_vector in verified_base_vectors.items():
+            expected = expected_viewer_vectors[name]
+            self.assertEqual(base_to_viewer(base_vector), expected)
+            self.assertEqual(
+                base_to_viewer(tuple(-component for component in base_vector)),
+                tuple(-component for component in expected),
+            )
 
 
 if __name__ == "__main__":

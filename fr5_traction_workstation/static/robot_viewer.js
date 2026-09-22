@@ -156,9 +156,12 @@ function validDirection(candidate) {
 window.updateTractionDirection = (lockedDirection, fallbackDirection) => {
   const nextDirection = validDirection(lockedDirection) || validDirection(fallbackDirection);
   if (nextDirection) {
-    // The FR5 model root is rotated 180 degrees around Z for STL alignment.
-    // Correct the viewer axes from physical verification: Y reverses, X/Z stay unchanged.
-    tractionDirection.set(nextDirection.x, -nextDirection.y, nextDirection.z).normalize();
+    // ROS reports this vector in base_link, while the operator verifies it in
+    // the fixed-orientation tool frame. Physical three-axis verification gave
+    // tool X -> base Z, tool Y -> base Y and tool Z -> base -X. Apply the
+    // inverse basis transform as one matrix instead of independent sign guesses:
+    // [tool_x, tool_y, tool_z] = [base_z, base_y, -base_x].
+    tractionDirection.set(nextDirection.z, nextDirection.y, -nextDirection.x).normalize();
   }
 };
 
