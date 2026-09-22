@@ -117,14 +117,26 @@ const flangeAnchor = new THREE.Object3D();
 flangeAnchor.position.set(0, 0, 0.099);
 link.add(flangeAnchor);
 const tractionDirection = new THREE.Vector3(1, 0, 0);
+const tractionArrowColor = 0x0b3b8f;
 const tractionArrow = new THREE.ArrowHelper(
   tractionDirection,
   new THREE.Vector3(),
   0.24,
-  0xffb020,
-  0.058,
-  0.038,
+  tractionArrowColor,
+  0.064,
+  0.046,
 );
+// WebGL implementations commonly ignore lineWidth on line primitives.  Hide
+// ArrowHelper's thin shaft and replace it with a real cylinder so the traction
+// direction remains clearly visible on the workstation display.
+tractionArrow.line.visible = false;
+const tractionShaft = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.0095, 0.0095, 0.176, 18),
+  new THREE.MeshBasicMaterial({ color: tractionArrowColor, depthTest: false }),
+);
+tractionShaft.position.y = 0.088;
+tractionShaft.renderOrder = 20;
+tractionArrow.add(tractionShaft);
 tractionArrow.line.material.depthTest = false;
 tractionArrow.cone.material.depthTest = false;
 tractionArrow.renderOrder = 20;
@@ -143,7 +155,11 @@ function validDirection(candidate) {
 
 window.updateTractionDirection = (lockedDirection, fallbackDirection) => {
   const nextDirection = validDirection(lockedDirection) || validDirection(fallbackDirection);
-  if (nextDirection) tractionDirection.copy(nextDirection);
+  if (nextDirection) {
+    // The FR5 model root is rotated 180 degrees around Z for STL alignment.
+    // Compensate that visual-only rotation: X/Y reverse while Z is unchanged.
+    tractionDirection.set(-nextDirection.x, -nextDirection.y, nextDirection.z).normalize();
+  }
 };
 
 function updateJoints(degrees) {
