@@ -145,6 +145,14 @@ const rootWorldQuaternion = new THREE.Quaternion();
 const flangeWorldQuaternion = new THREE.Quaternion();
 const toolToBaseQuaternion = new THREE.Quaternion();
 const baseToToolQuaternion = new THREE.Quaternion();
+// Physical verification shows that the force sensor/flange axes are mounted
+// 180 degrees about tool +Z relative to the visual wrist3 mesh. Apply this
+// fixed mounting correction only after the live base_link -> tool rotation:
+// tool X/Y reverse together while tool Z remains unchanged.
+const physicalToolToModelQuaternion = new THREE.Quaternion().setFromAxisAngle(
+  new THREE.Vector3(0, 0, 1),
+  Math.PI,
+);
 
 function validDirection(candidate) {
   if (!Array.isArray(candidate) || candidate.length !== 3) return null;
@@ -219,6 +227,7 @@ function animate() {
   tractionDirectionTool
     .copy(tractionDirectionBase)
     .applyQuaternion(baseToToolQuaternion)
+    .applyQuaternion(physicalToolToModelQuaternion)
     .normalize();
   tractionArrow.setDirection(tractionDirectionTool);
   renderer.render(scene, camera);

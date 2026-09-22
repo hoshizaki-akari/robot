@@ -79,6 +79,9 @@ class UiContractTest(unittest.TestCase):
         self.assertIn("tractionDirectionBase.copy(nextDirection)", viewer)
         self.assertIn("flangeAnchor.add(tractionArrow)", viewer)
         self.assertIn(".applyQuaternion(baseToToolQuaternion)", viewer)
+        self.assertIn(".applyQuaternion(physicalToolToModelQuaternion)", viewer)
+        self.assertIn("new THREE.Vector3(0, 0, 1)", viewer)
+        self.assertIn("Math.PI", viewer)
         self.assertNotIn("tractionDirection.set(nextDirection.", viewer)
         self.assertIn("const measuredDirection", script)
         self.assertIn(
