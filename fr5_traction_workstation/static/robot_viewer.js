@@ -157,8 +157,8 @@ window.updateTractionDirection = (lockedDirection, fallbackDirection) => {
   const nextDirection = validDirection(lockedDirection) || validDirection(fallbackDirection);
   if (nextDirection) {
     // The FR5 model root is rotated 180 degrees around Z for STL alignment.
-    // Correct the viewer axes from physical verification: X reverses, Y/Z stay unchanged.
-    tractionDirection.set(-nextDirection.x, nextDirection.y, nextDirection.z).normalize();
+    // Correct the viewer axes from physical verification: Y reverses, X/Z stay unchanged.
+    tractionDirection.set(nextDirection.x, -nextDirection.y, nextDirection.z).normalize();
   }
 };
 
