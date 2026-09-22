@@ -76,10 +76,10 @@ class UiContractTest(unittest.TestCase):
         self.assertIn('@app.post("/api/settings")', app)
         self.assertIn("updateTractionDirection", viewer)
         self.assertIn("new THREE.ArrowHelper", viewer)
-        self.assertIn(
-            "tractionDirection.set(nextDirection.z, nextDirection.y, -nextDirection.x)",
-            viewer,
-        )
+        self.assertIn("tractionDirectionBase.copy(nextDirection)", viewer)
+        self.assertIn("flangeAnchor.add(tractionArrow)", viewer)
+        self.assertIn(".applyQuaternion(baseToToolQuaternion)", viewer)
+        self.assertNotIn("tractionDirection.set(nextDirection.", viewer)
         self.assertIn("const measuredDirection", script)
         self.assertIn(
             "window.updateTractionDirection(measuredDirection, lockedDirection, fallbackDirection)",
@@ -102,22 +102,24 @@ class UiContractTest(unittest.TestCase):
         page = (ROOT / "static" / "090105.html").read_text(encoding="utf-8")
         self.assertNotIn("platform_b/", page)
 
-    def test_physical_base_to_tool_arrow_transform(self):
-        def base_to_tool(vector):
-            base_x, base_y, base_z = vector
-            return base_z, base_y, -base_x
+    def test_dynamic_base_to_tool_rotation_uses_live_tcp_orientation(self):
+        # Live FR5 orientation captured during the hardware verification. Its
+        # columns are the current tool X/Y/Z axes expressed in base_link.
+        tool_to_base = (
+            (-0.693470, -0.024221, 0.720078),
+            (-0.719703, 0.069842, -0.690760),
+            (-0.033561, -0.997264, -0.065866),
+        )
 
-        verified_positive_directions = {
-            "tool_x": ((0, 0, 1), (1, 0, 0)),
-            "tool_y": ((0, 1, 0), (0, 1, 0)),
-            "tool_z": ((-1, 0, 0), (0, 0, 1)),
-        }
-        for base_vector, expected_tool_vector in verified_positive_directions.values():
-            self.assertEqual(base_to_tool(base_vector), expected_tool_vector)
-            self.assertEqual(
-                base_to_tool(tuple(-value for value in base_vector)),
-                tuple(-value for value in expected_tool_vector),
-            )
+        def multiply(matrix, vector):
+            return tuple(sum(row[i] * vector[i] for i in range(3)) for row in matrix)
+
+        base_to_tool = tuple(zip(*tool_to_base))
+        for axis in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)):
+            base_vector = multiply(tool_to_base, axis)
+            recovered_tool_vector = multiply(base_to_tool, base_vector)
+            for actual, expected in zip(recovered_tool_vector, axis):
+                self.assertAlmostEqual(actual, expected, places=5)
 
 
 

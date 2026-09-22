@@ -110,16 +110,16 @@ link = addJoint(link, [0, 0, 0.102], [-Math.PI / 2, 0, 0]);
 joints.push(link);
 meshLoads.push(addMesh(link, "wrist3_link", jointMaterial));
 
-// The flange face is approximately 99 mm along wrist3 +Z. The arrow is kept
-// in the robot base frame, starts at that face and has a fixed visual length;
-// only its direction changes with the direction locked by the traction logic.
+// The flange face is approximately 99 mm along wrist3 +Z. The arrow is a child
+// of the flange so its direction is expressed in the live tool frame.
 const flangeAnchor = new THREE.Object3D();
 flangeAnchor.position.set(0, 0, 0.099);
 link.add(flangeAnchor);
-const tractionDirection = new THREE.Vector3(1, 0, 0);
+const tractionDirectionBase = new THREE.Vector3(1, 0, 0);
+const tractionDirectionTool = new THREE.Vector3(1, 0, 0);
 const tractionArrowColor = 0x2aa8f2;
 const tractionArrow = new THREE.ArrowHelper(
-  tractionDirection,
+  tractionDirectionTool,
   new THREE.Vector3(),
   0.24,
   tractionArrowColor,
@@ -140,9 +140,11 @@ tractionArrow.add(tractionShaft);
 tractionArrow.line.material.depthTest = false;
 tractionArrow.cone.material.depthTest = false;
 tractionArrow.renderOrder = 20;
-robotRoot.add(tractionArrow);
-const flangeWorld = new THREE.Vector3();
-const flangeInBase = new THREE.Vector3();
+flangeAnchor.add(tractionArrow);
+const rootWorldQuaternion = new THREE.Quaternion();
+const flangeWorldQuaternion = new THREE.Quaternion();
+const toolToBaseQuaternion = new THREE.Quaternion();
+const baseToToolQuaternion = new THREE.Quaternion();
 
 function validDirection(candidate) {
   if (!Array.isArray(candidate) || candidate.length !== 3) return null;
@@ -158,10 +160,10 @@ window.updateTractionDirection = (...directionCandidates) => {
     .map(validDirection)
     .find(direction => direction !== null);
   if (nextDirection) {
-    // Display-only base_link -> tool conversion established by physical
-    // three-axis verification: tool X = base Z, tool Y = base Y,
-    // tool Z = -base X. Control and logging remain unchanged in base_link.
-    tractionDirection.set(nextDirection.z, nextDirection.y, -nextDirection.x).normalize();
+    // Keep the live ROS vector unchanged in base_link. The render loop applies
+    // the inverse of the current flange rotation, so no fixed axis/sign guess
+    // is needed and the mapping remains correct at every robot posture.
+    tractionDirectionBase.copy(nextDirection);
   }
 };
 
@@ -210,11 +212,15 @@ resize();
 function animate() {
   controls.update();
   scene.updateMatrixWorld(true);
-  flangeAnchor.getWorldPosition(flangeWorld);
-  flangeInBase.copy(flangeWorld);
-  robotRoot.worldToLocal(flangeInBase);
-  tractionArrow.position.copy(flangeInBase);
-  tractionArrow.setDirection(tractionDirection);
+  robotRoot.getWorldQuaternion(rootWorldQuaternion);
+  flangeAnchor.getWorldQuaternion(flangeWorldQuaternion);
+  toolToBaseQuaternion.copy(rootWorldQuaternion).invert().multiply(flangeWorldQuaternion);
+  baseToToolQuaternion.copy(toolToBaseQuaternion).invert();
+  tractionDirectionTool
+    .copy(tractionDirectionBase)
+    .applyQuaternion(baseToToolQuaternion)
+    .normalize();
+  tractionArrow.setDirection(tractionDirectionTool);
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
 }
