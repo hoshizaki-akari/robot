@@ -34,6 +34,14 @@ STATIC = ROOT / "static"
 SESSION_ROOT = (ROOT / "debug" / "traction_sessions").resolve()
 OPERATIONS_PATH = SESSION_ROOT / "operations.csv"
 OPERATION_LOCK = threading.Lock()
+SETTINGS_PATH = Path(
+    os.environ.get(
+        "FR5_WORKSTATION_SETTINGS_PATH",
+        Path.home() / ".local" / "state" / "fr5-traction" / "settings.json",
+    )
+).expanduser()
+SETTINGS_LOCK = threading.Lock()
+DEFAULT_SETTINGS = {"traction_force_limit_n": 100.0}
 bridge = RosBridge()
 
 OPERATION_NAMES = {
@@ -48,8 +56,33 @@ OPERATION_NAMES = {
     "/api/traction/reset-fault": "故障复位",
     "/api/traction/set-zero": "设置当前位置为零位",
     "/api/traction/return-zero": "回零",
+    "/api/settings": "保存参数",
     "/api/system/shutdown": "关闭程序",
 }
+
+
+def _read_settings() -> dict[str, float]:
+    with SETTINGS_LOCK:
+        try:
+            raw = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError):
+            return dict(DEFAULT_SETTINGS)
+    try:
+        limit = float(raw.get("traction_force_limit_n", 100.0))
+    except (TypeError, ValueError):
+        limit = 100.0
+    return {"traction_force_limit_n": min(100.0, max(1.0, limit))}
+
+
+def _write_settings(settings: dict[str, float]) -> None:
+    with SETTINGS_LOCK:
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = SETTINGS_PATH.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(settings, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, SETTINGS_PATH)
 
 
 def _write_operation(
@@ -163,6 +196,10 @@ class TargetRequest(BaseModel):
     target_force_n: float = Field(ge=1.0, le=100.0)
 
 
+class SettingsRequest(BaseModel):
+    traction_force_limit_n: float = Field(ge=1.0, le=100.0)
+
+
 class OperationModeRequest(BaseModel):
     mode: int = Field(ge=0, le=2)
 
@@ -186,6 +223,18 @@ def health() -> dict:
 @app.get("/api/state")
 def state() -> dict:
     return bridge.snapshot()
+
+
+@app.get("/api/settings")
+def get_settings() -> dict:
+    return _read_settings()
+
+
+@app.post("/api/settings")
+def save_settings(request: SettingsRequest) -> dict:
+    settings = {"traction_force_limit_n": float(request.traction_force_limit_n)}
+    _write_settings(settings)
+    return settings
 
 
 @app.get("/api/traction/history")
@@ -242,6 +291,12 @@ def calibrate_direction() -> dict:
 
 @app.post("/api/traction/target")
 def set_target(request: TargetRequest) -> dict:
+    configured_limit = _read_settings()["traction_force_limit_n"]
+    if request.target_force_n > configured_limit:
+        raise HTTPException(
+            status_code=409,
+            detail=f"目标牵引力不能超过当前设定上限 {configured_limit:g} N",
+        )
     return _call("set_target_force", request.target_force_n)
 
 

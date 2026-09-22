@@ -110,8 +110,41 @@ link = addJoint(link, [0, 0, 0.102], [-Math.PI / 2, 0, 0]);
 joints.push(link);
 meshLoads.push(addMesh(link, "wrist3_link", jointMaterial));
 
-// Keep the clinician view focused on the real FR5 posture. Force arrows and
-// virtual end tools are deliberately omitted from this compact display.
+// The flange face is approximately 99 mm along wrist3 +Z. The arrow is kept
+// in the robot base frame, starts at that face and has a fixed visual length;
+// only its direction changes with the direction locked by the traction logic.
+const flangeAnchor = new THREE.Object3D();
+flangeAnchor.position.set(0, 0, 0.099);
+link.add(flangeAnchor);
+const tractionDirection = new THREE.Vector3(1, 0, 0);
+const tractionArrow = new THREE.ArrowHelper(
+  tractionDirection,
+  new THREE.Vector3(),
+  0.24,
+  0xffb020,
+  0.058,
+  0.038,
+);
+tractionArrow.line.material.depthTest = false;
+tractionArrow.cone.material.depthTest = false;
+tractionArrow.renderOrder = 20;
+robotRoot.add(tractionArrow);
+const flangeWorld = new THREE.Vector3();
+const flangeInBase = new THREE.Vector3();
+
+function validDirection(candidate) {
+  if (!Array.isArray(candidate) || candidate.length !== 3) return null;
+  const vector = new THREE.Vector3(...candidate.map(Number));
+  if (![vector.x, vector.y, vector.z].every(Number.isFinite) || vector.lengthSq() < 0.25) {
+    return null;
+  }
+  return vector.normalize();
+}
+
+window.updateTractionDirection = (lockedDirection, fallbackDirection) => {
+  const nextDirection = validDirection(lockedDirection) || validDirection(fallbackDirection);
+  if (nextDirection) tractionDirection.copy(nextDirection);
+};
 
 function updateJoints(degrees) {
   if (!Array.isArray(degrees) || degrees.length !== 6) return;
@@ -157,6 +190,12 @@ resize();
 
 function animate() {
   controls.update();
+  scene.updateMatrixWorld(true);
+  flangeAnchor.getWorldPosition(flangeWorld);
+  flangeInBase.copy(flangeWorld);
+  robotRoot.worldToLocal(flangeInBase);
+  tractionArrow.position.copy(flangeInBase);
+  tractionArrow.setDirection(tractionDirection);
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
 }

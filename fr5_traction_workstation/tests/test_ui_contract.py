@@ -9,6 +9,7 @@ class UiContractTest(unittest.TestCase):
     def test_clean_page_exists_and_uses_real_endpoints(self):
         page = (ROOT / "static" / "090105.html").read_text(encoding="utf-8")
         script = (ROOT / "static" / "090105.js").read_text(encoding="utf-8")
+        viewer = (ROOT / "static" / "robot_viewer.js").read_text(encoding="utf-8")
         app = (ROOT / "app.py").read_text(encoding="utf-8")
         tablet_start = (ROOT / "scripts" / "tablet_start.sh").read_text(
             encoding="utf-8"
@@ -54,7 +55,7 @@ class UiContractTest(unittest.TestCase):
         self.assertIn("/ws", script)
         self.assertNotIn("Math.random()", script)
         self.assertNotIn("actualForce +=", script)
-        self.assertIn("previousForce", script)
+        self.assertIn("confirmedForce", script)
         self.assertIn("导出全部摘要", page)
         self.assertIn("data-export-session", script)
         self.assertIn("/api/traction/export/session/", script)
@@ -62,21 +63,30 @@ class UiContractTest(unittest.TestCase):
         self.assertIn("方向校准成功", script)
         self.assertNotIn("最大行程", page)
         self.assertNotIn("settingTravelLimit", script)
-        self.assertIn('max="100"', page)
-        self.assertIn("const TARGET_FORCE_MAX = 100", script)
-        self.assertIn("liveConstantForceAdjustment", script)
-        self.assertIn("Math.ceil((peak * 1.15) / 20) * 20", script)
+        self.assertIn('id="targetForceVal" type="range"', page)
+        self.assertIn('step="1"', page)
+        self.assertNotIn('class="round-btn', page)
+        self.assertIn("const TARGET_FORCE_ABSOLUTE_MAX = 100", script)
+        self.assertIn("liveTractionAdjustment", script)
+        self.assertIn("FORCE_HISTORY_WINDOW_MS = 60000", script)
+        self.assertIn("context.setLineDash([9, 7])", script)
+        self.assertIn("traction_force_limit_n", script)
+        self.assertIn('id="settingForceLimit"', page)
+        self.assertIn("/api/settings", script)
+        self.assertIn('@app.post("/api/settings")', app)
+        self.assertIn("updateTractionDirection", viewer)
+        self.assertIn("new THREE.ArrowHelper", viewer)
         action_ids = re.findall(r'class="action-btn[^"]*" id="([^"]+)"', page)
         self.assertEqual(
             action_ids,
             [
-                "prepareBtn", "startBtn", "returnZeroBtn",
-                "calibrateBtn", "stopBtn", "emergencyBtn",
+                "prepareBtn", "calibrateBtn", "startBtn",
+                "stopBtn", "returnZeroBtn", "emergencyBtn",
             ],
         )
+        self.assertIn('class="force-section-title">牵引力调节</div>', page)
         self.assertIn('<div class="force-metric-label">目标</div>', page)
         self.assertIn('<div class="force-metric-label">当前</div>', page)
-        self.assertNotIn('<span>牵引力调节</span>', page)
         self.assertIn(".arm-panel .card-title { color: #fff; }", page)
 
     def test_no_old_platform_b_dependency(self):

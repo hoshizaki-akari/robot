@@ -11,9 +11,13 @@ const permissions = {
 
 let sessionUser = null;
 const TARGET_FORCE_MIN = 1;
-const TARGET_FORCE_MAX = 100;
+const TARGET_FORCE_ABSOLUTE_MAX = 100;
+let tractionForceLimit = 100;
 let currentForce = 10;
+let confirmedForce = 10;
 let targetUpdatePending = false;
+let queuedTarget = null;
+let targetUpdateTimer = null;
 let operationMode = 0;
 let actualForce = 0;
 let activeRecord = null;
@@ -90,7 +94,7 @@ function simpleReason(value) {
 
 function simpleErrorMessage(error) {
   const text = String(error?.message || '');
-  if (/target|1 N and 100|1～100/i.test(text)) return '目标牵引力需在1～100N';
+  if (/target|目标牵引力|1 N and 100|1～100/i.test(text)) return `目标牵引力需在1～${tractionForceLimit}N`;
   if (/mode|模式/i.test(text)) return '当前状态不能切换模式';
   if (/direction|calibrat/i.test(text)) return '请先完成方向确认';
   if (/state|rejected|not available|unavailable|不可用/i.test(text)) return '当前状态不能执行';
@@ -145,14 +149,12 @@ function applyPermissions() {
   $('currentUser').textContent = sessionUser.name;
   $('currentRole').textContent = sessionUser.role;
   const motionActive = [6, 7, 11, 12].includes(tractionState) || pendingStart;
-  const liveConstantForceAdjustment = operationMode === 0 && tractionState === 6;
+  const liveTractionAdjustment =
+    (operationMode === 0 && tractionState === 6) ||
+    (operationMode === 1 && [6, 12].includes(tractionState));
   $('settingsBtn').disabled = !permission.settings || motionActive;
-  document.querySelectorAll('.force-adjust').forEach(button => {
-    button.disabled = !permission.adjust || operationMode === 2 ||
-      (motionActive && !liveConstantForceAdjustment) || targetUpdatePending;
-  });
   $('targetForceVal').disabled = !permission.adjust || operationMode === 2 ||
-    (motionActive && !liveConstantForceAdjustment) || targetUpdatePending;
+    (motionActive && !liveTractionAdjustment);
   const startStateReady = operationMode === 2 ? tractionState === 2 : tractionState === 5;
   $('startBtn').disabled = !permission.operate || !startStateReady || !dataOnline || pendingStart;
   $('stopBtn').disabled = !permission.operate || ![6, 11, 12].includes(tractionState) || !dataOnline;
@@ -203,39 +205,96 @@ async function shutdownProgram() {
 }
 
 function updateForceDisplay() {
-  $('targetForceVal').value = Number(currentForce.toFixed(1));
-  $('targetForceVal').style.color = '#1e3a5f';
+  currentForce = Math.round(currentForce);
+  $('targetForceVal').min = TARGET_FORCE_MIN;
+  $('targetForceVal').max = tractionForceLimit;
+  $('targetForceVal').value = currentForce;
+  $('targetForceDisplay').textContent = String(currentForce);
+  $('sliderMaximum').textContent = String(tractionForceLimit);
+  const span = Math.max(1, tractionForceLimit - TARGET_FORCE_MIN);
+  const progress = Math.max(0, Math.min(100,
+    ((currentForce - TARGET_FORCE_MIN) / span) * 100));
+  $('targetForceVal').style.setProperty('--slider-progress', `${progress}%`);
 }
 
 async function changeTarget(nextTarget) {
   if (!sessionUser || !permissions[sessionUser.role].adjust) {
     return toast('当前角色无权修改牵引参数');
   }
-  const liveUpdateAllowed = activeRecord && operationMode === 0 && tractionState === 6;
+  const liveUpdateAllowed = activeRecord && (
+    (operationMode === 0 && tractionState === 6) ||
+    (operationMode === 1 && [6, 12].includes(tractionState))
+  );
   if (activeRecord && !liveUpdateAllowed) return toast('当前模式运行中不能修改目标');
   const numericTarget = Number(nextTarget);
-  if (!Number.isFinite(numericTarget) || numericTarget < TARGET_FORCE_MIN || numericTarget > TARGET_FORCE_MAX) {
+  if (!Number.isFinite(numericTarget) || numericTarget < TARGET_FORCE_MIN || numericTarget > tractionForceLimit) {
     updateForceDisplay();
-    return toast('目标牵引力请输入 1～100 N');
+    return toast(`目标牵引力请输入 1～${tractionForceLimit} N`);
   }
-  const previousForce = currentForce;
-  currentForce = Math.round(numericTarget * 10) / 10;
+  currentForce = Math.round(numericTarget);
   updateForceDisplay();
   targetUpdatePending = true;
   applyPermissions();
   try {
     await postJson('/api/traction/target', { target_force_n: currentForce });
+    confirmedForce = currentForce;
     targetUpdatePending = false;
     applyPermissions();
-    if (liveUpdateAllowed) toast(`目标已调整为 ${currentForce.toFixed(1)}N`);
     return true;
   } catch (error) {
     targetUpdatePending = false;
-    currentForce = previousForce;
+    if (queuedTarget === null) currentForce = confirmedForce;
     updateForceDisplay();
     applyPermissions();
     toast(simpleErrorMessage(error));
     return false;
+  } finally {
+    if (queuedTarget !== null) flushQueuedTarget();
+  }
+}
+
+async function flushQueuedTarget() {
+  if (targetUpdatePending || queuedTarget === null) return;
+  const target = queuedTarget;
+  queuedTarget = null;
+  await changeTarget(target);
+}
+
+function queueSliderTarget(rawTarget, immediate = false) {
+  const target = Math.max(TARGET_FORCE_MIN,
+    Math.min(tractionForceLimit, Math.round(Number(rawTarget))));
+  currentForce = target;
+  queuedTarget = target;
+  updateForceDisplay();
+  if (immediate) {
+    clearTimeout(targetUpdateTimer);
+    targetUpdateTimer = setTimeout(() => {
+      targetUpdateTimer = null;
+      flushQueuedTarget();
+    }, 0);
+  } else if (targetUpdateTimer === null) {
+    targetUpdateTimer = setTimeout(() => {
+      targetUpdateTimer = null;
+      flushQueuedTarget();
+    }, 50);
+  }
+}
+
+function applyForceLimit(limit) {
+  tractionForceLimit = Math.max(TARGET_FORCE_MIN,
+    Math.min(TARGET_FORCE_ABSOLUTE_MAX, Math.round(Number(limit) || 100)));
+  if (currentForce > tractionForceLimit) currentForce = tractionForceLimit;
+  updateForceDisplay();
+}
+
+async function loadSettings() {
+  try {
+    const response = await fetch('/api/settings', { cache: 'no-store' });
+    if (!response.ok) return;
+    const settings = await response.json();
+    applyForceLimit(settings.traction_force_limit_n);
+  } catch (_) {
+    applyForceLimit(100);
   }
 }
 
@@ -259,8 +318,8 @@ async function startTraction() {
     return;
   }
   const requestedTarget = Number($('targetForceVal').value);
-  if (!Number.isFinite(requestedTarget) || requestedTarget < TARGET_FORCE_MIN || requestedTarget > TARGET_FORCE_MAX) {
-    return toast('目标牵引力请输入 1～100 N');
+  if (!Number.isFinite(requestedTarget) || requestedTarget < TARGET_FORCE_MIN || requestedTarget > tractionForceLimit) {
+    return toast(`目标牵引力请输入 1～${tractionForceLimit} N`);
   }
   if (tractionState !== 5) return toast('请先完成方向标定并锁定方向');
   // A new run must not inherit the previous run's completion request/status.
@@ -273,7 +332,7 @@ async function startTraction() {
     // Always send the value currently shown in the input immediately before
     // each run. This is what makes the second and later runs independent of
     // the previous run's target.
-    currentForce = Math.round(requestedTarget * 10) / 10;
+    currentForce = Math.round(requestedTarget);
     updateForceDisplay();
     await postJson('/api/traction/target', { target_force_n: currentForce });
     await postJson('/api/traction/start');
@@ -420,7 +479,8 @@ function exportSession(sessionId) {
 
 const canvas = $('forceCanvas');
 const context = canvas.getContext('2d');
-let dataPoints = Array(90).fill(0);
+let forceHistory = [];
+const FORCE_HISTORY_WINDOW_MS = 60000;
 
 function resizeCanvas() {
   const rectangle = canvas.getBoundingClientRect();
@@ -432,50 +492,97 @@ function resizeCanvas() {
 function drawCurve() {
   const width = canvas.width;
   const height = canvas.height;
+  const plot = { left: 36, top: 12, right: width - 10, bottom: height - 24 };
+  const plotWidth = Math.max(1, plot.right - plot.left);
+  const plotHeight = Math.max(1, plot.bottom - plot.top);
   context.clearRect(0, 0, width, height);
   context.fillStyle = '#f8fafc';
   context.fillRect(0, 0, width, height);
   context.strokeStyle = '#e2e8f0';
   context.lineWidth = 1;
-  for (let index = 1; index < 5; index += 1) {
-    const y = height * index / 5;
+  for (let index = 0; index <= 4; index += 1) {
+    const y = plot.top + plotHeight * index / 4;
     context.beginPath();
-    context.moveTo(0, y);
-    context.lineTo(width, y);
+    context.moveTo(plot.left, y);
+    context.lineTo(plot.right, y);
     context.stroke();
   }
-  for (let index = 1; index < 9; index += 1) {
-    const x = width * index / 9;
+  for (let index = 0; index <= 6; index += 1) {
+    const x = plot.left + plotWidth * index / 6;
     context.beginPath();
-    context.moveTo(x, 0);
-    context.lineTo(x, height);
+    context.moveTo(x, plot.top);
+    context.lineTo(x, plot.bottom);
     context.stroke();
   }
-  context.strokeStyle = '#3b82f6';
-  context.lineWidth = 3;
-  context.beginPath();
-  const peak = Math.max(currentForce, actualForce, ...dataPoints);
-  const maximum = Math.max(40, Math.ceil((peak * 1.15) / 20) * 20);
-  const step = width / (dataPoints.length - 1);
-  dataPoints.forEach((value, index) => {
-    const x = index * step;
-    const y = height - (value / maximum) * height * .82 - height * .08;
-    index ? context.lineTo(x, y) : context.moveTo(x, y);
+
+  let peak = Math.max(currentForce, actualForce, 0);
+  forceHistory.forEach(point => {
+    peak = Math.max(peak, point.actual, point.target);
   });
-  context.stroke();
-  context.lineTo(width, height);
-  context.lineTo(0, height);
-  context.closePath();
-  const gradient = context.createLinearGradient(0, 0, 0, height);
-  gradient.addColorStop(0, 'rgba(59,130,246,.24)');
-  gradient.addColorStop(1, 'rgba(59,130,246,.02)');
-  context.fillStyle = gradient;
-  context.fill();
+  const scaleSteps = [20, 40, 60, 80, 100, 120, 150];
+  const desiredMaximum = peak * 1.1;
+  const maximum = scaleSteps.find(value => value >= desiredMaximum) ||
+    Math.ceil(desiredMaximum / 50) * 50;
+  const now = Date.now();
+  const start = now - FORCE_HISTORY_WINDOW_MS;
+  const xFor = timestamp => plot.left +
+    Math.max(0, Math.min(1, (timestamp - start) / FORCE_HISTORY_WINDOW_MS)) * plotWidth;
+  const yFor = value => plot.bottom -
+    Math.max(0, Math.min(1, value / maximum)) * plotHeight;
+
+  if (forceHistory.length) {
+    context.save();
+    context.beginPath();
+    context.rect(plot.left, plot.top, plotWidth, plotHeight);
+    context.clip();
+
+    context.strokeStyle = '#16a34a';
+    context.lineWidth = 2.5;
+    context.setLineDash([9, 7]);
+    context.beginPath();
+    forceHistory.forEach((point, index) => {
+      const x = xFor(point.time);
+      const y = yFor(point.target);
+      if (!index) {
+        context.moveTo(x, y);
+      } else {
+        const previousY = yFor(forceHistory[index - 1].target);
+        context.lineTo(x, previousY);
+        context.lineTo(x, y);
+      }
+    });
+    context.stroke();
+
+    context.strokeStyle = '#2680eb';
+    context.lineWidth = 3;
+    context.setLineDash([]);
+    context.beginPath();
+    forceHistory.forEach((point, index) => {
+      const x = xFor(point.time);
+      const y = yFor(point.actual);
+      index ? context.lineTo(x, y) : context.moveTo(x, y);
+    });
+    context.stroke();
+    context.restore();
+  }
+
   context.fillStyle = '#64748b';
-  context.font = '12px sans-serif';
-  context.fillText(`${maximum} N`, 6, 15);
-  context.fillText('0 N', 6, height - 7);
-  context.fillText('时间 →', width - 52, height - 7);
+  context.font = '12px "Microsoft YaHei", sans-serif';
+  context.textAlign = 'right';
+  context.fillText(String(maximum), plot.left - 6, plot.top + 4);
+  context.fillText(String(Math.round(maximum / 2)), plot.left - 6, plot.top + plotHeight / 2 + 4);
+  context.fillText('0', plot.left - 6, plot.bottom + 4);
+  context.textAlign = 'left';
+  context.fillText('−60秒', plot.left, height - 6);
+  context.textAlign = 'right';
+  context.fillText('现在', plot.right, height - 6);
+}
+
+function appendForceSample(actual, target) {
+  const now = Date.now();
+  forceHistory.push({ time: now, actual: Number(actual) || 0, target: Number(target) || 0 });
+  const cutoff = now - FORCE_HISTORY_WINDOW_MS;
+  while (forceHistory.length && forceHistory[0].time < cutoff) forceHistory.shift();
 }
 
 function handleState(state) {
@@ -484,10 +591,11 @@ function handleState(state) {
   tractionState = Number(traction.state || 0);
   operationMode = Number(traction.operation_mode || 0);
   const rosTargetForce = Number(traction.target_force_n);
-  if (!activeRecord && !targetUpdatePending && document.activeElement !== $('targetForceVal') &&
+  if (!targetUpdatePending && queuedTarget === null && document.activeElement !== $('targetForceVal') &&
       Number.isFinite(rosTargetForce) &&
-      rosTargetForce >= TARGET_FORCE_MIN && rosTargetForce <= TARGET_FORCE_MAX) {
-    currentForce = Math.round(rosTargetForce * 10) / 10;
+      rosTargetForce >= TARGET_FORCE_MIN && rosTargetForce <= tractionForceLimit) {
+    currentForce = Math.round(rosTargetForce);
+    confirmedForce = currentForce;
     updateForceDisplay();
   }
   if ([6, 11].includes(tractionState)) beginLocalRecord();
@@ -514,6 +622,13 @@ function handleState(state) {
   }
 
   directionLocked = [5, 6, 7, 12].includes(tractionState);
+  const lockedDirection = Array.isArray(traction.locked_direction_base)
+    ? traction.locked_direction_base : null;
+  const fallbackDirection = Array.isArray(traction.increase_direction_base)
+    ? traction.increase_direction_base : null;
+  if (window.updateTractionDirection) {
+    window.updateTractionDirection(lockedDirection, fallbackDirection);
+  }
   actualForce = Number(traction.actual_force_n || 0);
   $('actualForceVal').textContent = actualForce.toFixed(1);
   const tensionDetected = actualForce >= 1.0;
@@ -552,8 +667,7 @@ function handleState(state) {
     $('workStatus').classList.remove('running');
   }
 
-  dataPoints.shift();
-  dataPoints.push(activeRecord ? actualForce : 0);
+  appendForceSample(actualForce, Number.isFinite(rosTargetForce) ? rosTargetForce : currentForce);
   drawCurve();
   if (sessionUser) applyPermissions();
 }
@@ -588,19 +702,8 @@ setInterval(() => {
   }
 }, 500);
 
-document.querySelectorAll('.force-adjust').forEach(button => {
-  button.addEventListener('click', () => {
-    const nextTarget = Math.max(TARGET_FORCE_MIN, Math.min(TARGET_FORCE_MAX, currentForce + Number(button.dataset.step)));
-    changeTarget(nextTarget);
-  });
-});
-$('targetForceVal').addEventListener('change', event => changeTarget(event.target.value));
-$('targetForceVal').addEventListener('keydown', event => {
-  if (event.key === 'Enter') {
-    event.preventDefault();
-    event.target.blur();
-  }
-});
+$('targetForceVal').addEventListener('input', event => queueSliderTarget(event.target.value));
+$('targetForceVal').addEventListener('change', event => queueSliderTarget(event.target.value, true));
 $('loginBtn').addEventListener('click', login);
 $('password').addEventListener('keydown', event => {
   if (event.key === 'Enter') login();
@@ -628,13 +731,25 @@ $('settingsBtn').addEventListener('click', () => {
     return toast('当前角色无权修改参数');
   }
   $('settingTarget').value = currentForce;
+  $('settingTarget').max = tractionForceLimit;
+  $('settingForceLimit').value = tractionForceLimit;
   $('settingsModal').classList.remove('hidden');
 });
 $('saveSettingsBtn').addEventListener('click', async () => {
   const target = Number($('settingTarget').value);
-  if (target < TARGET_FORCE_MIN || target > TARGET_FORCE_MAX) {
-    return toast('目标牵引力必须在 1～100 N');
+  const limit = Number($('settingForceLimit').value);
+  if (!Number.isInteger(limit) || limit < TARGET_FORCE_MIN || limit > TARGET_FORCE_ABSOLUTE_MAX) {
+    return toast('牵引力上限必须是1～100N的整数');
   }
+  if (!Number.isInteger(target) || target < TARGET_FORCE_MIN || target > limit) {
+    return toast(`默认目标牵引力必须是1～${limit}N的整数`);
+  }
+  try {
+    await postJson('/api/settings', { traction_force_limit_n: limit });
+  } catch (error) {
+    return toast(simpleErrorMessage(error));
+  }
+  applyForceLimit(limit);
   if (!(await changeTarget(target))) {
     return;
   }
@@ -664,6 +779,7 @@ document.querySelectorAll('[data-close]').forEach(button => {
 window.addEventListener('resize', resizeCanvas);
 
 updateForceDisplay();
+loadSettings();
 renderRecords();
 refreshHistory();
 setInterval(refreshHistory, 2000);

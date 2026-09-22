@@ -65,7 +65,8 @@ bool can_transition(TractionState from, TractionState to)
              to == TractionState::COMPLETED;
     case TractionState::RELEASING: return to == TractionState::COMPLETED;
     case TractionState::DRAGGING: return to == TractionState::COMPLETED;
-    case TractionState::POSITION_HOLD: return to == TractionState::COMPLETED;
+    case TractionState::POSITION_HOLD:
+      return to == TractionState::TRACTION || to == TractionState::COMPLETED;
     case TractionState::COMPLETED:
       return to == TractionState::READY || to == TractionState::DIRECTION_LOCKED;
     case TractionState::FAULT:

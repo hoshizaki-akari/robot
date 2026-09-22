@@ -815,24 +815,42 @@ private:
       return;
     }
     const auto state = state_machine_.state();
-    const bool live_constant_force_update =
-      state == TractionState::TRACTION && operation_mode_ == OperationMode::CONSTANT_FORCE;
+    const bool live_traction_update = state == TractionState::TRACTION &&
+      (operation_mode_ == OperationMode::CONSTANT_FORCE ||
+      operation_mode_ == OperationMode::POSITION_TRACTION);
+    const bool resume_position_from_hold = state == TractionState::POSITION_HOLD &&
+      operation_mode_ == OperationMode::POSITION_TRACTION;
     if (state != TractionState::READY && state != TractionState::COMPLETED &&
       state != TractionState::MANUAL_SETUP && state != TractionState::DIRECTION_LOCKED &&
-      !live_constant_force_update)
+      !live_traction_update && !resume_position_from_hold)
     {
       response->success = false;
       response->message =
         state_and_allowed(
-        "set_target_force while stopped, or during constant-force traction");
+        "set_target_force while stopped, or during constant/position traction");
+      return;
+    }
+    if (resume_position_from_hold && !controller_start_pending_ &&
+      !controller_activation_confirming_ && !request_controller_start())
+    {
+      response->success = false;
+      response->message = "Target update rejected: Cartesian controller could not resume.";
       return;
     }
     target_force_n_ = request->target_force_n;
     target_force_configured_ = true;
+    if (operation_mode_ == OperationMode::POSITION_TRACTION &&
+      (live_traction_update || resume_position_from_hold))
+    {
+      position_reached_ = false;
+      position_reached_started_at_.reset();
+    }
     response->success = true;
-    response->message = live_constant_force_update ?
-      "Live constant-force target updated to " + std::to_string(target_force_n_) + " N." :
-      "Target force set to " + std::to_string(target_force_n_) + " N.";
+    response->message = resume_position_from_hold ?
+      "Position traction is resuming toward " + std::to_string(target_force_n_) + " N." :
+      (live_traction_update ?
+      "Live traction target updated to " + std::to_string(target_force_n_) + " N." :
+      "Target force set to " + std::to_string(target_force_n_) + " N.");
   }
 
   void handle_set_operation_mode(
@@ -1221,6 +1239,8 @@ private:
           }
           const auto state = state_machine_.state();
           const bool expected_state = state == TractionState::DIRECTION_LOCKED ||
+          (operation_mode_ == OperationMode::POSITION_TRACTION &&
+          state == TractionState::POSITION_HOLD) ||
           (operation_mode_ == OperationMode::ASSISTED_DRAG &&
           state == TractionState::MANUAL_SETUP);
           if (!expected_state) {return;}
@@ -1483,6 +1503,8 @@ private:
     check_safety(monotonic_now_s);
     const bool activation_state_ready =
       state_machine_.state() == TractionState::DIRECTION_LOCKED ||
+      (operation_mode_ == OperationMode::POSITION_TRACTION &&
+      state_machine_.state() == TractionState::POSITION_HOLD) ||
       (operation_mode_ == OperationMode::ASSISTED_DRAG &&
       state_machine_.state() == TractionState::MANUAL_SETUP);
     if (activation_state_ready && controller_activation_confirming_) {
@@ -1490,12 +1512,17 @@ private:
       const bool activation_inputs_ready = live_wrench() && live_controller() && live_ee();
       if (activation_inputs_ready) {
         controller_activation_confirming_ = false;
-        session_start_position_ = latest_ee_position_;
-        if (direction_estimator_) {direction_estimator_->reset();}
-        if (direction_controller_) {direction_controller_->reset();}
-        direction_estimate_ = {};
-        lateral_correction_result_ = {};
-        lateral_correction_velocity_base_ = {};
+        const bool resuming_position =
+          state_machine_.state() == TractionState::POSITION_HOLD &&
+          operation_mode_ == OperationMode::POSITION_TRACTION;
+        if (!resuming_position) {
+          session_start_position_ = latest_ee_position_;
+          if (direction_estimator_) {direction_estimator_->reset();}
+          if (direction_controller_) {direction_controller_->reset();}
+          direction_estimate_ = {};
+          lateral_correction_result_ = {};
+          lateral_correction_velocity_base_ = {};
+        }
         if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
           current_command_target_n_ = 0.0;
           transition(TractionState::DRAGGING);
@@ -1503,6 +1530,8 @@ private:
         } else {
           current_command_target_n_ = std::clamp(
             current_metrics().actual_force_n, 0.0, target_force_n_);
+          position_reached_ = false;
+          position_reached_started_at_.reset();
           transition(TractionState::TRACTION);
           RCLCPP_INFO(get_logger(), "Fresh EE feedback confirmed; traction control started.");
         }

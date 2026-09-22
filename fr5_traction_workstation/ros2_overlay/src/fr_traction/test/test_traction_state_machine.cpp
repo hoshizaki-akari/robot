@@ -84,6 +84,7 @@ TEST(TractionStateMachine, SupportsAssistedDragAndPositionHoldFlows)
   for (const auto next : {TractionState::READY, TractionState::MANUAL_SETUP,
       TractionState::CALIBRATING, TractionState::DIRECTION_LOCKED,
       TractionState::TRACTION, TractionState::POSITION_HOLD,
+      TractionState::TRACTION, TractionState::POSITION_HOLD,
       TractionState::COMPLETED, TractionState::DIRECTION_LOCKED})
   {
     EXPECT_TRUE(position.transition(next));
