@@ -48,7 +48,7 @@
     .main-container {
       height: calc(100% - 64px); display: grid;
       grid-template-columns: minmax(320px, 31%) minmax(0, 1fr);
-      grid-template-rows: minmax(0, 1fr) 112px;
+      grid-template-rows: minmax(0, 1fr) 144px;
       gap: 12px 14px; padding: 12px 14px;
     }
     .left-area, .right-area { display: flex; flex-direction: column; gap: 14px; min-width: 0; min-height: 0; }
@@ -105,7 +105,7 @@
       padding: 5px 20px 8px;
     }
     .mode-btn {
-      min-height: 68px; border: 2px solid #aebdce; border-radius: 12px; padding: 8px 14px;
+      min-height: 84px; border: 2px solid #aebdce; border-radius: 12px; padding: 8px 14px;
       background: #fff; color: #334155; font-size: clamp(23px, 1.5vw, 29px); font-weight: 900;
       line-height: 1; letter-spacing: .24em; text-indent: .24em; cursor: pointer;
       box-shadow: 0 3px 8px rgba(15,23,42,.06); transition: .15s;
@@ -167,7 +167,7 @@
     }
     .force-slider:disabled { cursor: not-allowed; filter: grayscale(.8); opacity: .45; }
     .actual-metric {
-      align-self: start; border-top: 1px solid #dbe5f0; padding-top: 4px;
+      align-self: start; border-top: 0; padding-top: 0;
     }
     .control-grid {
       grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -240,13 +240,13 @@
     @media (max-height: 820px) and (min-width: 1051px) {
       .mode-section-title { padding-top: 6px; }
       .mode-grid { padding-top: 3px; padding-bottom: 6px; }
-      .mode-btn { min-height: 64px; font-size: 23px; }
+      .mode-btn { min-height: 84px; font-size: 25px; }
       .force-adjustment { margin: 0 16px 2px; }
       .force-section-title { padding-top: 4px; padding-bottom: 4px; }
       .force-control-body { grid-template-rows: minmax(96px, 1fr) 58px minmax(92px, .9fr); padding-bottom: 0; }
       .force-metric-label { font-size: 48px; }
-      .force-value-target, .actual-metric .actual-force-value { font-size: 112px; }
-      .force-unit-target, .actual-metric .actual-force-unit { font-size: 50px; }
+      .force-value-target, .actual-metric .actual-force-value { font-size: 116px; }
+      .force-unit-target, .actual-metric .actual-force-unit { font-size: 52px; }
       .action-btn { font-size: 24px; }
     }
 
