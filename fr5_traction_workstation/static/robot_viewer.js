@@ -153,15 +153,15 @@ function validDirection(candidate) {
   return vector.normalize();
 }
 
-window.updateTractionDirection = (lockedDirection, fallbackDirection) => {
-  const nextDirection = validDirection(lockedDirection) || validDirection(fallbackDirection);
+window.updateTractionDirection = (...directionCandidates) => {
+  const nextDirection = directionCandidates
+    .map(validDirection)
+    .find(direction => direction !== null);
   if (nextDirection) {
-    // ROS reports this vector in base_link, while the operator verifies it in
-    // the fixed-orientation tool frame. Physical three-axis verification gave
-    // tool X -> base Z, tool Y -> base Y and tool Z -> base -X. Apply the
-    // inverse basis transform as one matrix instead of independent sign guesses:
-    // [tool_x, tool_y, tool_z] = [base_z, base_y, -base_x].
-    tractionDirection.set(nextDirection.z, nextDirection.y, -nextDirection.x).normalize();
+    // FT_SetRCS(1) makes the SDK feedback a base_link vector. The arrow and
+    // robot model share robotRoot, so the vector is already in the arrow's
+    // local coordinate system. Any additional sign or axis remap is incorrect.
+    tractionDirection.copy(nextDirection);
   }
 };
 

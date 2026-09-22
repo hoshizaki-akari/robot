@@ -622,12 +622,14 @@ function handleState(state) {
   }
 
   directionLocked = [5, 6, 7, 12].includes(tractionState);
+  const measuredDirection = Array.isArray(traction.force_direction_base)
+    ? traction.force_direction_base : null;
   const lockedDirection = Array.isArray(traction.locked_direction_base)
     ? traction.locked_direction_base : null;
   const fallbackDirection = Array.isArray(traction.increase_direction_base)
     ? traction.increase_direction_base : null;
   if (window.updateTractionDirection) {
-    window.updateTractionDirection(lockedDirection, fallbackDirection);
+    window.updateTractionDirection(measuredDirection, lockedDirection, fallbackDirection);
   }
   actualForce = Number(traction.actual_force_n || 0);
   $('actualForceVal').textContent = actualForce.toFixed(1);
