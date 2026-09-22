@@ -77,7 +77,7 @@ class UiContractTest(unittest.TestCase):
         self.assertIn("updateTractionDirection", viewer)
         self.assertIn("new THREE.ArrowHelper", viewer)
         self.assertIn(
-            "tractionDirection.set(-nextDirection.x, -nextDirection.y, nextDirection.z)",
+            "tractionDirection.set(-nextDirection.x, nextDirection.y, -nextDirection.z)",
             viewer,
         )
         self.assertIn("const measuredDirection", script)

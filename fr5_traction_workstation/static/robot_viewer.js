@@ -158,10 +158,9 @@ window.updateTractionDirection = (...directionCandidates) => {
     .map(validDirection)
     .find(direction => direction !== null);
   if (nextDirection) {
-    // The SDK/ROS data stays in base_link. Only the visual arrow is adapted to
-    // the operator-observed tool axes: tool X/Y are opposite to the viewer's
-    // base X/Y at the fixed flange orientation, while tool Z is unchanged.
-    tractionDirection.set(-nextDirection.x, -nextDirection.y, nextDirection.z).normalize();
+    // Display-only mapping established by physical three-axis verification.
+    // Keep control and logging in base_link; map the arrow to the observed tool axes.
+    tractionDirection.set(-nextDirection.x, nextDirection.y, -nextDirection.z).normalize();
   }
 };
 
