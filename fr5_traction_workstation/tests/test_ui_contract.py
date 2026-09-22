@@ -76,8 +76,10 @@ class UiContractTest(unittest.TestCase):
         self.assertIn('@app.post("/api/settings")', app)
         self.assertIn("updateTractionDirection", viewer)
         self.assertIn("new THREE.ArrowHelper", viewer)
-        self.assertIn("tractionDirection.copy(nextDirection)", viewer)
-        self.assertNotIn("tractionDirection.set(nextDirection.", viewer)
+        self.assertIn(
+            "tractionDirection.set(-nextDirection.x, -nextDirection.y, nextDirection.z)",
+            viewer,
+        )
         self.assertIn("const measuredDirection", script)
         self.assertIn(
             "window.updateTractionDirection(measuredDirection, lockedDirection, fallbackDirection)",

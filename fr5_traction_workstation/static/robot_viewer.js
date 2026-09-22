@@ -158,10 +158,10 @@ window.updateTractionDirection = (...directionCandidates) => {
     .map(validDirection)
     .find(direction => direction !== null);
   if (nextDirection) {
-    // FT_SetRCS(1) makes the SDK feedback a base_link vector. The arrow and
-    // robot model share robotRoot, so the vector is already in the arrow's
-    // local coordinate system. Any additional sign or axis remap is incorrect.
-    tractionDirection.copy(nextDirection);
+    // The SDK/ROS data stays in base_link. Only the visual arrow is adapted to
+    // the operator-observed tool axes: tool X/Y are opposite to the viewer's
+    // base X/Y at the fixed flange orientation, while tool Z is unchanged.
+    tractionDirection.set(-nextDirection.x, -nextDirection.y, nextDirection.z).normalize();
   }
 };
 
