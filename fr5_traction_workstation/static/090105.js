@@ -160,6 +160,12 @@ function applyPermissions() {
   $('stopBtn').disabled = !permission.operate || ![6, 11, 12].includes(tractionState) || !dataOnline;
   if ($('prepareBtn')) $('prepareBtn').disabled = !permission.operate || !dataOnline || ![1, 2, 5, 8, 9].includes(tractionState);
   if ($('calibrateBtn')) $('calibrateBtn').disabled = !permission.operate || !dataOnline || operationMode === 2 || tractionState !== 2;
+  const showDirectionAction = operationMode !== 2 && tractionState === 2;
+  $('prepareBtn').classList.toggle('slot-hidden', showDirectionAction);
+  $('calibrateBtn').classList.toggle('slot-hidden', !showDirectionAction);
+  const showStopAction = [6, 7, 11, 12].includes(tractionState);
+  $('startBtn').classList.toggle('slot-hidden', showStopAction);
+  $('stopBtn').classList.toggle('slot-hidden', !showStopAction);
   if ($('emergencyBtn')) {
     const recovering = tractionState === 10;
     $('emergencyBtn').disabled = !permission.operate || !dataOnline || emergencyPending;
