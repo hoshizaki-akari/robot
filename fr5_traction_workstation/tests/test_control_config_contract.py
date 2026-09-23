@@ -173,6 +173,21 @@ class ControlConfigurationContractTest(unittest.TestCase):
             "smooth_velocity(desired_velocity, dt_s, false)", controller
         )
 
+    def test_normal_traction_stop_holds_the_current_pose(self):
+        manager = (ROS / "src" / "traction_manager_node.cpp").read_text(
+            encoding="utf-8"
+        )
+        stop_handler = manager.split("void handle_stop", 1)[1].split(
+            "void handle_emergency", 1
+        )[0]
+        self.assertIn("OperationMode::POSITION_TRACTION", stop_handler)
+        self.assertIn("OperationMode::CONSTANT_FORCE", stop_handler)
+        self.assertIn("request_controller_stop();", stop_handler)
+        self.assertIn("CONSTANT_FORCE_STOPPED", stop_handler)
+        self.assertIn("stopped at the current pose", stop_handler)
+        self.assertNotIn("TractionState::RELEASING", stop_handler)
+        self.assertNotIn("request_pretraction_return", stop_handler)
+
     def test_web_runtime_defaults_to_current_overlay(self):
         launcher = (ROOT / "run_workstation.sh").read_text(encoding="utf-8")
         preflight = (ROOT / "scripts" / "preflight_check.sh").read_text(encoding="utf-8")

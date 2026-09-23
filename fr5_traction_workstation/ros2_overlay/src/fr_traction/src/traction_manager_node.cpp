@@ -728,31 +728,27 @@ private:
       response->message = "FR5 native drag stop requested; waiting for controller confirmation.";
       return;
     }
-    if (operation_mode_ == OperationMode::POSITION_TRACTION) {
+    if (operation_mode_ == OperationMode::POSITION_TRACTION ||
+      operation_mode_ == OperationMode::CONSTANT_FORCE)
+    {
       publish_disabled();
       request_controller_stop();
-      stop_reason_ = position_reached_ ? "POSITION_TRACTION_COMPLETED" :
-        "POSITION_TRACTION_STOPPED";
+      if (operation_mode_ == OperationMode::POSITION_TRACTION) {
+        stop_reason_ = position_reached_ ? "POSITION_TRACTION_COMPLETED" :
+          "POSITION_TRACTION_STOPPED";
+      } else {
+        stop_reason_ = "CONSTANT_FORCE_STOPPED";
+      }
       transition(TractionState::COMPLETED);
       finalize_session();
       target_force_configured_ = false;
       transition(TractionState::DIRECTION_LOCKED);
       response->success = true;
-      response->message = "Position traction stopped at the current pose.";
+      response->message = operation_mode_ == OperationMode::POSITION_TRACTION ?
+        "Position traction stopped at the current pose." :
+        "Constant-force traction stopped at the current pose.";
       return;
     }
-    transition(TractionState::RELEASING);
-    release_started_at_ = now();
-    controller_stop_requested_ = false;
-    pretraction_return_call_pending_ = false;
-    pretraction_return_requested_ = false;
-    pretraction_return_failed_ = false;
-    // The logged control target is zero from the first release sample onward:
-    // this makes it explicit that the force controller is no longer driving
-    // the return motion.
-    current_command_target_n_ = 0.0;
-    response->success = true;
-    response->message = "牵引已停止，已退出力控，正在返回牵引起始位置。";
   }
 
   void handle_emergency(const std_srvs::srv::Trigger::Response::SharedPtr response)
