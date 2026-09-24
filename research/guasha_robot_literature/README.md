@@ -19,3 +19,4 @@ Eye-in-Hand RGB-D 背部/软体曲面感知 → 人工标线三维轨迹 → scr
 
 - 2026-09-23：`daily/2026-09-23_run03.md` — 宽工具接触位置/工具形状估计、力矩法向修正、未知曲面恒力与低频导纳部署。
 - 2026-09-24：`daily/2026-09-24_run04.md` — 从 point contact 推进到等效 CoP/面接触可观测性；MLS/DeepFit 局部法向；RegHEC 标定-配准；离散/冲击导纳稳定性与 FR5 实验设计。
+- 2026-09-25：`daily/2026-09-25_run05.md` — 滑动接触 friction bias 与 force+velocity 在线法向估计；软组织刚度/Hunt–Crossley 在线辨识；刚-软异质接触 EKF+MPC；提出状态相关的视觉/力觉融合权重。
