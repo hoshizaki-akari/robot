@@ -21,3 +21,4 @@ Eye-in-Hand RGB-D 背部/软体曲面感知 → 人工标线三维轨迹 → scr
 - 2026-09-24：`daily/2026-09-24_run04.md` — 从 point contact 推进到等效 CoP/面接触可观测性；MLS/DeepFit 局部法向；RegHEC 标定-配准；离散/冲击导纳稳定性与 FR5 实验设计。
 - 2026-09-25：`daily/2026-09-25_run05.md` — 滑动接触 friction bias 与 force+velocity 在线法向估计；软组织刚度/Hunt–Crossley 在线辨识；刚-软异质接触 EKF+MPC；提出状态相关的视觉/力觉融合权重。
 - 2026-09-25：`daily/2026-09-25_run06.md` — 新增人体背部直接同构 baseline：F/T 接触点/法向估计 + 动态接触减速 + 力误差补偿 + bounded variable impedance；补齐 KWR75D payload/CoG/bias ROS2 标定资源；进一步固定状态相关 visual-force local contact frame 与双向刮痧状态机。
+- 2026-09-26：`daily/2026-09-26_run07.md` — 新增真实曲面 scraping 的 scan–mesh–normal–B-spline–SLERP 全链路；补齐 wrist F/T 到实际刮板 tool-end wrench 的动态/零漂/creep 补偿证据；明确 Geometry → Tool-wrench observer → Contact estimator → Controller 四层架构，并保留 learning 仅作为高层 wrench adaptation。
