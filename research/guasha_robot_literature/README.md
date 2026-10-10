@@ -4,7 +4,7 @@
 
 ## 当前主链路
 
-Eye-in-Hand RGB-D 背部/软体曲面感知 → 人工标线三维轨迹 → scraper contact frame/TCP → RGB-D + 6D F/T 在线接触/法向/接触位置估计 → 曲面恒力/姿态同步柔顺控制 → 前刮恒力与轻力回程状态机 → 后续 residual/offline RL。
+Eye-in-Hand RGB-D 背部/软体曲面感知 → 人工标线三维轨迹 → scraper contact frame/TCP → RGB-D + 6D F/T 在线接触/法向/接触位置估计 → 动态接触框架与完整 wrench 变换 → 曲面恒力/姿态同步柔顺控制 → 前刮恒力与轻力回程状态机 → 后续 residual/offline RL。
 
 ## 目录
 
@@ -25,3 +25,4 @@ Eye-in-Hand RGB-D 背部/软体曲面感知 → 人工标线三维轨迹 → scr
 - 2026-09-26：`daily/2026-09-26_run08.md` — 集中补齐人工画线→3D曲面轨迹、LSCM/barycentric 2D↔3D 映射、Eye-in-Hand line look-ahead、逐级误差预算；进一步收敛 FR5 sampled-data/deadtime/passivity 实验路线，并明确宽刮板单腕 6D wrench 只能稳定估等效 CoP/合 wrench，不能唯一恢复完整压力分布。
 - 2026-09-27：`daily/2026-09-27_run09.md` — 核验真实人体按摩中“RGB人工画线→depth反投影→B-spline→ICP动态更新”的直接 baseline；提出以 local surface constraint 替代逐像素 depth completion 作为刮痧轨迹主约束；补齐 sampled-data/passivity + energy-tank 安全层，并明确腕部 6D resultant wrench 对 partial slip 的结构性观测限制。
 - 2026-09-27：`daily/2026-09-27_run10.md` — 新增 IJRR 2026 动态机器人超声的 explicit force/moment control 强基线，揭示 motion-loop phase lag 可能是 FR5 外环导纳的硬瓶颈；引入 soft-object canonical geometry + live deformation 双层表示处理呼吸/接触形变；补充主动-被动恒力末端与 RealSense 近距计量证据，并将下一步实验收敛到 FR5 频域力跟踪/时延辨识与局部 non-rigid 背部更新。
+- 2026-10-10：`daily/2026-10-10_run11.md` — 将动态接触点/interaction frame 设为显式状态；交叉核验接触感知超声预印本、显式力/力矩控制、工具形状/接触点联合粒子滤波、jerk-limited 离散导纳与 sampled-data passivity；列出 FR5 频响、动态 CoP 与局部曲面更新的体模实验矩阵。
