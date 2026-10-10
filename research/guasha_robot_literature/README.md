@@ -26,3 +26,4 @@ Eye-in-Hand RGB-D 背部/软体曲面感知 → 人工标线三维轨迹 → scr
 - 2026-09-27：`daily/2026-09-27_run09.md` — 核验真实人体按摩中“RGB人工画线→depth反投影→B-spline→ICP动态更新”的直接 baseline；提出以 local surface constraint 替代逐像素 depth completion 作为刮痧轨迹主约束；补齐 sampled-data/passivity + energy-tank 安全层，并明确腕部 6D resultant wrench 对 partial slip 的结构性观测限制。
 - 2026-09-27：`daily/2026-09-27_run10.md` — 新增 IJRR 2026 动态机器人超声的 explicit force/moment control 强基线，揭示 motion-loop phase lag 可能是 FR5 外环导纳的硬瓶颈；引入 soft-object canonical geometry + live deformation 双层表示处理呼吸/接触形变；补充主动-被动恒力末端与 RealSense 近距计量证据，并将下一步实验收敛到 FR5 频域力跟踪/时延辨识与局部 non-rigid 背部更新。
 - 2026-10-10：`daily/2026-10-10_run11.md` — 将动态接触点/interaction frame 设为显式状态；交叉核验接触感知超声预印本、显式力/力矩控制、工具形状/接触点联合粒子滤波、jerk-limited 离散导纳与 sampled-data passivity；列出 FR5 频响、动态 CoP 与局部曲面更新的体模实验矩阵。
+- 2026-10-10：`daily/2026-10-10_run12.md` — 审计 FR5 SDK/ROS 2/ros2_control 的接口层级与版本适配；把 F/T 六轴独立验真、时间同步和可靠停止设为 G0；新增项目级 `project_roadmap.md`，明确 baseline 矩阵、创新候选、Gates 与最小实验。
