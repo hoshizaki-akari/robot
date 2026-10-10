@@ -40,7 +40,7 @@
 <body>
 <header>
   <h1>刮痧机器人文献调研 · 零基础教学总览</h1>
-  <p>把 run2–run10（2026-09-22～09-27）九轮晦涩文献追踪，重述成从零能读懂的教材 · 九轮同模板、篇幅相当</p>
+  <p>把 run2–run11（2026-09-22～10-10）十轮晦涩文献追踪，重述成从零能读懂的教材 · 十轮同模板、篇幅相当</p>
 </header>
 <div class="wrap">
   <nav>
@@ -61,6 +61,7 @@
     <a href="round08.md">run8 · 画线→3D</a>
     <a href="round09.md">run9 · baseline+安全</a>
     <a href="round10.md">run10 · 运动环瓶颈</a>
+    <a href="round11.md">run11 · 动态接触框架</a>
     <a href="glossary.md">术语表 glossary</a>
   </nav>
   <main>
@@ -72,7 +73,7 @@
     <h2 id="how">一、这本教材怎么用</h2>
     <ul>
       <li>先读「知识地图」，知道整条技术链路长什么样、每段由哪一轮负责。</li>
-      <li>按「学习路线图」从 run2 顺读到 run10——每轮承接上一轮、铺垫下一轮，像连续剧。</li>
+      <li>按「学习路线图」从 run2 顺读到 run11——每轮承接上一轮、铺垫下一轮，像连续剧。</li>
       <li>读到不懂的词，跳到 <a href="glossary.md">glossary.md</a>；模块内首次出现的词也都自带白话+比喻。</li>
       <li>每轮末尾「该记住的 3 件事」是最小复习单位。</li>
     </ul>
@@ -93,7 +94,7 @@
 &nbsp;&nbsp;&nbsp;&nbsp;│ run3 · run4 · run5(摩擦/刚度) · run6 · run7(力矩净化) · run9<br>
 &nbsp;&nbsp;&nbsp;&nbsp;▼<br>
 <b>[5]</b> 曲面恒力/姿态柔顺控制  贴弯软的背，稳定恒力地刮<br>
-&nbsp;&nbsp;&nbsp;&nbsp;│ run3(导纳恒力) · run5(变阻抗) · run6(有界变阻抗) · run7(四层) · run10(运动环瓶颈)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;│ run3(导纳恒力) · run5(变阻抗) · run6(有界变阻抗) · run7(四层) · run10(运动环瓶颈) · run11(动态接触框架/时延实测)<br>
 &nbsp;&nbsp;&nbsp;&nbsp;▼<br>
 <b>[6]</b> 前刮恒力 / 轻力回程 状态机  用力刮 → 收力返回<br>
 &nbsp;&nbsp;&nbsp;&nbsp;│ run6(七状态双向) · run9(energy-tank安全)<br>
@@ -113,7 +114,8 @@
       <tr><td>6</td><td><a href="round07.md">round07</a></td><td>真实曲面刮痧全链路 + 腕部力矩净化 + 四层架构</td><td>打通"从扫到刮"并分层</td></tr>
       <tr><td>7</td><td><a href="round08.md">round08</a></td><td>人工画线→3D轨迹、2D↔3D映射、前视与逐级误差预算</td><td>补最前端的画线接口</td></tr>
       <tr><td>8</td><td><a href="round09.md">round09</a></td><td>人体按摩直接 baseline + 局部曲面约束 + energy-tank 安全</td><td>引入安全层与约束</td></tr>
-      <tr><td>9</td><td><a href="round10.md">round10</a></td><td>动态机器人超声强基线 + 运动环相位滞后瓶颈 + 软体双层形变</td><td>收尾并指出真机瓶颈</td></tr>
+      <tr><td>9</td><td><a href="round10.md">round10</a></td><td>动态机器人超声强基线 + 运动环相位滞后瓶颈 + 软体双层形变</td><td>指出真机瓶颈</td></tr>
+      <tr><td>10</td><td><a href="round11.md">round11</a></td><td>动态接触点/交互坐标系 + FR5 频响与时延实测</td><td>把参考点更新和真实运动环纳入实验</td></tr>
     </table>
 
     <h2 id="read">四、每轮导读</h2>
@@ -144,19 +146,20 @@
       <li><span class="tag">待实测</span>软组织在线参数（刚度 K_e、摩擦 μ）纸面≠真人背（run5/6）。</li>
       <li><span class="tag">待实测</span>KWR75D 轻载信噪比与长期蠕变未实测（run6/7）。</li>
       <li><span class="tag">未算清</span>人工画线→3D 轨迹误差预算，该修相机/线检测/手眼标定（run7/8）。</li>
+      <li><span class="tag">待实测</span>接触点变化时动态 wrench/Jacobian 参考点更新的误差与时延（run11）。</li>
     </ul>
 
     <h2 id="next">六、进度与下一步</h2>
-    <p><b>已完成：</b>从"方向梳理"到"真人背部 baseline + 安全层 + 明确不可观测边界 + 指出运动环瓶颈"的完整认知闭环（run2–run10）。</p>
-    <p><b>下一步收敛到（run10）：</b>① FR5 频域力跟踪 / 时延辨识；② 局部 non-rigid 背部更新（呼吸/受压形变）；③ 把显式力/力矩控制作为对照，验证是否比导纳外环更抗相位滞后。</p>
+    <p><b>已完成：</b>从"方向梳理"到"真人背部 baseline + 安全层 + 明确不可观测边界 + 指出运动环瓶颈"的完整认知闭环（run2–run11）。</p>
+    <p><b>下一步收敛到（run11）：</b>① FR5/ServoCart 官方接口与反馈时间戳核验；② 命令—实际运动及目标力—实测力频响；③ 已知曲率工装上的动态 CoP/contact-frame 与 wrench/Jacobian 单元测试；④ 局部 non-rigid 背部更新仅放在慢层。</p>
 
     <div class="card" style="margin-top:26px">
-      <b>文件说明：</b>教材由原始 <code>run2/</code>～<code>run10/</code> 的 <code>.md</code> 与 <code>chat.docx</code> 重述而成；<b>原始文件保留未改</b>。术语见 <a href="glossary.md">glossary.md</a>。
+      <b>文件说明：</b>教材由原始 <code>run2/</code>～<code>run11/</code> 的 <code>.md</code> 与 <code>chat.docx</code> 重述而成；<b>原始文件保留未改</b>。术语见 <a href="glossary.md">glossary.md</a>。
     </div>
   </main>
 </div>
 <footer>
-  刮痧机器人文献调研 · 零基础教学重构 · 生成于 2026-09-28 · 九轮同模板、中文篇幅 3150–3660 字
+  刮痧机器人文献调研 · 零基础教学重构 · 生成于 2026-10-10 · 十轮同模板、中文篇幅 3150–3660 字
 </footer>
 </body>
 </html>
