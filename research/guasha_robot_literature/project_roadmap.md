@@ -1,3 +1,3 @@
-# Project roadmap
+# Roadmap
 
-Status: draft, updated 2026-10-10.
+Draft.
