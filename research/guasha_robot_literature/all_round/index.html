@@ -40,7 +40,7 @@
 <body>
 <header>
   <h1>刮痧机器人文献调研 · 零基础教学总览</h1>
-  <p>把 run2–run12（2026-09-22～10-10）十一轮晦涩文献追踪，重述成从零能读懂的教材 · 十一轮同模板、篇幅相当</p>
+  <p>把 run2–run13（2026-09-22～10-10）十二轮晦涩文献追踪，重述成从零能读懂的教材 · 十二轮同模板、篇幅相当</p>
 </header>
 <div class="wrap">
   <nav>
@@ -63,6 +63,7 @@
     <a href="round10.md">run10 · 运动环瓶颈</a>
     <a href="round11.md">run11 · 动态接触框架</a>
     <a href="round12.md">run12 · 接口与 baseline 审计</a>
+    <a href="round13.md">run13 · A/B/C/D 四线研究</a>
     <a href="glossary.md">术语表 glossary</a>
   </nav>
   <main>
@@ -143,6 +144,9 @@
     <h3>run12（接口与 baseline 审计）</h3>
     <p>先把供应商 Python SDK、ROS 2 service 包装和标准 ros2_control 硬件接口分开；服务能调用不等于确定周期或实时控制。公开 SDK issue 有用户报告全零读数/通道疑似重复，但它们只是风险信号，不是厂商缺陷定论。本轮把固件与 SDK 版本匹配、六轴独立载荷、独立参考真值、时间戳和停止路径列为 G0，固定参数导纳作为简单 baseline，自适应导纳作为候选强基线，显式力控只在接口能力允许时才列为可实现对照。项目级路线见 <a href="../project_roadmap.md">project_roadmap.md</a>。</p>
 
+    <h3>run13（A/B/C/D 四线交叉研究）</h3>
+    <p>实际完成四条逻辑研究线的资料检索与总控综合：A 把 FR5 命令频率与真实闭环带宽分开，并将 SDK/ROS 2 issue 仅视为待复现风险信号；B 核验 VBRM 2024 已覆盖 2D 画线到 3D、ICP 动态更新与混合力位控制；C 以 CAD+解析 CoP、固定导纳作为简单 baseline，并对照自适应导纳、jerk-limited 离散导纳和显式力控；D 将“宽刮板 + 滑动摩擦 + 软表面形变下的置信度门控动态 contact frame”保留为候选 H1，必须经过真值与消融实验才可主张创新。分线记录见 <a href="../workstreams/interface/2026-10-10_run13.md">A</a>、<a href="../workstreams/geometry/2026-10-10_run13.md">B</a>、<a href="../workstreams/contact-control/2026-10-10_run13.md">C</a>、<a href="../workstreams/baselines/2026-10-10_run13.md">D</a>；路线状态见 <a href="../project_roadmap.md">project_roadmap.md</a>。</p>
+
     <h2 id="open">五、贯穿全项目的"尚未解决"清单</h2>
     <ul>
       <li><span class="tag">不可观测</span>宽刮板压力分布无法由单腕 6D F/T 唯一还原，只能稳估等效 CoP + 偏载（run4/7/8/9）。</li>
@@ -156,8 +160,8 @@
     </ul>
 
     <h2 id="next">六、进度与下一步</h2>
-    <p><b>已完成：</b>从"方向梳理"到"真人背部 baseline + 安全层 + 明确不可观测边界 + 指出运动环瓶颈"的完整认知闭环（run2–run12）。</p>
-    <p><b>下一步收敛到（run12）：</b>① 锁定现场固件与匹配 SDK/驱动版本；② KWR75D 六轴独立载荷测试与统一时间戳日志；③ 无接触命令—实际运动频响；④ 已知力臂/曲率工装校验 wrench 参考点与动态 CoP；⑤ G0 通过后再比较固定导纳和自适应控制。</p>
+    <p><b>已完成：</b>从"方向梳理"到"真人背部 baseline + 安全层 + 明确不可观测边界 + 指出运动环瓶颈"的完整认知闭环（run2–run13）。</p>
+    <p><b>下一步收敛到（run13）：</b>① 锁定现场固件与匹配 SDK/驱动版本；② KWR75D 六轴独立载荷测试与统一时间戳日志；③ 无接触命令—实际运动频响；④ 已知力臂/曲率工装校验 wrench 参考点与动态 CoP；⑤ G0 通过后再比较固定导纳和自适应控制。</p>
 
     <div class="card" style="margin-top:26px">
       <b>文件说明：</b>教材由原始 <code>run2/</code>～<code>run12/</code> 的 <code>.md</code> 与 <code>chat.docx</code> 重述而成；<b>原始文件保留未改</b>。术语见 <a href="glossary.md">glossary.md</a>。
@@ -165,7 +169,7 @@
   </main>
 </div>
 <footer>
-  刮痧机器人文献调研 · 零基础教学重构 · 生成于 2026-10-10 · 十一轮遵循统一七节模板
+  刮痧机器人文献调研 · 零基础教学重构 · 生成于 2026-10-10 · 十二轮遵循统一七节模板
 </footer>
 </body>
 </html>
