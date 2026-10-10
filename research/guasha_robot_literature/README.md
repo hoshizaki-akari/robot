@@ -6,6 +6,10 @@
 
 Eye-in-Hand RGB-D 背部/软体曲面感知 → 人工标线三维轨迹 → scraper contact frame/TCP → RGB-D + 6D F/T 在线接触/法向/接触位置估计 → 动态接触框架与完整 wrench 变换 → 曲面恒力/姿态同步柔顺控制 → 前刮恒力与轻力回程状态机 → 后续 residual/offline RL。
 
+## 项目路线与 Gates
+
+- [project_roadmap.md](project_roadmap.md)：端到端模块链路、G0–G7 阶段门槛、baseline 矩阵、创新候选、模块接口约定、最小实验和决策日志。它是项目当前路线的事实来源；新研究如改变路线，须同步记录证据和原因。
+
 ## 目录
 
 - `daily/`：每轮深挖报告，Markdown，可全文检索。
