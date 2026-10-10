@@ -8,6 +8,7 @@ Eye-in-Hand RGB-D 背部/软体曲面感知 → 人工标线三维轨迹 → scr
 
 ## 目录
 
+- [`project_roadmap.md`](project_roadmap.md)：系统拆分、算法难点、分阶段验收门与调研纠偏标准；每轮调研前后应参照并按实验进度维护。
 - `daily/`：每轮深挖报告，Markdown，可全文检索。
 - 后续逐步增加 `papers/`、`code_resources/`、`experiments/` 索引。
 
