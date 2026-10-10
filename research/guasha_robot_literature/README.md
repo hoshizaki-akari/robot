@@ -15,6 +15,13 @@ Eye-in-Hand RGB-D 背部/软体曲面感知 → 人工标线三维轨迹 → scr
 - `daily/`：每轮深挖报告，Markdown，可全文检索。
 - 后续逐步增加 `papers/`、`code_resources/`、`experiments/` 索引。
 
+## 本轮分轨记录
+
+- `workstreams/interface/`：FR5/ServoCart、KWR75D、状态反馈、时间戳及 G0 接口审计。
+- `workstreams/geometry/`：RGB-D、手眼标定与 2D→3D 轨迹 baseline。
+- `workstreams/contact-control/`：CoP、动态接触框架与力控对照。
+- `workstreams/baselines/`：baseline 矩阵、创新候选及可证伪条件。
+
 ## 追踪原则
 
 优先近五年高水平机器人、医疗机器人、控制与接触丰富操作论文；跨机器人超声、抛光/磨削/擦洗等同构任务检索。所有论文尽量核验题目、作者、年份、载体、DOI/官方链接；区分正式论文、预印本、项目与代码仓库。重点记录可迁移算法、真实机器人部署条件和待验证假设。
@@ -31,3 +38,4 @@ Eye-in-Hand RGB-D 背部/软体曲面感知 → 人工标线三维轨迹 → scr
 - 2026-09-27：`daily/2026-09-27_run10.md` — 新增 IJRR 2026 动态机器人超声的 explicit force/moment control 强基线，揭示 motion-loop phase lag 可能是 FR5 外环导纳的硬瓶颈；引入 soft-object canonical geometry + live deformation 双层表示处理呼吸/接触形变；补充主动-被动恒力末端与 RealSense 近距计量证据，并将下一步实验收敛到 FR5 频域力跟踪/时延辨识与局部 non-rigid 背部更新。
 - 2026-10-10：`daily/2026-10-10_run11.md` — 将动态接触点/interaction frame 设为显式状态；交叉核验接触感知超声预印本、显式力/力矩控制、工具形状/接触点联合粒子滤波、jerk-limited 离散导纳与 sampled-data passivity；列出 FR5 频响、动态 CoP 与局部曲面更新的体模实验矩阵。
 - 2026-10-10：`daily/2026-10-10_run12.md` — 审计 FR5 SDK/ROS 2/ros2_control 的接口层级与版本适配；把 F/T 六轴独立验真、时间同步和可靠停止设为 G0；新增项目级 `project_roadmap.md`，明确 baseline 矩阵、创新候选、Gates 与最小实验。
+- 2026-10-10：`daily/2026-10-10_run13.md` — 实际执行 A/B/C/D 四条逻辑研究线，交叉核验 FR5/KWR75D 接口与反馈时序、2D→3D 几何 baseline、CoP/动态接触框架/力控候选，并把 H1 收敛为可证伪研究假设。
