@@ -1,165 +1,30 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>刮痧机器人文献调研 · 零基础教学总览</title>
-<style>
-  :root{
-    --bg:#ffffff; --fg:#1f2933; --muted:#6b7280; --line:#e5e7eb;
-    --accent:#0f766e; --accent2:#b45309; --card:#f8fafc; --code:#f1f5f9;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
-       color:var(--fg);background:var(--bg);line-height:1.75;font-size:15px}
-  header{background:linear-gradient(135deg,#0f766e,#0e7490);color:#fff;padding:28px 32px}
-  header h1{margin:0 0 6px;font-size:22px}
-  header p{margin:0;opacity:.9;font-size:13px}
-  .wrap{display:flex;max-width:1180px;margin:0 auto}
-  nav{position:sticky;top:0;align-self:flex-start;width:230px;height:100vh;overflow:auto;
-      padding:20px 14px;border-right:1px solid var(--line);background:var(--card);font-size:13.5px}
-  nav a{display:block;color:var(--fg);text-decoration:none;padding:6px 10px;border-radius:6px}
-  nav a:hover{background:#e2e8f0;color:var(--accent)}
-  nav .nh{font-weight:700;color:var(--muted);margin:14px 10px 4px;font-size:12px;letter-spacing:.05em}
-  main{padding:24px 34px;flex:1;min-width:0}
-  h2{color:var(--accent);border-bottom:2px solid var(--line);padding-bottom:6px;margin-top:34px}
-  h3{color:var(--accent2);margin-top:22px}
-  a{color:var(--accent)}
-  code{background:var(--code);padding:1px 6px;border-radius:4px;font-size:13px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 18px;margin:10px 0}
-  .chain{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:16px 18px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;line-height:1.9;overflow-x:auto}
-  .chain b{color:#5eead4}
-  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}
-  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
-  th{background:var(--card);color:var(--accent)}
-  .tag{display:inline-block;background:#ccfbf1;color:#0f766e;border-radius:999px;padding:1px 9px;font-size:12px;margin-right:4px}
-  ul{margin:8px 0 8px 0}
-  footer{color:var(--muted);font-size:12.5px;padding:24px 34px;border-top:1px solid var(--line)}
-</style>
-</head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>刮痧机器人研究总览 Run 14</title></head>
 <body>
-<header>
-  <h1>刮痧机器人文献调研 · 零基础教学总览</h1>
-  <p>把 run2–run11（2026-09-22～10-10）十轮晦涩文献追踪，重述成从零能读懂的教材 · 十轮同模板、篇幅相当</p>
-</header>
-<div class="wrap">
-  <nav>
-    <div class="nh">导航</div>
-    <a href="#how">一、怎么用这本教材</a>
-    <a href="#map">二、知识地图</a>
-    <a href="#road">三、学习路线图</a>
-    <a href="#read">四、每轮导读</a>
-    <a href="#open">五、未解清单</a>
-    <a href="#next">六、进度与下一步</a>
-    <div class="nh">模块</div>
-    <a href="round02.md">run2 · 开篇地图</a>
-    <a href="round03.md">run3 · 接触位置/力矩</a>
-    <a href="round04.md">run4 · 等效CoP</a>
-    <a href="round05.md">run5 · 摩擦/软刚度</a>
-    <a href="round06.md">run6 · 人体背部baseline</a>
-    <a href="round07.md">run7 · 全链路/四层</a>
-    <a href="round08.md">run8 · 画线→3D</a>
-    <a href="round09.md">run9 · baseline+安全</a>
-    <a href="round10.md">run10 · 运动环瓶颈</a>
-    <a href="round11.md">run11 · 动态接触框架</a>
-    <a href="glossary.md">术语表 glossary</a>
-  </nav>
-  <main>
-    <div class="card">
-      <b>读者定位：</b>完全零基础。术语一律从第一性原理解释；不懂先看
-      <a href="glossary.md">glossary.md（统一白话术语表）</a>。每轮模块用同一七节模板、中文篇幅约 3150–3660 字，可逐轮精读，也可按顺序连读。
-    </div>
-
-    <h2 id="how">一、这本教材怎么用</h2>
-    <ul>
-      <li>先读「知识地图」，知道整条技术链路长什么样、每段由哪一轮负责。</li>
-      <li>按「学习路线图」从 run2 顺读到 run11——每轮承接上一轮、铺垫下一轮，像连续剧。</li>
-      <li>读到不懂的词，跳到 <a href="glossary.md">glossary.md</a>；模块内首次出现的词也都自带白话+比喻。</li>
-      <li>每轮末尾「该记住的 3 件事」是最小复习单位。</li>
-    </ul>
-
-    <h2 id="map">二、知识地图：整条技术链路</h2>
-    <p>刮痧机器人要解决的，本质是一条流水线。下面把主链路拆成 7 段，<b>标注每段由哪几轮重点攻克</b>：</p>
-    <div class="chain">
-<b>[1]</b> 曲面感知  Eye-in-Hand RGB-D 看背部/软体曲面<br>
-&nbsp;&nbsp;&nbsp;&nbsp;│ run7(全链路) · run8(画线→3D) · run9(局部曲面约束)<br>
-&nbsp;&nbsp;&nbsp;&nbsp;▼<br>
-<b>[2]</b> 人工标线轨迹  人画路线 → 机器人能走的 3D 路径<br>
-&nbsp;&nbsp;&nbsp;&nbsp;│ run6(标线) · run8(2D↔3D映射) · run9(画线baseline)<br>
-&nbsp;&nbsp;&nbsp;&nbsp;▼<br>
-<b>[3]</b> 刮板接触坐标系  板="已知几何+接触点/线"，非一个点(TCP)<br>
-&nbsp;&nbsp;&nbsp;&nbsp;│ run3(板几何+接触坐标系) · run4(等效CoP)<br>
-&nbsp;&nbsp;&nbsp;&nbsp;▼<br>
-<b>[4]</b> 在线接触/法向/位置估计  RGB-D + 6D力觉 实时猜"贴哪、偏没"<br>
-&nbsp;&nbsp;&nbsp;&nbsp;│ run3 · run4 · run5(摩擦/刚度) · run6 · run7(力矩净化) · run9<br>
-&nbsp;&nbsp;&nbsp;&nbsp;▼<br>
-<b>[5]</b> 曲面恒力/姿态柔顺控制  贴弯软的背，稳定恒力地刮<br>
-&nbsp;&nbsp;&nbsp;&nbsp;│ run3(导纳恒力) · run5(变阻抗) · run6(有界变阻抗) · run7(四层) · run10(运动环瓶颈) · run11(动态接触框架/时延实测)<br>
-&nbsp;&nbsp;&nbsp;&nbsp;▼<br>
-<b>[6]</b> 前刮恒力 / 轻力回程 状态机  用力刮 → 收力返回<br>
-&nbsp;&nbsp;&nbsp;&nbsp;│ run6(七状态双向) · run9(energy-tank安全)<br>
-&nbsp;&nbsp;&nbsp;&nbsp;▼<br>
-<b>[7]</b> 后续 RL（后置）  只在"高层力/参数"自适应，不替代底层安全 · run7
-    </div>
-    <p><b>一句话总纲：</b>让机器人"看得见曲面、摸得清力、刮得稳、不伤人"——前 6 段是地基，第 7 段是锦上添花。</p>
-
-    <h2 id="road">三、学习路线图（建议阅读顺序）</h2>
-    <table>
-      <tr><th>顺序</th><th>模块</th><th>本轮一句话主题</th><th>承接</th></tr>
-      <tr><td>1</td><td><a href="round02.md">round02</a></td><td>开篇：让机器人刮背到底难在哪</td><td>起点，画地图</td></tr>
-      <tr><td>2</td><td><a href="round03.md">round03</a></td><td>宽刮板接触位置怎么估、力矩怎么修正法向、未知曲面恒力</td><td>板从"点"变"带接触位置"</td></tr>
-      <tr><td>3</td><td><a href="round04.md">round04</a></td><td>从点接触推进到等效压力中心/面接触：能观测什么、不能观测什么</td><td>宽板一片接触的可观测边界</td></tr>
-      <tr><td>4</td><td><a href="round05.md">round05</a></td><td>滑动摩擦干扰、软组织刚度在线辨识、刚-软异质接触估计</td><td>面对真人背部的软+滑</td></tr>
-      <tr><td>5</td><td><a href="round06.md">round06</a></td><td>直接在人体背部做同构 baseline + 双向刮痧状态机</td><td>落到真人背部可复现闭环</td></tr>
-      <tr><td>6</td><td><a href="round07.md">round07</a></td><td>真实曲面刮痧全链路 + 腕部力矩净化 + 四层架构</td><td>打通"从扫到刮"并分层</td></tr>
-      <tr><td>7</td><td><a href="round08.md">round08</a></td><td>人工画线→3D轨迹、2D↔3D映射、前视与逐级误差预算</td><td>补最前端的画线接口</td></tr>
-      <tr><td>8</td><td><a href="round09.md">round09</a></td><td>人体按摩直接 baseline + 局部曲面约束 + energy-tank 安全</td><td>引入安全层与约束</td></tr>
-      <tr><td>9</td><td><a href="round10.md">round10</a></td><td>动态机器人超声强基线 + 运动环相位滞后瓶颈 + 软体双层形变</td><td>指出真机瓶颈</td></tr>
-      <tr><td>10</td><td><a href="round11.md">round11</a></td><td>动态接触点/交互坐标系 + FR5 频响与时延实测</td><td>把参考点更新和真实运动环纳入实验</td></tr>
-    </table>
-
-    <h2 id="read">四、每轮导读</h2>
-    <h3>run2（开篇）</h3>
-    <p>第一版系统<b>不必先上强化学习</b>——按摩机器人、背部三维重建、未知曲面自适应导纳、软组织恒力等相邻领域已分别验证各段可行。真正难点是把"曲面几何＋接触力学＋刮板工具特性"拧成一体。四个待验证空档：宽刮板接触位置标定、6D力矩修正法向、未知曲面恒力、低频导纳实机稳定性。</p>
-    <h3>run3（接触位置 / 力矩修正法向）</h3>
-    <p>把"板当成一个点"升级为"已知几何 + 在线估接触位置 + 用受力歪斜自动摆正板"。核心：<code>τ=r×f</code> 反推接触点与偏载、<code>ω=T_c×z</code> 用接触力矩摆正板贴未知曲面并恒力（Li 2023 可直接当 baseline）；视觉被板遮挡时"前视看几何 + 力觉管接触后验"互补；低频导纳也能落地（多姿态标定、50 Hz 外环已被医疗软接触验证、加加速度限制与硬阈值）。坑：软组织力矩混淆、宽板可观测性。</p>
-    <h3>run4（等效 CoP / 面接触）</h3>
-    <p>宽刮板压在背上是"一片接触"，单腕 6D 力矩是<b>欠定</b>问题——最多反推"等效压力中心 CoP + 合力 + 残余力矩 + 偏载"，<b>不能还原整片压力分布</b>。第一版接触状态收敛为 5 元组。五家族：CoP/面接触可观测性、Caron 力矩锥安全、MLS/DeepFit 局部法向、离散导纳冲击稳定性与 FR5 实验矩阵、RegHEC 标定-配准。</p>
-    <h3>run5（摩擦 / 软刚度 / 异质接触）</h3>
-    <p>滑刮时摩擦污染力矩——μ=0.3 时法向误差就约 16.7°，足以刮伤皮肤。三家族：摩擦感知法向（Nasiri 2024 用"力+速度"分离摩擦、已实机；Huang 2023 学习映射）、软组织刚度在线辨识（Hunt–Crossley + 卡尔曼族）、刚-软异质接触 EKF+MPC（Zheng 2025）。主线：接触状态相关的<b>动态融合权重</b>。</p>
-    <h3>run6（人体背部 baseline）</h3>
-    <p>Zhai 等 2026 已在硅胶模型+健康志愿者背部，把"力觉接触点/法向估计 + 动态减速 + 力误差补偿 + 有界变阻抗"集成进同一闭环，是刮痧机器人<b>直接对照 baseline</b>。我们抄其"接触感知—控制状态机耦合"骨架，补宽板 CoP、摩擦感知法向、Eye-in-Hand 先验；并前置 KWR75D 腕部标定层、固定七状态双向刮痧状态机与四层安全。注意：真人实验只是可行性验证，非疗效证据。</p>
-    <h3>run7（全链路 + 四层架构）</h3>
-    <p>打通"扫描→网格→法向→B-spline→SLERP"全链路；最关键一课是<b>腕部力传感器读数 ≠ 真实接触力</b>，必须过"零漂 + 惯性 + 蠕变"净化层（0.02–0.03 N·m 残差就足以误判板偏）；系统明确分四层（Geometry → Tool-wrench observer → Contact estimator → Controller）。RL 只做高层 wrench 自适应，不替代底层。</p>
-    <h3>run8（画线 → 3D 轨迹）</h3>
-    <p>补最前端协作接口——人画的线怎么变成机器人能走的 3D 轨迹。结论：别做"逐像素读深度"的脆弱做法，而用"RGB 意图 + 局部曲面几何 + 曲面约束优化"三步走；两条 2D↔3D 映射 baseline（LSCM/重心坐标、点云贴面曲线）+ Eye-in-Hand 前视绕开遮挡。红线：力控可补毫米级几何误差，但不能掩盖手眼/TCP 系统误差。明确宽板单腕 6D 只能估等效 CoP/合力+偏载。</p>
-    <h3>run9（人体按摩 baseline + 安全层）</h3>
-    <p>找到真人按摩里"RGB 画线→深度反投影→B-spline→ICP 动态更新"的直接 baseline（Xu 2024）。两大升级：① 用"局部曲面约束"作主约束，深度补全网络只辅助、低置信就暂停而非瞎编；② 补 energy-tank 安全层（任何自适应只输出候选参数，须经能量池 + 速率限制 + 力/速硬限）。边界：宽板 partial slip 依赖接触斑内部分布，腕部 6D 合力估不清，第一阶段只输出 CoP/偏载/摩擦利用率。</p>
-    <h3>run10（运动环瓶颈 + 收尾）</h3>
-    <p>刮痧"刮不稳"未必是软件没调好，而是机械臂底层<b>运动环延迟造成相位滞后</b>（超声论文显示导纳相位滞后可达 121°，显式力控仅 5.76°）。强参照：IJRR 2026 动态机器人超声的显式力/力矩控制 baseline；软体"标准几何 + 实时形变"双层表示。机械被动柔顺可作 Plan B。下一步：FR5 频域力跟踪/时延辨识与局部 non-rigid 背部更新。</p>
-
-    <h2 id="open">五、贯穿全项目的"尚未解决"清单</h2>
-    <ul>
-      <li><span class="tag">不可观测</span>宽刮板压力分布无法由单腕 6D F/T 唯一还原，只能稳估等效 CoP + 偏载（run4/7/8/9）。</li>
-      <li><span class="tag">混淆</span>摩擦 vs 姿态失配 vs 组织被推走，三者力矩仍分不清（run5/7）。</li>
-      <li><span class="tag">瓶颈</span>FR5 运动环延迟/抖动卡住导纳外环，真实稳定域未知（run7/10）。</li>
-      <li><span class="tag">待实测</span>软组织在线参数（刚度 K_e、摩擦 μ）纸面≠真人背（run5/6）。</li>
-      <li><span class="tag">待实测</span>KWR75D 轻载信噪比与长期蠕变未实测（run6/7）。</li>
-      <li><span class="tag">未算清</span>人工画线→3D 轨迹误差预算，该修相机/线检测/手眼标定（run7/8）。</li>
-      <li><span class="tag">待实测</span>接触点变化时动态 wrench/Jacobian 参考点更新的误差与时延（run11）。</li>
-    </ul>
-
-    <h2 id="next">六、进度与下一步</h2>
-    <p><b>已完成：</b>从"方向梳理"到"真人背部 baseline + 安全层 + 明确不可观测边界 + 指出运动环瓶颈"的完整认知闭环（run2–run11）。</p>
-    <p><b>下一步收敛到（run11）：</b>① FR5/ServoCart 官方接口与反馈时间戳核验；② 命令—实际运动及目标力—实测力频响；③ 已知曲率工装上的动态 CoP/contact-frame 与 wrench/Jacobian 单元测试；④ 局部 non-rigid 背部更新仅放在慢层。</p>
-
-    <div class="card" style="margin-top:26px">
-      <b>文件说明：</b>教材由原始 <code>run2/</code>～<code>run11/</code> 的 <code>.md</code> 与 <code>chat.docx</code> 重述而成；<b>原始文件保留未改</b>。术语见 <a href="glossary.md">glossary.md</a>。
-    </div>
-  </main>
-</div>
-<footer>
-  刮痧机器人文献调研 · 零基础教学重构 · 生成于 2026-10-10 · 十轮遵循统一七节模板
-</footer>
-</body>
-</html>
+<h1>刮痧机器人文献调研 · 零基础教学总览</h1>
+<p>main 已归档到 Run 11。Run 12/13 在开放 PR #3 中 pending；Run 14 位于独立分支待审，待审报告不代表 main 已归档事实。</p>
+<h2>系统主链路</h2>
+<p>Eye-in-Hand RGB-D 曲面感知 → 人工标线 2D→3D → 手眼/TCP/刮板接触框架 → 视觉与六维 wrench 融合 → 动态接触点/法向 → 曲面恒力与姿态同步控制 → 前刮/转向/轻力回程 FSM → 独立安全监督。Residual/offline RL 仅在安全 baseline 通过后评估。</p>
+<h2>历史轮次</h2>
+<table>
+<tr><th>轮次</th><th>主题</th><th>状态</th></tr>
+<tr><td>Run 2</td><td><a href="round02.md">跨领域问题映射与系统开篇</a></td><td>历史文件保留</td></tr>
+<tr><td>Run 3–5</td><td><a href="round03.md">接触估计</a>、<a href="round04.md">标定/导纳</a>、<a href="round05.md">摩擦/软组织</a></td><td>历史文件保留</td></tr>
+<tr><td>Run 6–7</td><td><a href="round06.md">人体背部 baseline</a>、<a href="round07.md">全链路</a></td><td>历史文件保留</td></tr>
+<tr><td>Run 8–9</td><td><a href="round08.md">画线→3D</a>、<a href="round09.md">baseline+安全</a></td><td>历史文件保留</td></tr>
+<tr><td>Run 10–11</td><td><a href="round10.md">运动环瓶颈</a>、<a href="round11.md">动态接触框架</a></td><td>main 已归档</td></tr>
+<tr><td>Run 12–13</td><td><a href="https://github.com/hoshizaki-akari/robot/tree/research/run12-2026-10-10/research/guasha_robot_literature/all_round">待审报告</a></td><td>PR #3 pending</td></tr>
+<tr><td>Run 14</td><td><a href="round14.md">FR5 伺服生命周期、KWR75D 低载荷尺度、时序与停止链</a></td><td>本分支待审</td></tr>
+</table>
+<h2>Run 14 的三个决策问题</h2>
+<ol>
+<li>FR5 的 ServoCart/ServoJ 是否按预期时间驱动实际运动？先锁定 SDK/固件/ROS2 版本并检查 ServoMoveStart/ServoMoveEnd。</li>
+<li>KWR75D 在低载荷下是否有足够信噪比、重复性与准确度？用独立参考载荷和已知力臂校准。</li>
+<li>机器人状态、外置传感器与停止链是否拥有可追溯时间基准？分别记录源时间（若有）、接收时间、序号和 frame_id。</li>
+</ol>
+<h2>Gate 状态</h2>
+<p><strong>G0 阻塞：</strong>现场版本、状态数据年龄、命令到运动延迟、KWR75D 低载荷校准和独立停止链尚未实测。G1 坐标/重力/bias 尚未验收；G2–G4 暂停；G5–G7 不得越级。</p>
+<p>下一步优先使用真实台架数据；若没有数据，先完善版本清单、只读日志器和时间戳/序号 schema。安全力、压力、速度阈值须由风险分析与获批方案确定。</p>
+<p><a href="../daily/2026-10-11_run14.md">Run 14 详细报告</a> · <a href="../project_roadmap.md">项目路线图</a> · <a href="../README.md">README</a> · <a href="glossary.md">术语表</a></p>
+</body></html>
