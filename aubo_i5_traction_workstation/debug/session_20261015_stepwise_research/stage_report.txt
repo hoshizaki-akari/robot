@@ -1,0 +1,19 @@
+===== AUBO STEPWISE OFFLINE RESEARCH =====
+date = 2026-10-15 Asia/Shanghai
+hardware = intentionally disconnected by user
+recommended_backend = AUBOPE V4 ordinary short linear moves, one in flight
+previous_hardware_evidence = 50 mm relative linear command, measured 50.1356245 mm
+offline_sdk_methods = 11 resolved
+strict_compile_link = PASS
+dynamic_dependency_check = PASS
+pure_scheduling_math_tests = 12 passed (not production driver tests)
+sdk_calls_in_offline_probe = 0
+network_connections_in_offline_probe = 0
+runtime_motion_changes = none
+calibration_flags_changed = none
+new_hardware_motion = none
+live_stepwise_repeatability = NOT_TESTED
+live_stop_preemption = NOT_TESTED
+three_modes_force_loop_acceptance = NOT_COMPLETE
+status = INTERFACE_FEASIBLE; WAITING_HARDWARE_CHECKPOINT
+report = AUBO_STEPWISE_FEASIBILITY_20261015.md
