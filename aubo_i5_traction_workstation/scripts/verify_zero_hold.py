@@ -95,6 +95,8 @@ def main():
                 print('status=STREAM_FAILED', flush=True)
                 return 1
             if time.monotonic() - seen['pose_at'] > 0.25 or max_drift > 0.0005:
+                print(f'max_hold_drift_m={max_drift:.9f}', flush=True)
+                print(f'pose_age_s={time.monotonic() - seen["pose_at"]:.6f}', flush=True)
                 print('status=FEEDBACK_OR_HOLD_FAILED', flush=True)
                 return 1
         print(f'max_hold_drift_m={max_drift:.9f}', flush=True)

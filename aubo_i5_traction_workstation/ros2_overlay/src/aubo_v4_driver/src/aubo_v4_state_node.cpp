@@ -12,6 +12,7 @@
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <algorithm>
 #include <cstdint>
@@ -19,10 +20,16 @@
 #include <cstdlib>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
+#include <filesystem>
+#include <arpa/inet.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
 #include "aubo_v4_driver/state_validation.hpp"
 
 namespace
@@ -53,6 +60,51 @@ template<typename T> diagnostic_msgs::msg::KeyValue kv(const std::string & key, 
   diagnostic_msgs::msg::KeyValue out; out.key = key; std::ostringstream s; s << value;
   out.value = s.str(); return out;
 }
+std::vector<int> configure_controller_tcp(const std::string & host, int controller_port)
+{
+  in_addr address{};
+  if (inet_pton(AF_INET, host.c_str(), &address) != 1) {return {};}
+  std::vector<int> descriptors;
+  std::error_code error;
+  for (const auto & entry : std::filesystem::directory_iterator("/proc/self/fd", error)) {
+    int descriptor;
+    try {
+      descriptor = std::stoi(entry.path().filename().string());
+    } catch (const std::exception &) {
+      continue;
+    }
+    sockaddr_in peer{};
+    socklen_t size = sizeof(peer);
+    if (getpeername(descriptor, reinterpret_cast<sockaddr *>(&peer), &size) != 0 ||
+      peer.sin_family != AF_INET || peer.sin_addr.s_addr != address.s_addr ||
+      ntohs(peer.sin_port) != controller_port)
+    {
+      continue;
+    }
+    int enabled = 1;
+    if (setsockopt(descriptor, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled)) == 0) {
+      descriptors.push_back(descriptor);
+    }
+  }
+  return descriptors;
+}
+void request_quick_ack(const std::vector<int> & descriptors)
+{
+  for (int descriptor : descriptors) {
+    const int enabled = 1;
+    setsockopt(descriptor, IPPROTO_TCP, TCP_QUICKACK, &enabled, sizeof(enabled));
+  }
+}
+class PendingRequest
+{
+public:
+  explicit PendingRequest(std::atomic<unsigned int> & count)
+  : count_(count) {++count_;}
+  ~PendingRequest() {--count_;}
+
+private:
+  std::atomic<unsigned int> & count_;
+};
 }  // namespace
 
 class AuboV4StateNode : public rclcpp::Node
@@ -126,6 +178,14 @@ public:
   }
   ~AuboV4StateNode() override
   {
+    telemetry_stop_ = true;
+    if (telemetry_thread_.joinable()) {telemetry_thread_.join();}
+    if (ack_thread_.joinable()) {ack_thread_.join();}
+    if (telemetry_connected_) {
+      telemetry_service_.robotServiceRegisterRealTimeRoadPointCallback(nullptr, nullptr);
+      telemetry_service_.robotServiceRegisterRobotEventInfoCallback(nullptr, nullptr);
+      telemetry_service_.robotServiceLogout();
+    }
     if (stream_active_) {
       const int ignored = service_.robotServiceLeaveTcp2CanbusMode(); (void)ignored;
     }
@@ -137,13 +197,18 @@ public:
 private:
   void stop_stream(const std::string & failure = {})
   {
+    PendingRequest pending(pending_requests_);
     if (!failure.empty()) {
       RCLCPP_ERROR(get_logger(), "V4 stream stopped: %s", failure.c_str());
     }
     if (motion_timer_) {motion_timer_->cancel();}
-    if (!failure.empty() && connected_) {
-      const int ignored = service_.robotMoveFastStop(); (void)ignored;
-      stop_requested_ = true;
+    if (stream_active_ && connected_) {
+      const int stopped = service_.robotMoveFastStop();
+      if (stopped != aubo_robot_namespace::ErrnoSucc) {
+        fail_closed_ = true;
+        error_ = "V4 buffered stream stop failed (SDK result " + std::to_string(stopped) + ")";
+      }
+      if (!failure.empty()) {stop_requested_ = true;}
     }
     if (stream_active_) {
       const int result = service_.robotServiceLeaveTcp2CanbusMode();
@@ -162,6 +227,7 @@ private:
     const std::shared_ptr<controller_manager_msgs::srv::SwitchController::Request> request,
     std::shared_ptr<controller_manager_msgs::srv::SwitchController::Response> response)
   {
+    PendingRequest pending(pending_requests_);
     constexpr const char * kName = "cartesian_velocity_controller";
     const auto valid_names = [kName](const std::vector<std::string> & names) {
         return std::all_of(
@@ -178,10 +244,10 @@ private:
     if (request->start_controllers.empty()) {response->ok = true; return;}
     if (!healthy() || stream_active_) {response->ok = false; return;}
     aubo_robot_namespace::wayPoint_S waypoint{};
-    if (service_.robotServiceGetCurrentWaypointInfo(waypoint) != aubo_robot_namespace::ErrnoSucc ||
-      !aubo_v4_driver::valid_pose_sample(pose(waypoint), nullptr))
     {
-      response->ok = false; return;
+      std::lock_guard<std::mutex> lock(telemetry_mutex_);
+      if (!pushed_waypoint_) {response->ok = false; return;}
+      waypoint = *pushed_waypoint_;
     }
     const int result = service_.robotServiceEnterTcp2CanbusMode();
     if (result != aubo_robot_namespace::ErrnoSucc) {
@@ -190,6 +256,7 @@ private:
       publish_status(); response->ok = false; return;
     }
     target_waypoint_ = waypoint;
+    stream_time_budget_s_ = 0.0;
     commanded_velocity_ = {};
     last_velocity_at_ = std::chrono::steady_clock::now();
     last_motion_tick_at_ = last_velocity_at_;
@@ -217,50 +284,70 @@ private:
   void motion_tick()
   {
     if (!stream_active_) {return;}
-    if (!healthy()) {stop_stream("V4 feedback became unhealthy during streaming"); return;}
+    PendingRequest pending(pending_requests_);
+    if (!healthy()) {
+      stop_stream("V4 feedback became unhealthy during streaming: " + reason()); return;
+    }
     const auto current = std::chrono::steady_clock::now();
     const double age = std::chrono::duration<double>(current - last_velocity_at_).count();
     if (age > 0.25) {stop_stream("V4 velocity command watchdog expired"); return;}
     const double dt = std::chrono::duration<double>(current - last_motion_tick_at_).count();
     last_motion_tick_at_ = current;
     if (!std::isfinite(dt) || dt <= 0.0 || dt > 0.03) {
-      stop_stream("V4 joint stream timing gap exceeded 30 ms"); return;
+      stop_stream(
+        "V4 joint stream timing gap exceeded 30 ms (gap_ms=" +
+        std::to_string(dt * 1000.0) + ", last_send_ms=" +
+        std::to_string(last_send_ms_) + ", last_poll_ms=" +
+        std::to_string(last_poll_ms_) + ")"); return;
     }
-    double joints[aubo_robot_namespace::ARM_DOF]{};
+    stream_time_budget_s_ += dt;
+    const auto point_count = static_cast<unsigned int>(std::floor(stream_time_budget_s_ / 0.005));
+    stream_time_budget_s_ -= static_cast<double>(point_count) * 0.005;
+    if (point_count == 0) {return;}
+    std::vector<aubo_robot_namespace::wayPoint_S> points;
+    points.reserve(point_count);
     const double speed = std::sqrt(
       commanded_velocity_[0] * commanded_velocity_[0] +
       commanded_velocity_[1] * commanded_velocity_[1] +
       commanded_velocity_[2] * commanded_velocity_[2]);
-    if (speed > 1e-9) {
-      auto position = target_waypoint_.cartPos.position;
-      position.x += commanded_velocity_[0] * dt;
-      position.y += commanded_velocity_[1] * dt;
-      position.z += commanded_velocity_[2] * dt;
-      if (previous_) {
-        const double dx = position.x - previous_->position[0];
-        const double dy = position.y - previous_->position[1];
-        const double dz = position.z - previous_->position[2];
-        if (std::sqrt(dx * dx + dy * dy + dz * dz) > 0.02) {
-          stop_stream("V4 commanded path diverged from measured pose"); return;
+    for (unsigned int index = 0; index < point_count; ++index) {
+      if (speed > 1e-9) {
+        auto position = target_waypoint_.cartPos.position;
+        position.x += commanded_velocity_[0] * 0.005;
+        position.y += commanded_velocity_[1] * 0.005;
+        position.z += commanded_velocity_[2] * 0.005;
+        if (previous_) {
+          const double dx = position.x - previous_->position[0];
+          const double dy = position.y - previous_->position[1];
+          const double dz = position.z - previous_->position[2];
+          if (std::sqrt(dx * dx + dy * dy + dz * dz) > 0.02) {
+            stop_stream("V4 commanded path diverged from measured pose"); return;
+          }
         }
-      }
-      aubo_robot_namespace::wayPoint_S solved{};
-      const int ik = service_.robotServiceRobotIk(
-        target_waypoint_.jointpos, position, target_waypoint_.orientation, solved);
-      if (ik != aubo_robot_namespace::ErrnoSucc) {
-        stop_stream("V4 IK failed (SDK result " + std::to_string(ik) + ")"); return;
-      }
-      for (std::size_t i = 0; i < aubo_v4_driver::kArmDof; ++i) {
-        if (!std::isfinite(solved.jointpos[i]) ||
-          std::abs(solved.jointpos[i] - target_waypoint_.jointpos[i]) > 0.02)
-        {
-          stop_stream("V4 IK produced an invalid joint step"); return;
+        aubo_robot_namespace::wayPoint_S solved{};
+        const int ik = service_.robotServiceRobotIk(
+          target_waypoint_.jointpos, position, target_waypoint_.orientation, solved);
+        if (ik != aubo_robot_namespace::ErrnoSucc) {
+          stop_stream("V4 IK failed (SDK result " + std::to_string(ik) + ")"); return;
         }
+        for (std::size_t i = 0; i < aubo_v4_driver::kArmDof; ++i) {
+          if (!std::isfinite(solved.jointpos[i]) ||
+            std::abs(solved.jointpos[i] - target_waypoint_.jointpos[i]) > 0.02)
+          {
+            stop_stream("V4 IK produced an invalid joint step"); return;
+          }
+        }
+        target_waypoint_ = solved;
       }
-      target_waypoint_ = solved;
+      points.push_back(target_waypoint_);
     }
-    std::copy_n(target_waypoint_.jointpos, aubo_v4_driver::kArmDof, joints);
-    const int send = service_.robotServiceSetRobotPosData2Canbus(joints);
+    // The vector overload avoids redundant FK and sends all elapsed 5 ms
+    // samples together; it never extends the horizon after a late (>30 ms) tick.
+    const auto send_started = std::chrono::steady_clock::now();
+    request_quick_ack(controller_descriptors_);
+    const int send = service_.robotServiceSetRobotPosData2Canbus(points);
+    last_send_ms_ = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - send_started).count();
     if (send != aubo_robot_namespace::ErrnoSucc) {
       stop_stream("V4 joint stream failed (SDK result " + std::to_string(send) + ")");
     }
@@ -281,6 +368,39 @@ private:
       error_ = "V4 login failed (SDK result " + std::to_string(result) + ")"; return;
     }
     connected_ = true;
+    const int telemetry_login = telemetry_service_.robotServiceLogin(
+      host->c_str(), *controller_port, user->c_str(), password->c_str());
+    if (telemetry_login != aubo_robot_namespace::ErrnoSucc) {
+      error_ = "V4 telemetry login failed (SDK result " + std::to_string(telemetry_login) + ")";
+      return;
+    }
+    telemetry_connected_ = true;
+    controller_descriptors_ = configure_controller_tcp(*host, *controller_port);
+    tcp_nodelay_sockets_ = static_cast<int>(controller_descriptors_.size());
+    RCLCPP_INFO(
+      get_logger(), "TCP_NODELAY configured on %d controller sockets", tcp_nodelay_sockets_);
+    ack_thread_ = std::thread(
+      [this]() {
+        while (!telemetry_stop_) {
+          if (pending_requests_ > 0) {request_quick_ack(controller_descriptors_);}
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+      });
+    const int registration = telemetry_service_.robotServiceRegisterRealTimeRoadPointCallback(
+      &AuboV4StateNode::receive_waypoint, this);
+    const int event_registration = telemetry_service_.robotServiceRegisterRobotEventInfoCallback(
+      &AuboV4StateNode::receive_event, this);
+    const int push = telemetry_service_.robotServiceSetRealTimeRoadPointPush(true);
+    if (registration != aubo_robot_namespace::ErrnoSucc ||
+      event_registration != aubo_robot_namespace::ErrnoSucc ||
+      push != aubo_robot_namespace::ErrnoSucc)
+    {
+      error_ = "V4 waypoint push setup failed (registration=" + std::to_string(registration) +
+        ", events=" + std::to_string(event_registration) +
+        ", enable=" + std::to_string(push) + ")";
+      return;
+    }
+    telemetry_thread_ = std::thread([this]() {read_diagnosis();});
     RCLCPP_INFO(
       get_logger(),
       "AUBOPE V4 state and explicit Cartesian velocity interface connected");
@@ -306,31 +426,126 @@ private:
     s.singularity_overspeed_alarm = d.singularityOverSpeedAlarm;
     s.robot_current_alarm = d.robotCurrentAlarm; s.tool_io_error = d.toolIoError; return s;
   }
+  static void receive_waypoint(const aubo_robot_namespace::wayPoint_S * waypoint, void * arg)
+  {
+    if (waypoint == nullptr || arg == nullptr) {return;}
+    auto * self = static_cast<AuboV4StateNode *>(arg);
+    request_quick_ack(self->controller_descriptors_);
+    std::lock_guard<std::mutex> lock(self->telemetry_mutex_);
+    self->pushed_waypoint_ = *waypoint;
+    self->pushed_at_ = std::chrono::steady_clock::now();
+    ++self->pushed_sequence_;
+  }
+  static void receive_event(const aubo_robot_namespace::RobotEventInfo * event, void * arg)
+  {
+    if (event == nullptr || arg == nullptr) {return;}
+    auto * self = static_cast<AuboV4StateNode *>(arg);
+    std::lock_guard<std::mutex> lock(self->telemetry_mutex_);
+    ++self->event_count_;
+    // IO notifications are not evidence of a running program or a fault.
+    // Keep them separate so repeated IO does not hide a controller event.
+    const int type = static_cast<int>(event->eventType);
+    if (event->eventType == aubo_robot_namespace::RobotEvent_InterfacBoardDIChanged ||
+      event->eventType == aubo_robot_namespace::RobotEvent_InterfacBoardDOChanged ||
+      event->eventType == aubo_robot_namespace::RobotEvent_InterfacBoardAIChanged ||
+      event->eventType == aubo_robot_namespace::RobotEvent_InterfacBoardAOChanged)
+    {
+      ++self->io_event_count_;
+    } else {
+      self->last_controller_event_ = "type=" + std::to_string(type) +
+        ", code=" + std::to_string(event->eventCode) +
+        ", content=" + event->eventContent.substr(0, 512);
+    }
+  }
+  void read_diagnosis()
+  {
+    // Only this worker calls the telemetry connection. No blocking state
+    // request runs on the ROS executor that owns motion and stop callbacks.
+    while (!telemetry_stop_) {
+      aubo_robot_namespace::RobotDiagnosis raw{};
+      const auto started = std::chrono::steady_clock::now();
+      request_quick_ack(controller_descriptors_);
+      int result;
+      {
+        PendingRequest pending(pending_requests_);
+        result = telemetry_service_.robotServiceGetRobotDiagnosisInfo(raw);
+      }
+      {
+        std::lock_guard<std::mutex> lock(telemetry_mutex_);
+        ++diagnosis_requests_;
+        if (result != aubo_robot_namespace::ErrnoSucc) {
+          ++diagnosis_failures_;
+          ++consecutive_diagnosis_failures_;
+          telemetry_error_ = "V4 diagnosis request failed (SDK result " +
+            std::to_string(result) + ")";
+          // A read-only request retry never resets a motion fault. The motion
+          // executor independently stops and latches if diagnosis is unhealthy.
+          telemetry_latched_ = result != aubo_robot_namespace::ErrCode_RequestTimeout ||
+            consecutive_diagnosis_failures_ >= 3;
+          if (telemetry_latched_) {break;}
+        } else {
+          consecutive_diagnosis_failures_ = 0;
+          telemetry_error_.clear();
+          telemetry_diagnosis_ = diagnosis(raw);
+          telemetry_buffer_size_ = raw.macTargetPosBufferSize;
+          telemetry_buffer_count_ = raw.macTargetPosDataSize;
+          telemetry_buffer_interrupt_ = raw.macDataInterruptWarning;
+          telemetry_diagnosis_at_ = std::chrono::steady_clock::now();
+        }
+      }
+      const auto next = started + std::chrono::milliseconds(100);
+      while (!telemetry_stop_ && std::chrono::steady_clock::now() < next) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      }
+    }
+  }
   void poll()
   {
-    if (!connected_ || fail_closed_ || stop_requested_) {return;}
-    aubo_robot_namespace::wayPoint_S waypoint{};
-    aubo_robot_namespace::RobotDiagnosis raw_diagnosis{};
-    const int waypoint_result = service_.robotServiceGetCurrentWaypointInfo(waypoint);
-    const int diagnosis_result = service_.robotServiceGetRobotDiagnosisInfo(raw_diagnosis);
-    if (waypoint_result != aubo_robot_namespace::ErrnoSucc ||
-      diagnosis_result != aubo_robot_namespace::ErrnoSucc)
+    const auto poll_started = std::chrono::steady_clock::now();
+    if (!connected_) {return;}
+    std::optional<aubo_robot_namespace::wayPoint_S> waypoint;
+    std::uint64_t sequence;
     {
-      fail_closed_ = true; error_ = "V4 state read failed (waypoint=" + std::to_string(
-        waypoint_result) + ", diagnosis=" + std::to_string(diagnosis_result) +
-        "); restart required; no automatic recovery"; publish_status(); return;
+      std::lock_guard<std::mutex> lock(telemetry_mutex_);
+      if (telemetry_latched_ && error_.empty()) {
+        fail_closed_ = true;
+        error_ = telemetry_error_;
+        RCLCPP_ERROR(get_logger(), "%s", error_.c_str());
+      }
+      waypoint = pushed_waypoint_;
+      sequence = pushed_sequence_;
+      last_read_at_ = pushed_at_;
+      last_diagnosis_at_ = telemetry_diagnosis_at_;
+      diagnosis_healthy_ = aubo_v4_driver::diagnosis_is_healthy(
+        telemetry_diagnosis_, &diagnosis_reason_);
+      if (!telemetry_error_.empty()) {
+        diagnosis_healthy_ = false;
+        diagnosis_reason_ = telemetry_error_;
+      }
+      diagnosis_requests_snapshot_ = diagnosis_requests_;
+      diagnosis_failures_snapshot_ = diagnosis_failures_;
+      buffer_size_ = telemetry_buffer_size_;
+      buffer_count_ = telemetry_buffer_count_;
+      buffer_interrupt_ = telemetry_buffer_interrupt_;
     }
-    const auto sample = pose(waypoint); std::string reason;
-    if (!aubo_v4_driver::valid_pose_sample(sample, &reason)) {
-      fail_closed_ = true; error_ = reason + "; restart required; no automatic recovery";
-      publish_status(); return;
+    if (waypoint && sequence != published_sequence_ &&
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - last_read_at_).count() <=
+      0.25)
+    {
+      const auto sample = pose(*waypoint);
+      std::string invalid_reason;
+      if (!aubo_v4_driver::valid_pose_sample(sample, &invalid_reason)) {
+        fail_closed_ = true;
+        error_ = invalid_reason;
+      } else {
+        last_read_ = true;
+        published_sequence_ = sequence;
+        publish_state(sample);
+      }
     }
-    diagnosis_healthy_ = aubo_v4_driver::diagnosis_is_healthy(
-      diagnosis(
-        raw_diagnosis), &diagnosis_reason_); last_read_ = true;
-    last_read_at_ = std::chrono::steady_clock::now();
-    publish_state(sample);
     publish_status();
+    last_poll_ms_ = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - poll_started).count();
   }
   void publish_state(const aubo_v4_driver::PoseSample & s)
   {
@@ -365,8 +580,10 @@ private:
   {
     const double feedback_age = std::chrono::duration<double>(
       std::chrono::steady_clock::now() - last_read_at_).count();
+    const double diagnosis_age = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - last_diagnosis_at_).count();
     return connected_ && !fail_closed_ && !stop_requested_ && last_read_ && diagnosis_healthy_ &&
-           feedback_age <= 0.25;
+           feedback_age <= 0.25 && diagnosis_age <= 0.25;
   }
   void publish_identity()
   {
@@ -382,6 +599,11 @@ private:
         "hardware stop requested; operator review and node restart are required before health can become true";
     }
     if (!diagnosis_reason_.empty()) {
+      if (diagnosis_healthy_ && std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - last_diagnosis_at_).count() > 0.25)
+      {
+        return "V4 diagnosis feedback is stale";
+      }
       if (last_read_ && diagnosis_healthy_ &&
         std::chrono::duration<double>(
           std::chrono::steady_clock::now() - last_read_at_).count() > 0.25)
@@ -408,6 +630,18 @@ private:
         stop_requested_)); status.values.push_back(kv("fail_closed", fail_closed_));
     status.values.push_back(kv("motion_interface_enabled", enable_motion_interface_));
     status.values.push_back(kv("motion_stream_active", stream_active_));
+    status.values.push_back(kv("diagnosis_requests", diagnosis_requests_snapshot_));
+    status.values.push_back(kv("diagnosis_failures", diagnosis_failures_snapshot_));
+    status.values.push_back(kv("tcp_nodelay_sockets", tcp_nodelay_sockets_));
+    status.values.push_back(kv("controller_buffer_size", buffer_size_));
+    status.values.push_back(kv("controller_buffer_count", buffer_count_));
+    status.values.push_back(kv("controller_buffer_interrupt", buffer_interrupt_));
+    {
+      std::lock_guard<std::mutex> lock(telemetry_mutex_);
+      status.values.push_back(kv("controller_events", event_count_));
+      status.values.push_back(kv("controller_io_events", io_event_count_));
+      status.values.push_back(kv("last_controller_event", last_controller_event_));
+    }
     diagnostic_msgs::msg::DiagnosticArray array; array.header.stamp = now(); array.status.push_back(
       std::move(
         status)); diag_pub_->publish(array);
@@ -416,6 +650,7 @@ private:
     const std::shared_ptr<std_srvs::srv::Trigger::Request>,
     std::shared_ptr<std_srvs::srv::Trigger::Response> response)
   {
+    PendingRequest pending(pending_requests_);
     if (!connected_) {
       response->success = false;
       response->message = "hardware stop rejected: no authenticated V4 connection";
@@ -434,11 +669,34 @@ private:
       "V4 fast-stop request returned success; health remains false until manual operator review and node restart";
     publish_status();
   }
-  ServiceInterface service_; std::vector<std::string> joint_names_; std::string pose_frame_id_;
+  ServiceInterface service_;
+  ServiceInterface telemetry_service_;
+  std::mutex telemetry_mutex_;
+  std::thread telemetry_thread_;
+  std::thread ack_thread_;
+  std::atomic<unsigned int> pending_requests_{0};
+  std::atomic<bool> telemetry_stop_{false};
+  bool telemetry_connected_{false};
+  std::optional<aubo_robot_namespace::wayPoint_S> pushed_waypoint_;
+  aubo_v4_driver::DiagnosisSample telemetry_diagnosis_{};
+  std::chrono::steady_clock::time_point pushed_at_{}, telemetry_diagnosis_at_{};
+  std::uint64_t pushed_sequence_{0}, published_sequence_{0};
+  std::string telemetry_error_;
+  std::uint64_t event_count_{0}, io_event_count_{0};
+  std::string last_controller_event_{"none received"};
+  bool telemetry_latched_{false};
+  std::uint64_t diagnosis_requests_{0}, diagnosis_failures_{0};
+  std::uint64_t diagnosis_requests_snapshot_{0}, diagnosis_failures_snapshot_{0};
+  unsigned int consecutive_diagnosis_failures_{0};
+  unsigned int telemetry_buffer_size_{0}, telemetry_buffer_count_{0},
+  telemetry_buffer_interrupt_{0};
+  unsigned int buffer_size_{0}, buffer_count_{0}, buffer_interrupt_{0};
+  std::vector<std::string> joint_names_; std::string pose_frame_id_;
   bool connected_{false}; bool fail_closed_{false}; bool stop_requested_{false};
   bool enable_motion_interface_{false};
   bool last_read_{false}; bool diagnosis_healthy_{false}; std::string error_;
   std::chrono::steady_clock::time_point last_read_at_{};
+  std::chrono::steady_clock::time_point last_diagnosis_at_{};
   std::string diagnosis_reason_; std::optional<aubo_v4_driver::PoseSample> previous_;
   rclcpp::Time previous_stamp_{0, 0, RCL_ROS_TIME};
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_pub_;
@@ -456,6 +714,10 @@ private:
   std::array<double, 3> commanded_velocity_{};
   std::chrono::steady_clock::time_point last_velocity_at_{};
   std::chrono::steady_clock::time_point last_motion_tick_at_{};
+  double last_send_ms_{0.0}, last_poll_ms_{0.0};
+  double stream_time_budget_s_{0.0};
+  int tcp_nodelay_sockets_{0};
+  std::vector<int> controller_descriptors_;
 };
 int main(int argc, char * argv[])
 {
