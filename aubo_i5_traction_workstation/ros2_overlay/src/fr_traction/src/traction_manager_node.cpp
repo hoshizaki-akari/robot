@@ -619,9 +619,30 @@ private:
   void handle_start(const std_srvs::srv::Trigger::Response::SharedPtr response)
   {
     if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
-      response->success = false;
+      if (state_machine_.state() != TractionState::MANUAL_SETUP) {
+        response->success = false;
+        response->message = state_and_allowed("start drag only from MANUAL_SETUP");
+        return;
+      }
+      if (!live_wrench() || !live_ee() || !live_controller() || !live_hardware()) {
+        response->success = false;
+        response->message =
+          "Start drag rejected: live Wrench, EE feedback and controller health are required.";
+        return;
+      }
+      if (controller_start_pending_ || controller_activation_confirming_) {
+        response->success = false;
+        response->message = "Start drag is already waiting for the Cartesian controller handoff.";
+        return;
+      }
+      if (!request_controller_start()) {
+        response->success = false;
+        response->message = "Start drag rejected: Cartesian controller could not be activated.";
+        return;
+      }
+      response->success = true;
       response->message =
-        "AUBO i5 assisted drag is unavailable until the V4 motion and force paths are verified.";
+        "Cartesian handoff requested; assisted drag will start after fresh EE feedback.";
       return;
     }
     if (state_machine_.state() != TractionState::DIRECTION_LOCKED) {

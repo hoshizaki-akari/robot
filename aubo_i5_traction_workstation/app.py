@@ -43,6 +43,9 @@ SETTINGS_PATH = Path(
 SETTINGS_LOCK = threading.Lock()
 DEFAULT_SETTINGS = {"traction_force_limit_n": 100.0}
 bridge = RosBridge()
+MOTION_ENABLED = os.environ.get("AUBO_TRACTION_ENABLED", "false").lower() in {
+    "1", "true", "yes", "on"
+}
 
 OPERATION_NAMES = {
     "/api/traction/prepare": "初始校准",
@@ -223,12 +226,15 @@ def health() -> dict:
         "robot_connected": snapshot["robot"]["connected"],
         "traction_connected": snapshot["traction"]["connected"],
         "state": snapshot["traction"].get("state_name", "INITIALIZING"),
+        "motion_enabled": MOTION_ENABLED,
     }
 
 
 @app.get("/api/state")
 def state() -> dict:
-    return bridge.snapshot()
+    snapshot = bridge.snapshot()
+    snapshot["motion_enabled"] = MOTION_ENABLED
+    return snapshot
 
 
 @app.get("/api/settings")
@@ -270,7 +276,7 @@ MOTION_SERVICES_UNVERIFIED = {
 
 
 def _call(name: str, target_force_n: float | None = None) -> dict:
-    if name in MOTION_SERVICES_UNVERIFIED:
+    if not MOTION_ENABLED and name in MOTION_SERVICES_UNVERIFIED:
         raise HTTPException(
             status_code=409,
             detail="AUBO i5 牵引运动链路未完成真机验证；当前仅允许只读状态和停止请求。",
@@ -319,10 +325,15 @@ def set_target(request: TargetRequest) -> dict:
 
 @app.post("/api/traction/mode")
 def set_operation_mode(request: OperationModeRequest) -> dict:
-    raise HTTPException(
-        status_code=409,
-        detail="AUBO i5 牵引模式尚未完成真机验证，拒绝切换。",
-    )
+    if not MOTION_ENABLED:
+        raise HTTPException(
+            status_code=409,
+            detail="AUBO i5 牵引模式尚未完成真机验证，拒绝切换。",
+        )
+    try:
+        return bridge.set_operation_mode(request.mode)
+    except RosBridgeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @app.post("/api/traction/start")
@@ -505,7 +516,9 @@ async def websocket_state(websocket: WebSocket) -> None:
     await websocket.accept()
     try:
         while True:
-            await websocket.send_json(bridge.snapshot())
+            snapshot = bridge.snapshot()
+            snapshot["motion_enabled"] = MOTION_ENABLED
+            await websocket.send_json(snapshot)
             await asyncio.sleep(0.1)
     except WebSocketDisconnect:
         return

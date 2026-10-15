@@ -51,6 +51,24 @@ class FakeJoint:
 
 
 class BridgeTest(unittest.TestCase):
+    def test_latched_driver_failure_survives_joint_feedback_timeout(self):
+        from types import SimpleNamespace
+
+        bridge = RosBridge()
+        status = SimpleNamespace(
+            name="aubo_v4_driver/state", level=b'\x02',
+            message="V4 joint stream timing gap exceeded 30 ms",
+            values=[SimpleNamespace(key="fail_closed", value="1")],
+        )
+        with patch("backend.ros_bridge.time.monotonic", return_value=10.0):
+            bridge._on_diagnostics(SimpleNamespace(status=[status]))
+        with patch("backend.ros_bridge.time.monotonic", return_value=12.0):
+            snapshot = bridge.snapshot()
+        self.assertFalse(snapshot["robot"]["connected"])
+        self.assertEqual(2, snapshot["robot"]["diagnostic"]["level"])
+        self.assertEqual(status.message, snapshot["robot"]["diagnostic"]["message"])
+        self.assertEqual(2000, snapshot["robot"]["diagnostic"]["data_age_ms"])
+
     def test_unverified_hardware_recovery_has_no_timeout_or_client(self):
         self.assertNotIn("hardware_emergency_recover", SERVICE_RESPONSE_TIMEOUT_S)
         self.assertGreaterEqual(SERVICE_RESPONSE_TIMEOUT_S["hardware_emergency_stop"], 2.0)

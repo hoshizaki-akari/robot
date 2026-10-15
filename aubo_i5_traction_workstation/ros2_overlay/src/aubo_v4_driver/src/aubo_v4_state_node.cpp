@@ -87,7 +87,8 @@ public:
       create_publisher<std_msgs::msg::String>(
       "/aubo_i5/driver_identity", rclcpp::QoS(
         1).transient_local());
-    diag_pub_ = create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+    diag_pub_ = create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
+      "/diagnostics", rclcpp::QoS(1).transient_local());
     stop_service_ =
       create_service<std_srvs::srv::Trigger>(
       "~/hardware_stop",
@@ -107,7 +108,7 @@ public:
     identity_timer_ =
       create_wall_timer(
       std::chrono::seconds(1),
-      std::bind(&AuboV4StateNode::publish_identity, this));
+      [this]() {publish_identity(); publish_status();});
     if (error_.empty()) {
       timer_ =
         create_wall_timer(
@@ -116,6 +117,10 @@ public:
       if (enable_motion_interface_) {
         motion_timer_ = create_wall_timer(
           std::chrono::milliseconds(5), std::bind(&AuboV4StateNode::motion_tick, this));
+        // A continuously-ready 5 ms timer can starve state polling and service
+        // callbacks in the single-threaded executor even while no stream is active.
+        // Arm it only for an accepted TCP2CAN session.
+        motion_timer_->cancel();
       }
     }
   }
@@ -132,6 +137,10 @@ public:
 private:
   void stop_stream(const std::string & failure = {})
   {
+    if (!failure.empty()) {
+      RCLCPP_ERROR(get_logger(), "V4 stream stopped: %s", failure.c_str());
+    }
+    if (motion_timer_) {motion_timer_->cancel();}
     if (!failure.empty() && connected_) {
       const int ignored = service_.robotMoveFastStop(); (void)ignored;
       stop_requested_ = true;
@@ -142,6 +151,7 @@ private:
       if (result != aubo_robot_namespace::ErrnoSucc && failure.empty()) {
         fail_closed_ = true;
         error_ = "V4 stream exit failed (SDK result " + std::to_string(result) + ")";
+        RCLCPP_ERROR(get_logger(), "%s", error_.c_str());
       }
     }
     commanded_velocity_ = {};
@@ -184,6 +194,7 @@ private:
     last_velocity_at_ = std::chrono::steady_clock::now();
     last_motion_tick_at_ = last_velocity_at_;
     stream_active_ = true;
+    if (motion_timer_) {motion_timer_->reset();}
     response->ok = true;
     publish_status();
   }
@@ -316,7 +327,9 @@ private:
     }
     diagnosis_healthy_ = aubo_v4_driver::diagnosis_is_healthy(
       diagnosis(
-        raw_diagnosis), &diagnosis_reason_); last_read_ = true; publish_state(sample);
+        raw_diagnosis), &diagnosis_reason_); last_read_ = true;
+    last_read_at_ = std::chrono::steady_clock::now();
+    publish_state(sample);
     publish_status();
   }
   void publish_state(const aubo_v4_driver::PoseSample & s)
@@ -350,7 +363,10 @@ private:
   }
   bool healthy() const
   {
-    return connected_ && !fail_closed_ && !stop_requested_ && last_read_ && diagnosis_healthy_;
+    const double feedback_age = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - last_read_at_).count();
+    return connected_ && !fail_closed_ && !stop_requested_ && last_read_ && diagnosis_healthy_ &&
+           feedback_age <= 0.25;
   }
   void publish_identity()
   {
@@ -366,6 +382,12 @@ private:
         "hardware stop requested; operator review and node restart are required before health can become true";
     }
     if (!diagnosis_reason_.empty()) {
+      if (last_read_ && diagnosis_healthy_ &&
+        std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - last_read_at_).count() > 0.25)
+      {
+        return "V4 state feedback is stale";
+      }
       return diagnosis_reason_;
     }
     return "no verified V4 state sample has been read";
@@ -416,6 +438,7 @@ private:
   bool connected_{false}; bool fail_closed_{false}; bool stop_requested_{false};
   bool enable_motion_interface_{false};
   bool last_read_{false}; bool diagnosis_healthy_{false}; std::string error_;
+  std::chrono::steady_clock::time_point last_read_at_{};
   std::string diagnosis_reason_; std::optional<aubo_v4_driver::PoseSample> previous_;
   rclcpp::Time previous_stamp_{0, 0, RCL_ROS_TIME};
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_pub_;

@@ -32,7 +32,7 @@ let previousDirectionTrackState = 4;
 let pendingStart = false;
 let finishRequested = false;
 let emergencyPending = false;
-const AUBO_MOTION_PORT_VERIFIED = false;
+let AUBO_MOTION_PORT_VERIFIED = false;
 const MODE_LABELS = { 0: '恒力牵引', 1: '位置牵引', 2: '省力拖拽' };
 
 const TRACTION_STATE_LABELS = {
@@ -594,6 +594,18 @@ function appendForceSample(actual, target) {
 
 function handleState(state) {
   lastStateAt = Date.now();
+  AUBO_MOTION_PORT_VERIFIED = state.motion_enabled === true;
+  if (AUBO_MOTION_PORT_VERIFIED && sessionUser?.role === '访客') {
+    sessionUser = { username: 'operator', name: '现场操作员', role: '操作员' };
+  }
+  const diagnostic = state.robot?.diagnostic;
+  if ($('hardwareNotice')) {
+    const modeNotice = AUBO_MOTION_PORT_VERIFIED
+      ? 'AUBO i5 联机调试：控制接口已启用，三种模式尚待完成真机验收。'
+      : 'AUBO i5 状态页：运动未开放，等待安装方向标定和连续控制验收。';
+    $('hardwareNotice').textContent = diagnostic?.level >= 2 && diagnostic?.message
+      ? `${modeNotice} 驱动故障：${diagnostic.message}` : modeNotice;
+  }
   const traction = state.traction || {};
   tractionState = Number(traction.state || 0);
   operationMode = Number(traction.operation_mode || 0);

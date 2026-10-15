@@ -56,6 +56,8 @@ class RosBridge:
         self._last_identity_at = 0.0
         self._identity_valid = False
         self._sequence = 0
+        self._driver_diagnostic: dict[str, Any] = {}
+        self._last_diagnostic_at = 0.0
         self._robot: dict[str, Any] = {
             "valid": False,
             "frame_id": "base_link",
@@ -77,6 +79,7 @@ class RosBridge:
     def start(self) -> None:
         try:
             import rclpy
+            from diagnostic_msgs.msg import DiagnosticArray
             from fr_traction.msg import TractionHistory, TractionStatus
             from fr_traction.srv import SetTargetForce
             from sensor_msgs.msg import JointState
@@ -106,6 +109,9 @@ class RosBridge:
         )
         self._node.create_subscription(
             String, "/aubo_i5/driver_identity", self._on_driver_identity, qos
+        )
+        self._node.create_subscription(
+            DiagnosticArray, "/diagnostics", self._on_diagnostics, history_qos
         )
         self._node.create_subscription(
             TractionStatus, "/traction/status", self._on_traction, qos
@@ -319,10 +325,30 @@ class RosBridge:
                 "summaries": [self._summary_to_dict(item) for item in message.summaries],
             }
 
+    def _on_diagnostics(self, message: Any) -> None:
+        for status in message.status:
+            if status.name != "aubo_v4_driver/state":
+                continue
+            with self._lock:
+                self._driver_diagnostic = {
+                    "level": (
+                        int.from_bytes(status.level, "little")
+                        if isinstance(status.level, bytes) else int(status.level)
+                    ),
+                    "message": str(status.message),
+                    "values": {item.key: item.value for item in status.values},
+                }
+                self._last_diagnostic_at = time.monotonic()
+
     def snapshot(self) -> dict[str, Any]:
         now = time.monotonic()
         with self._lock:
             robot = copy.deepcopy(self._robot)
+            diagnostic = copy.deepcopy(self._driver_diagnostic)
+            diagnostic["data_age_ms"] = (
+                None if self._last_diagnostic_at == 0
+                else int((now - self._last_diagnostic_at) * 1000)
+            )
             traction = copy.deepcopy(self._traction)
             history = copy.deepcopy(self._history)
             joint_age_ms = (
@@ -340,6 +366,7 @@ class RosBridge:
                 else int((now - self._last_identity_at) * 1000)
             )
         robot["data_age_ms"] = joint_age_ms
+        robot["diagnostic"] = diagnostic
         traction["data_age_ms"] = traction_age_ms
         robot["connected"] = bool(
             robot.get("valid") and joint_age_ms is not None and joint_age_ms <= 500

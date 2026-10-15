@@ -18,6 +18,8 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("serial_path", default_value="/dev/ttyUSB0"),
             DeclareLaunchArgument("aubo_port_verified", default_value="false"),
+            DeclareLaunchArgument("mounting_verified", default_value="false"),
+            DeclareLaunchArgument("pose_frame_verified", default_value="false"),
             Node(
                 package="aubo_v4_driver",
                 executable="aubo_v4_state_node",
@@ -39,7 +41,17 @@ def generate_launch_description():
                 executable="aubo_wrench_transform_node.py",
                 name="aubo_wrench_transform",
                 output="screen",
-                parameters=[mount_config],
+                parameters=[
+                    mount_config,
+                    {
+                        "mounting_verified": ParameterValue(
+                            LaunchConfiguration("mounting_verified"), value_type=bool
+                        ),
+                        "pose_frame_verified": ParameterValue(
+                            LaunchConfiguration("pose_frame_verified"), value_type=bool
+                        ),
+                    },
+                ],
             ),
             Node(
                 package="fr_traction",

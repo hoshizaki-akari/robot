@@ -66,14 +66,19 @@ class AuboWorkstationContractTest(unittest.TestCase):
         self.assertIn("drag_sign_y: 1.0", params)
         self.assertNotIn("traction_sign_z: -1.0", params)
 
-    def test_drag_request_fails_closed(self):
+    def test_drag_request_uses_aubo_cartesian_handoff(self):
         manager = (ROS / "src" / "traction_manager_node.cpp").read_text(
             encoding="utf-8"
         )
         start_handler = manager.split("void handle_start", 1)[1].split(
             "void handle_stop", 1
         )[0]
-        self.assertIn("AUBO i5 assisted drag is unavailable", start_handler)
+        self.assertIn("start drag only from MANUAL_SETUP", start_handler)
+        self.assertIn("live_wrench()", start_handler)
+        self.assertIn("live_ee()", start_handler)
+        self.assertIn("request_controller_start()", start_handler)
+        self.assertIn("assisted drag will start after fresh EE feedback", start_handler)
+        self.assertNotIn("AUBO i5 assisted drag is unavailable", start_handler)
         self.assertNotIn("FR5 native drag activation requested", start_handler)
 
     def test_web_contract_uses_robot_identity(self):
