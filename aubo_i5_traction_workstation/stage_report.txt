@@ -21,6 +21,8 @@ ROS tests = 145 tests, 0 errors, 0 failures, 26 skipped
 web/Python tests = 19 passed
 check_urdf = PASS
 launch arguments parse = PASS
+local web smoke test = /api/health ok:false, POST /api/traction/start 409,
+  POST /api/traction/mode 409
 
 hardware_facts:
 Windows COM4 yielded valid KWR75D 28-byte frames at 460800 8N1
