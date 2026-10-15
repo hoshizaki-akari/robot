@@ -1,0 +1,89 @@
+#ifndef FR_TRACTION__TRACTION_CONTROLLER_CORE_HPP_
+#define FR_TRACTION__TRACTION_CONTROLLER_CORE_HPP_
+
+#include "fr_traction/traction_math.hpp"
+
+namespace fr_traction
+{
+
+enum class ControlMode : unsigned char
+{
+  DISABLED = 0,
+  PRETENSION = 1,
+  TRACTION = 2,
+  RELEASING = 3,
+  DRAGGING = 4,
+  POSITIONING = 5
+};
+
+struct ControllerOutput
+{
+  Vec3 linear_velocity;
+  double scalar_velocity_mps = 0.0;
+  PositionControlResult position_control;
+  bool valid = false;
+};
+
+class TractionControllerCore
+{
+public:
+  TractionControllerCore(
+    double virtual_mass,
+    double virtual_damping,
+    double deadband_n,
+    double max_speed_mps,
+    double max_acceleration_mps2,
+    double integral_gain_s_inv = 0.25,
+    double integral_limit_n = 3.0,
+    double drag_start_force_n = 1.0,
+    double drag_release_force_n = 0.6,
+    double drag_release_confirm_s = 0.15,
+    double drag_gain_mps_per_n = 0.00625,
+    double drag_max_speed_mps = 0.050,
+    double smoothing_max_acceleration_mps2 = 0.30,
+    double smoothing_max_jerk_mps3 = 3.0,
+    double drag_sign_x = -1.0,
+    double drag_sign_y = -1.0,
+    double drag_sign_z = 1.0,
+    const PositionControlConfig & position_config = {},
+    double drag_max_acceleration_mps2 = 0.60,
+    double drag_max_jerk_mps3 = 12.0);
+
+  void reset();
+  ControllerOutput update(
+    ControlMode mode,
+    const Vec3 & direction,
+    double target_force_n,
+    const Vec3 & wrench,
+    double dt_s,
+    const Vec3 & lateral_velocity = {});
+
+private:
+  Vec3 smooth_velocity(
+    const Vec3 & desired_velocity, double dt_s, bool snap_to_target = true,
+    double maximum_acceleration_mps2 = 0.0, double maximum_jerk_mps3 = 0.0);
+
+  OneDimensionalAdmittance admittance_;
+  PositionTractionController position_controller_;
+  PositionTractionController continuous_force_controller_;
+  double drag_start_force_n_;
+  double drag_release_force_n_;
+  double drag_release_confirm_s_;
+  double drag_gain_mps_per_n_;
+  double drag_max_speed_mps_;
+  double drag_sign_x_;
+  double drag_sign_y_;
+  double drag_sign_z_;
+  double smoothing_max_acceleration_mps2_;
+  double smoothing_max_jerk_mps3_;
+  double drag_max_acceleration_mps2_;
+  double drag_max_jerk_mps3_;
+  bool drag_active_ = false;
+  double drag_release_elapsed_s_ = 0.0;
+  Vec3 smoothed_velocity_;
+  Vec3 smoothed_acceleration_;
+};
+
+}  // namespace fr_traction
+
+#endif  // FR_TRACTION__TRACTION_CONTROLLER_CORE_HPP_

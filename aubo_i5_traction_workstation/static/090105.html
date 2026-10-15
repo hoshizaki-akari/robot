@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>骨伤牵引机器人工作站</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --navy: #1e3a5f;
+      --blue: #3b82f6;
+      --green: #16a34a;
+      --red: #dc2626;
+      --orange: #f59e0b;
+      --muted: #64748b;
+      --line: #e2e8f0;
+    }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+      background: #eef2f7; color: #1f2937;
+    }
+    button, input, select { font-family: inherit; }
+    button:disabled { opacity: .42; cursor: not-allowed !important; }
+
+    .top-bar {
+      height: 64px; padding: 0 22px; background: var(--navy); color: #fff;
+      display: flex; align-items: center; justify-content: space-between; gap: 20px;
+      box-shadow: 0 3px 12px rgba(15, 23, 42, .18);
+    }
+    .brand-group, .top-right { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .brand-group { gap: 11px; }
+    .brand-icon { width: 32px; height: 32px; flex: 0 0 32px; color: #dbeafe; }
+    .brand-icon svg { display: block; width: 100%; height: 100%; }
+    .top-bar h1 { font-size: 24px; font-weight: 700; letter-spacing: 3px; white-space: nowrap; }
+    .nav-btn {
+      border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.12);
+      color: #fff; padding: 8px 14px; border-radius: 7px; font-size: 15px;
+      display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+      cursor: pointer; transition: .18s;
+    }
+    .nav-icon { width: 18px; height: 18px; flex: 0 0 18px; }
+    .nav-icon svg { display: block; width: 100%; height: 100%; }
+    .nav-btn:hover { background: rgba(255,255,255,.24); }
+    .nav-btn.shutdown { border-color: rgba(254,202,202,.55); background: rgba(220,38,38,.28); }
+    .nav-btn.shutdown:hover { background: rgba(220,38,38,.48); }
+    .user-chip {
+      display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+      border-radius: 8px; background: rgba(255,255,255,.1); font-size: 14px;
+    }
+    .role-tag { padding: 2px 7px; border-radius: 10px; background: #dbeafe; color: #1d4ed8; font-size: 12px; }
+
+    .main-container {
+      height: calc(100% - 64px); display: grid;
+      grid-template-columns: minmax(320px, 31%) minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr);
+      gap: 12px 14px; padding: 12px 14px;
+    }
+    .left-area, .right-area { display: flex; flex-direction: column; gap: 14px; min-width: 0; min-height: 0; }
+    .card {
+      background: #fff; border-radius: 14px; box-shadow: 0 4px 16px rgba(0,0,0,.08);
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .card-title {
+      min-height: 48px; padding: 10px 18px; border-bottom: 2px solid #e8ecf1;
+      color: var(--navy); font-size: 20px; font-weight: 700;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .status { display: inline-flex; align-items: center; gap: 6px; color: var(--green); font-size: 13px; font-weight: 500; }
+    .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+    .status.running { color: #f59e0b; }
+    .status.offline { color: var(--red); }
+
+    .arm-panel { flex: 1.05; background: #323232; min-height: 0; }
+    .arm-panel .card-title { color: #fff; }
+    .arm-img-wrap { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
+    .arm-img-wrap img { width: 100%; height: 100%; object-fit: contain; }
+    #robotViewer { width: 100%; height: 100%; min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: #e6eef5; text-align: center; padding: 18px; box-sizing: border-box; }
+    #jointReadout { font-variant-numeric: tabular-nums; line-height: 1.8; }
+    #robotViewer canvas { display: block; width: 100%; height: 100%; }
+    .image-fallback { color: #cbd5e1; text-align: center; line-height: 1.8; }
+    .image-fallback strong { display: block; color: #fff; font-size: 26px; }
+
+    .curve-panel { flex: .95; padding: 0 12px 10px; min-height: 150px; }
+    .curve-panel .card-title { margin: 0 -12px 8px; padding-left: 14px; padding-right: 12px; font-size: 18px; }
+    .curve-title-right { display: flex; align-items: center; gap: 9px; font-size: 12px; font-weight: 500; }
+    .curve-legend { display: inline-flex; align-items: center; gap: 5px; color: #475569; white-space: nowrap; }
+    .curve-legend::before { content: ""; width: 28px; border-top: 3px solid var(--blue); }
+    .curve-legend.target::before { border-top-color: var(--green); border-top-style: dashed; }
+    #recordTimer { display: none; }
+    #forceCanvas { flex: 1; width: 100%; min-height: 0; border-radius: 10px; background: #f8fafc; border: 1px solid var(--line); }
+
+    .operation-panel { flex: 1; min-height: 0; }
+    .operation-title { flex: 0 0 48px; justify-content: flex-end; }
+    .compact-status { display: flex; align-items: center; gap: 18px; font-size: 14px; font-weight: 600; }
+    .compact-status-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+    .compact-status-item::before {
+      content: ""; width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: currentColor;
+    }
+    .compact-status-label { color: var(--muted); font-weight: 400; }
+    .state-value { color: var(--green); font-size: 14px; font-weight: 600; white-space: nowrap; }
+    #workStatus.running, #directionState.following { color: #d97706; }
+    #tensionState { color: #d97706; }
+    #tensionState.tight { color: var(--green); }
+    .mode-section-title, .force-section-title {
+      color: var(--navy); font-size: 19px; font-weight: 800;
+      padding: 9px 20px 4px;
+    }
+    .mode-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+      padding: 5px 20px 8px;
+    }
+    .mode-btn {
+      min-height: 84px; border: 2px solid #aebdce; border-radius: 12px; padding: 8px 14px;
+      background: #fff; color: #334155; font-size: clamp(23px, 1.5vw, 29px); font-weight: 900;
+      display: inline-flex; align-items: center; justify-content: center; gap: 14px;
+      line-height: 1; letter-spacing: .16em; text-indent: .16em; cursor: pointer;
+      box-shadow: 0 3px 8px rgba(15,23,42,.06); transition: .15s;
+    }
+    .mode-icon { width: 34px; height: 34px; flex: 0 0 34px; }
+    .mode-icon svg { display: block; width: 100%; height: 100%; }
+    .mode-btn[data-mode="2"] { background: #eef6ff; border-color: #c4dafa; color: #173a68; }
+    .mode-btn[data-mode="1"] { background: #f2f6fc; border-color: #c4d0e0; color: #173a68; }
+    .mode-btn.active {
+      border-color: var(--blue); background: var(--blue); color: #fff;
+      box-shadow: 0 5px 14px rgba(59,130,246,.28);
+    }
+    .force-adjustment {
+      flex: 1; min-height: 0; margin: 0 20px 4px; border: 0;
+      border-radius: 0; display: flex; flex-direction: column; overflow: hidden;
+      background: transparent;
+    }
+    .force-section-title { padding: 7px 0 5px; border-bottom: 1px solid #dbe5f0; }
+    .force-control-body {
+      flex: 1; min-height: 0; display: grid; grid-template-rows: minmax(100px, 1fr) 70px minmax(96px, .9fr);
+      align-items: center; padding: 0 28px;
+    }
+    .force-metric { min-width: 0; text-align: center; }
+    .target-metric, .actual-metric {
+      display: flex; align-items: center; justify-content: center; gap: 24px;
+    }
+    .target-metric { align-self: end; }
+    .force-metric-label {
+      color: var(--navy); font-size: clamp(42px, 3.4vw, 58px); font-weight: 900;
+      line-height: .95; letter-spacing: .08em; transform: translateY(-2px);
+    }
+    .force-number { display: flex; align-items: baseline; justify-content: center; min-width: 0; }
+    .force-value-target, .actual-force-value {
+      color: #1455d9; font-size: clamp(104px, 8.6vw, 138px); font-weight: 900; line-height: .9;
+    }
+    .force-unit-target, .actual-force-unit {
+      font-size: clamp(46px, 3.8vw, 62px); font-weight: 900; margin-left: 10px;
+    }
+    .force-unit-target { color: #1455d9; }
+    .actual-force-value, .actual-force-unit { color: #079447; }
+    .slider-row {
+      display: grid; grid-template-columns: 52px minmax(0, 1fr) 66px; align-items: center;
+      gap: 12px;
+    }
+    .slider-bound { color: var(--navy); font-size: 28px; font-weight: 900; text-align: center; }
+    .force-slider {
+      width: 100%; height: 70px; margin: 0; appearance: none; background: transparent;
+      cursor: pointer; touch-action: pan-y;
+    }
+    .force-slider::-webkit-slider-runnable-track {
+      height: 32px; border-radius: 18px; background: linear-gradient(90deg, #267cf5 var(--slider-progress, 9%), #dbe7f3 var(--slider-progress, 9%));
+      box-shadow: inset 0 1px 3px rgba(15,23,42,.14);
+    }
+    .force-slider::-webkit-slider-thumb {
+      width: 64px; height: 64px; margin-top: -16px; appearance: none; border-radius: 50%;
+      background: #1769e8; border: 8px solid #fff; box-shadow: 0 4px 14px rgba(30,64,175,.42);
+    }
+    .force-slider::-moz-range-track { height: 32px; border-radius: 18px; background: #dbe7f3; }
+    .force-slider::-moz-range-progress { height: 32px; border-radius: 18px; background: #267cf5; }
+    .force-slider::-moz-range-thumb {
+      width: 56px; height: 56px; border-radius: 50%; background: #1769e8;
+      border: 8px solid #fff; box-shadow: 0 4px 14px rgba(30,64,175,.42);
+    }
+    .force-slider:disabled { cursor: not-allowed; filter: grayscale(.8); opacity: .45; }
+    .actual-metric {
+      align-self: start; border-top: 0; padding-top: 0;
+    }
+    .control-grid {
+      flex: 0 0 144px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px; min-width: 0; padding: 0 20px 16px;
+    }
+    .action-slot { min-width: 0; min-height: 0; display: grid; }
+    .action-slot > .action-btn { grid-area: 1 / 1; width: 100%; height: 100%; }
+    .action-btn.slot-hidden { display: none; }
+    .action-btn {
+      min-width: 0; border: 0; border-radius: 14px; color: #fff;
+      font-size: clamp(26px, 2.2vw, 36px); font-weight: 900;
+      display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+      line-height: 1; letter-spacing: .08em; text-indent: .08em;
+      cursor: pointer; box-shadow: 0 5px 14px rgba(15,23,42,.13); transition: .15s;
+    }
+    .btn-icon { width: 46px; height: 46px; flex: 0 0 46px; }
+    .btn-icon svg { display: block; width: 100%; height: 100%; }
+    .action-btn:active:not(:disabled) { transform: translateY(2px); }
+    .action-btn.start { background: var(--green); }
+    .action-btn.direction { background: #2563eb; }
+    .action-btn.stop { background: #d7e0ec; color: #435a78; }
+    .action-btn.zero { background: #ffd15a; color: #925c0b; }
+    .action-btn.emergency { background: var(--red); }
+    .action-btn.emergency.recover { background: var(--green); }
+
+    .modal-mask {
+      position: fixed; inset: 0; z-index: 20; background: rgba(15,23,42,.55);
+      display: flex; align-items: center; justify-content: center; padding: 24px;
+    }
+    .modal-mask.hidden { display: none; }
+    .modal {
+      width: min(100%, 980px); max-height: 88vh; background: #fff; border-radius: 15px;
+      box-shadow: 0 22px 60px rgba(0,0,0,.25); overflow: hidden; display: flex; flex-direction: column;
+    }
+    .modal.small { width: 430px; }
+    .modal-header { padding: 17px 22px; background: var(--navy); color: #fff; display: flex; justify-content: space-between; align-items: center; }
+    .modal-header h2 { font-size: 20px; }
+    .close-btn { border: 0; background: transparent; color: #fff; font-size: 26px; cursor: pointer; }
+    .modal-body { padding: 22px; overflow: auto; }
+    .form-item { margin-bottom: 17px; }
+    .form-item label { display: block; color: #475569; font-size: 14px; margin-bottom: 7px; }
+    .form-item input, .form-item select {
+      width: 100%; padding: 11px 12px; border: 1px solid #cbd5e1; border-radius: 7px; font-size: 15px; outline: none;
+    }
+    .form-item input:focus, .form-item select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
+    .primary-btn, .secondary-btn, .danger-btn {
+      border: 0; padding: 10px 18px; border-radius: 7px; font-size: 15px; cursor: pointer;
+    }
+    .primary-btn { background: var(--blue); color: #fff; }
+    .secondary-btn { background: #e2e8f0; color: #334155; }
+    .danger-btn { background: #fee2e2; color: #b91c1c; }
+    .login-btn { width: 100%; padding: 12px; }
+    .login-tip { margin-top: 15px; padding: 11px; border-radius: 7px; background: #f1f5f9; color: #64748b; font-size: 13px; line-height: 1.7; }
+    .error-tip { min-height: 20px; color: var(--red); font-size: 13px; margin-bottom: 8px; }
+    .toolbar { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .toolbar-left, .toolbar-right { display: flex; gap: 9px; }
+    .toolbar input, .toolbar select { padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 7px; }
+    .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 9px; }
+    .row-export-btn { padding: 6px 10px; white-space: nowrap; }
+    table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 14px; }
+    th, td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: center; }
+    th { position: sticky; top: 0; background: #f1f5f9; color: #334155; }
+    tbody tr:hover { background: #f8fafc; }
+    .empty { padding: 32px; text-align: center; color: #94a3b8; }
+    .permission-note { font-size: 13px; color: #64748b; margin-top: 8px; }
+    .shutdown-copy { color: #334155; font-size: 18px; line-height: 1.7; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 22px; }
+    .modal-actions .danger-btn { background: var(--red); color: #fff; }
+    .toast {
+      position: fixed; z-index: 50; left: 50%; bottom: 28px; transform: translateX(-50%);
+      padding: 11px 22px; border-radius: 8px; background: #0f172a; color: #fff; opacity: 0;
+      pointer-events: none; transition: .2s;
+    }
+    .toast.show { opacity: 1; }
+
+    @media (max-height: 820px) and (min-width: 1051px) {
+      .mode-section-title { padding-top: 6px; }
+      .mode-grid { padding-top: 3px; padding-bottom: 6px; }
+      .mode-btn { min-height: 84px; font-size: 25px; }
+      .force-adjustment { margin: 0 16px 2px; }
+      .force-section-title { padding-top: 4px; padding-bottom: 4px; }
+      .force-control-body { grid-template-rows: minmax(96px, 1fr) 70px minmax(92px, .9fr); padding-bottom: 0; }
+      .force-metric-label { font-size: 48px; }
+      .force-value-target, .actual-metric .actual-force-value { font-size: 116px; }
+      .force-unit-target, .actual-metric .actual-force-unit { font-size: 52px; }
+      .action-btn { font-size: 30px; gap: 8px; }
+      .btn-icon { width: 40px; height: 40px; flex-basis: 40px; }
+      .control-grid { flex-basis: 136px; padding: 0 16px 12px; }
+    }
+
+    @media (max-width: 1050px) {
+      .top-bar { padding: 0 12px; gap: 8px; }
+      .brand-group { gap: 6px; }
+      .brand-icon { width: 27px; height: 27px; flex-basis: 27px; }
+      .top-bar h1 { font-size: 18px; }
+      .user-chip span:first-child { display: none; }
+      .nav-btn { padding: 7px 9px; font-size: 13px; }
+      .nav-icon { width: 16px; height: 16px; flex-basis: 16px; }
+      .main-container { grid-template-columns: minmax(280px, 34%) minmax(0, 1fr); gap: 9px; padding: 9px; }
+      .compact-status { gap: 8px; font-size: 12px; }
+      .compact-status-label { display: none; }
+      .state-value { font-size: 12px; }
+      .mode-grid { gap: 8px; padding: 4px 10px 6px; }
+      .mode-btn { min-height: 48px; font-size: 20px; gap: 7px; letter-spacing: .08em; text-indent: .08em; }
+      .mode-icon { width: 24px; height: 24px; flex-basis: 24px; }
+      .force-adjustment { margin: 0 10px 8px; }
+      .force-control-body { padding-left: 14px; padding-right: 14px; }
+      .force-metric-label, .actual-metric .force-metric-label { font-size: 34px; }
+      .force-value-target, .actual-metric .actual-force-value { font-size: 76px; }
+      .force-unit-target, .actual-metric .actual-force-unit { font-size: 34px; }
+      .control-grid { flex-basis: 120px; gap: 7px; padding: 0 10px 10px; }
+      .action-btn { font-size: 22px; gap: 6px; letter-spacing: 0; text-indent: 0; }
+      .btn-icon { width: 32px; height: 32px; flex-basis: 32px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="top-bar">
+    <div class="brand-group">
+      <span class="brand-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 20h16M7 20v-4l4-3 3 2v-5l3-2 2 2"/><circle cx="7" cy="16" r="1.5"/><circle cx="11" cy="13" r="1.5"/><circle cx="14" cy="15" r="1.5"/><circle cx="17" cy="10" r="1.5"/>
+        </svg>
+      </span>
+      <h1>AUBO i5 骨伤牵引工作站</h1>
+    </div>
+    <div class="top-right">
+      <div class="user-chip"><span id="currentUser">未登录</span><span class="role-tag" id="currentRole">访客</span></div>
+      <button class="nav-btn" id="settingsBtn">
+        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.2 1.9 2.2.4 1.6-1.1 1.8 1.8-1.1 1.6.4 2.2L21 11v2l-2.9 1.2-.4 2.2 1.1 1.6-1.8 1.8-1.6-1.1-2.2.4L12 21l-1.2-1.9-2.2-.4L7 19.8l-1.8-1.8 1.1-1.6-.4-2.2L3 13v-2l2.9-1.2.4-2.2-1.1-1.6L7 4.2l1.6 1.1 2.2-.4L12 3z"/><circle cx="12" cy="12" r="3"/></svg></span><span>参数设置</span>
+      </button>
+      <button class="nav-btn" id="recordsBtn">
+        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v5h5M9 13h6M9 17h6M9 9h2"/></svg></span><span>牵引记录</span>
+      </button>
+      <button class="nav-btn" id="logoutBtn"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 5H5v14h5M14 8l4 4-4 4M9 12h9"/></svg></span><span>退出登录</span></button>
+      <button class="nav-btn shutdown" id="shutdownBtn"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v8M7.8 5.5a8 8 0 1 0 8.4 0"/></svg></span><span>关闭程序</span></button>
+    </div>
+  </header>
+
+  <p style="margin: 12px 24px; padding: 10px 14px; background: #fff3cd; color: #5f3700; border-radius: 8px;">
+    AUBO i5 移植检查阶段：仅显示真实设备状态。牵引、拖拽、回零及自动急停恢复尚未验证，禁止使用。
+  </p>
+  <main class="main-container">
+    <section class="left-area">
+      <div class="card arm-panel">
+        <div class="card-title"><span>机械臂状态</span><span class="status" id="armStatus">通信正常</span></div>
+        <div class="arm-img-wrap">
+          <div id="robotViewer" aria-label="AUBO i5 实时关节状态">
+            <p>仅显示真实 AUBO i5 关节反馈；三维模型待本机标定后启用。</p>
+            <div id="jointReadout">等待真实关节数据</div>
+          </div>
+        </div>
+      </div>
+      <div class="card curve-panel">
+        <div class="card-title">
+          <span>牵引力曲线（N）</span>
+          <span class="curve-title-right">
+            <span class="curve-legend">实时力</span>
+            <span class="curve-legend target">目标力</span>
+            <span id="recordTimer">未开始记录</span>
+          </span>
+        </div>
+        <canvas id="forceCanvas"></canvas>
+      </div>
+    </section>
+
+    <section class="right-area">
+      <div class="card operation-panel">
+        <div class="card-title operation-title">
+          <div class="compact-status" aria-label="实时状态">
+            <span class="compact-status-item"><span class="compact-status-label">任务</span><strong class="state-value" id="workStatus">设备就绪</strong></span>
+            <span class="compact-status-item"><span class="compact-status-label">牵引带</span><strong class="state-value" id="tensionState">松弛</strong></span>
+            <span class="compact-status-item"><span class="compact-status-label">方向</span><strong class="state-value" id="directionState">方向稳定</strong></span>
+          </div>
+        </div>
+        <div class="mode-section-title">牵引模式</div>
+        <div class="mode-grid" aria-label="工作模式">
+          <button class="mode-btn" data-mode="2"><span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11V6a1.5 1.5 0 0 1 3 0v4M10 10V4.8a1.5 1.5 0 0 1 3 0V10M13 10V6a1.5 1.5 0 0 1 3 0v5M16 11V8.5a1.5 1.5 0 0 1 3 0v5.2c0 4-2.8 6.3-6.4 6.3H10c-2.2 0-3.5-1-4.5-2.7L3.4 13a1.5 1.5 0 0 1 2.6-1.5L7 13.2"/></svg></span><span>省力拖拽</span></button>
+          <button class="mode-btn" data-mode="1"><span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M8 7l4-4 4 4M8 17l4 4 4-4"/></svg></span><span>位置牵引</span></button>
+          <button class="mode-btn active" data-mode="0"><span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h5l2-6 4 12 2-6h7"/></svg></span><span>恒力牵引</span></button>
+        </div>
+        <div class="force-adjustment">
+          <div class="force-section-title">牵引力调节</div>
+          <div class="force-control-body">
+            <div class="force-metric target-metric">
+              <div class="force-metric-label">目标</div>
+              <div class="force-number"><strong class="force-value-target" id="targetForceDisplay">10</strong><span class="force-unit-target">N</span></div>
+            </div>
+            <div class="slider-row">
+              <span class="slider-bound">1</span>
+              <input class="force-slider" id="targetForceVal" type="range" min="1" max="100" step="1" value="10" aria-label="目标牵引力">
+              <span class="slider-bound" id="sliderMaximum">100</span>
+            </div>
+            <div class="actual-metric">
+              <div class="force-metric-label">当前</div>
+              <div class="force-number"><strong class="actual-force-value" id="actualForceVal">0.0</strong><span class="actual-force-unit">N</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="control-grid" aria-label="牵引控制">
+          <div class="action-slot">
+            <button class="action-btn start" id="prepareBtn" title="牵引带松弛时点击"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5M9 12h6M12 9v6"/></svg></span><span class="btn-label">初始校准</span></button>
+            <button class="action-btn direction slot-hidden" id="calibrateBtn" disabled title="张紧后保持法兰不动"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18 16 6M10 6h6v6"/><path d="m13 18 2 2 5-5"/></svg></span><span class="btn-label">方向确定</span></button>
+          </div>
+          <div class="action-slot">
+            <button class="action-btn start" id="startBtn" disabled><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.8a1 1 0 0 1 1.5-.86l10.4 7.2a1 1 0 0 1 0 1.72l-10.4 7.2A1 1 0 0 1 7 19.2z"/></svg></span><span class="btn-label" id="startLabel">开始牵引</span></button>
+            <button class="action-btn stop slot-hidden" id="stopBtn" disabled><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="1.5"/></svg></span><span class="btn-label" id="stopLabel">结束牵引</span></button>
+          </div>
+          <div class="action-slot">
+            <button class="action-btn zero" id="returnZeroBtn" disabled><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5L12 4l9 7.5"/><path d="M5.5 10.5V20h13v-9.5M9.5 20v-5h5v5"/></svg></span><span class="btn-label">回零</span></button>
+          </div>
+          <div class="action-slot">
+            <button class="action-btn emergency" id="emergencyBtn" disabled><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 22 20H2L12 3z"/><path d="M12 8v6M12 17v.1"/></svg></span><span class="btn-label" id="emergencyLabel">急停</span></button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="modal-mask" id="loginModal">
+    <div class="modal small">
+      <div class="modal-header"><h2>系统登录</h2></div>
+      <div class="modal-body">
+        <div class="form-item"><label for="username">用户名</label><input id="username" autocomplete="username" placeholder="请输入用户名"></div>
+        <div class="form-item"><label for="password">密码</label><input id="password" type="password" autocomplete="current-password" placeholder="请输入密码"></div>
+        <div class="error-tip" id="loginError"></div>
+        <button class="primary-btn login-btn" id="loginBtn">登录系统</button>
+        <div class="login-tip">AUBO i5 移植阶段仅开放只读访客视图；操作员认证尚未配置。</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask hidden" id="recordsModal">
+    <div class="modal">
+      <div class="modal-header"><h2>牵引记录</h2><button class="close-btn" data-close="recordsModal">×</button></div>
+      <div class="modal-body">
+        <div class="toolbar">
+          <div class="toolbar-left"><input id="recordSearch" placeholder="搜索编号或操作人员"><select id="recordStatusFilter"><option value="">全部状态</option><option value="已完成">已完成</option><option value="异常终止">异常终止</option></select></div>
+          <div class="toolbar-right"><button class="secondary-btn" id="exportBtn">导出全部摘要</button></div>
+        </div>
+        <div class="table-wrap">
+          <table><thead><tr><th>记录编号</th><th>模式</th><th>开始时间</th><th>结束时间</th><th>操作人员</th><th>角色</th><th>目标力(N)</th><th>平均力(N)</th><th>最大力(N)</th><th>状态</th><th>原因</th><th>导出</th></tr></thead><tbody id="recordsBody"></tbody></table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask hidden" id="settingsModal">
+    <div class="modal small">
+      <div class="modal-header"><h2>牵引参数设置</h2><button class="close-btn" data-close="settingsModal">×</button></div>
+      <div class="modal-body">
+        <div class="form-item"><label>默认目标牵引力（N）</label><input id="settingTarget" type="number" min="1" max="100" step="1"></div>
+        <div class="form-item"><label>牵引力上限（N）</label><input id="settingForceLimit" type="number" min="1" max="100" step="1" value="100"></div>
+        <button class="primary-btn" id="saveSettingsBtn">保存参数</button>
+        <button class="secondary-btn" id="setZeroPoseBtn" style="width:100%; margin-top:14px;">设置当前位置为零位</button>
+        <div class="permission-note" id="setZeroPoseNote">设置后，回零将返回当前机械臂位姿；仅管理员可操作。</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask hidden" id="shutdownModal">
+    <div class="modal small" role="dialog" aria-modal="true" aria-labelledby="shutdownTitle">
+      <div class="modal-header"><h2 id="shutdownTitle">关闭程序</h2></div>
+      <div class="modal-body">
+        <p class="shutdown-copy" id="shutdownPrompt">确认关闭工作站程序和机器人控制服务吗？</p>
+        <div class="modal-actions">
+          <button class="secondary-btn" id="cancelShutdownBtn">取消</button>
+          <button class="danger-btn" id="confirmShutdownBtn">确认关闭</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script type="text/plain" id="legacyLogic">
+    Legacy traction logic is intentionally disabled. The active compatibility page
+    uses /api/traction/* and the ROS2 traction manager; it does not simulate force,
+    persist traction records in the browser, or issue robot SDK commands.
+  </script>
+  <script src="/assets/090105.js?v=20260922-live-force-arrow"></script>
+</body>
+</html>

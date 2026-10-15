@@ -1,0 +1,11 @@
+std_msgs/Header header
+string session_id
+uint8 operation_mode
+builtin_interfaces/Time start_time
+builtin_interfaces/Time end_time
+float64 target_force_n
+float64 average_force_n
+float64 max_force_n
+uint8 final_state
+string stop_reason
+string record_path

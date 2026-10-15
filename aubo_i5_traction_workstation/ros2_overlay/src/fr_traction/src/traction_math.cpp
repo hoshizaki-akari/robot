@@ -1,0 +1,541 @@
+#include "fr_traction/traction_math.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
+namespace fr_traction
+{
+
+constexpr double kPi = 3.14159265358979323846;
+
+Vec3 operator+(const Vec3 & lhs, const Vec3 & rhs)
+{
+  return {lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z};
+}
+
+Vec3 operator-(const Vec3 & lhs, const Vec3 & rhs)
+{
+  return {lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z};
+}
+
+Vec3 operator*(const Vec3 & value, double scalar)
+{
+  return {value.x * scalar, value.y * scalar, value.z * scalar};
+}
+
+Vec3 operator*(double scalar, const Vec3 & value)
+{
+  return value * scalar;
+}
+
+double dot(const Vec3 & lhs, const Vec3 & rhs)
+{
+  return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
+}
+
+double norm(const Vec3 & value)
+{
+  return std::sqrt(dot(value, value));
+}
+
+bool finite(const Vec3 & value)
+{
+  return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
+bool normalize(const Vec3 & value, Vec3 & unit, double minimum_norm)
+{
+  const double length = norm(value);
+  if (!finite(value) || !std::isfinite(length) || length <= minimum_norm) {
+    unit = {};
+    return false;
+  }
+  unit = value * (1.0 / length);
+  return finite(unit);
+}
+
+bool project_force(const Vec3 & force, const Vec3 & direction, ForceMetrics & result)
+{
+  Vec3 unit;
+  if (!finite(force) || !normalize(direction, unit) || std::abs(norm(direction) - 1.0) > 1e-6) {
+    result = {};
+    return false;
+  }
+  // The KWR75D field reports the direction in which the flange load acts.
+  // On this FR5 setup that is also the positive direction that increases
+  // belt tension, so the axial projection is positive dot(force, unit).
+  result.actual_force_n = std::max(0.0, dot(force, unit));
+  result.lateral_force_vector = force - result.actual_force_n * unit;
+  result.lateral_force_n = norm(result.lateral_force_vector);
+  return finite(result.lateral_force_vector) && std::isfinite(result.lateral_force_n);
+}
+
+double next_force_command_target(
+  double current_target_n, double requested_target_n, double dt_s,
+  double maximum_increase_rate_nps, double minimum_increase_rate_nps,
+  double slowdown_window_n)
+{
+  if (!std::isfinite(current_target_n) || !std::isfinite(requested_target_n) ||
+    !std::isfinite(dt_s) || dt_s <= 0.0 ||
+    !std::isfinite(maximum_increase_rate_nps) || maximum_increase_rate_nps <= 0.0 ||
+    !std::isfinite(minimum_increase_rate_nps) || minimum_increase_rate_nps <= 0.0 ||
+    minimum_increase_rate_nps > maximum_increase_rate_nps ||
+    !std::isfinite(slowdown_window_n) || slowdown_window_n <= 0.0)
+  {
+    return requested_target_n;
+  }
+  // A lower requested force must take effect immediately. Ramping downward
+  // leaves the old, higher setpoint active and therefore makes the robot keep
+  // pulling while the operator has explicitly requested unloading.
+  if (requested_target_n <= current_target_n) {return requested_target_n;}
+
+  const double remaining_n = requested_target_n - current_target_n;
+  const double blend = std::clamp(remaining_n / slowdown_window_n, 0.0, 1.0);
+  const double rate_nps = minimum_increase_rate_nps +
+    blend * (maximum_increase_rate_nps - minimum_increase_rate_nps);
+  return std::min(requested_target_n, current_target_n + rate_nps * dt_s);
+}
+
+FirstOrderLowPass::FirstOrderLowPass(double cutoff_hz)
+: cutoff_hz_(cutoff_hz)
+{
+  set_cutoff(cutoff_hz);
+}
+
+void FirstOrderLowPass::set_cutoff(double cutoff_hz)
+{
+  if (!std::isfinite(cutoff_hz) || cutoff_hz <= 0.0) {
+    cutoff_hz_ = 5.0;
+  } else {
+    cutoff_hz_ = cutoff_hz;
+  }
+}
+
+void FirstOrderLowPass::reset()
+{
+  initialized_ = false;
+  value_ = {};
+}
+
+Vec3 FirstOrderLowPass::update(const Vec3 & sample, double dt_s)
+{
+  if (!finite(sample) || !std::isfinite(dt_s) || dt_s <= 0.0) {
+    return value_;
+  }
+  if (!initialized_) {
+    value_ = sample;
+    initialized_ = true;
+    return value_;
+  }
+  const double alpha = 1.0 - std::exp(-2.0 * kPi * cutoff_hz_ * dt_s);
+  value_ = value_ + (sample - value_) * std::clamp(alpha, 0.0, 1.0);
+  return value_;
+}
+
+OneDimensionalAdmittance::OneDimensionalAdmittance(
+  double virtual_mass,
+  double virtual_damping,
+  double deadband_n,
+  double max_speed_mps,
+  double max_acceleration_mps2,
+  double integral_gain_s_inv,
+  double integral_limit_n)
+: mass_(virtual_mass), damping_(virtual_damping), deadband_n_(deadband_n),
+  max_speed_mps_(max_speed_mps), max_acceleration_mps2_(max_acceleration_mps2),
+  integral_gain_s_inv_(integral_gain_s_inv), integral_limit_n_(integral_limit_n)
+{
+  if (!std::isfinite(mass_) || mass_ <= 0.0) {mass_ = 10.0;}
+  if (!std::isfinite(damping_) || damping_ < 0.0) {damping_ = 80.0;}
+  if (!std::isfinite(deadband_n_) || deadband_n_ < 0.0) {deadband_n_ = 0.5;}
+  if (!std::isfinite(max_speed_mps_) || max_speed_mps_ <= 0.0) {max_speed_mps_ = 0.005;}
+  if (!std::isfinite(max_acceleration_mps2_) || max_acceleration_mps2_ <= 0.0) {
+    max_acceleration_mps2_ = 0.02;
+  }
+  if (!std::isfinite(integral_gain_s_inv_) || integral_gain_s_inv_ < 0.0) {
+    integral_gain_s_inv_ = 0.25;
+  }
+  if (!std::isfinite(integral_limit_n_) || integral_limit_n_ < 0.0) {
+    integral_limit_n_ = 3.0;
+  }
+}
+
+void OneDimensionalAdmittance::reset()
+{
+  integral_state_n_s_ = 0.0;
+  velocity_mps_ = 0.0;
+}
+
+double OneDimensionalAdmittance::update(double target_force_n, double actual_force_n, double dt_s)
+{
+  if (!std::isfinite(target_force_n) || !std::isfinite(actual_force_n) ||
+    !std::isfinite(dt_s) || dt_s <= 0.0)
+  {
+    reset();
+    return 0.0;
+  }
+  const double raw_error = target_force_n - actual_force_n;
+  // Use a continuous soft deadband. Inside the tolerance the desired force
+  // term becomes zero and damping decelerates the command naturally instead
+  // of switching velocity abruptly between a finite value and zero.
+  const double error = std::copysign(
+    std::max(0.0, std::abs(raw_error) - deadband_n_), raw_error);
+  if (std::abs(error) <= 1e-12) {
+    integral_state_n_s_ *= std::exp(-4.0 * dt_s);
+  }
+  // On reversal, remove only accumulated bias. Physical/virtual momentum is
+  // decelerated through the acceleration limit, avoiding a palpable notch.
+  if (error * velocity_mps_ < 0.0) {
+    integral_state_n_s_ = 0.0;
+  }
+  const bool saturated_positive = velocity_mps_ >= max_speed_mps_ && error > 0.0;
+  const bool saturated_negative = velocity_mps_ <= -max_speed_mps_ && error < 0.0;
+  if (!saturated_positive && !saturated_negative) {
+    integral_state_n_s_ += error * dt_s;
+  }
+  const double integral_correction = std::clamp(
+    integral_gain_s_inv_ * integral_state_n_s_, -integral_limit_n_, integral_limit_n_);
+  double acceleration = (error + integral_correction - damping_ * velocity_mps_) / mass_;
+  acceleration = std::clamp(acceleration, -max_acceleration_mps2_, max_acceleration_mps2_);
+  velocity_mps_ = std::clamp(
+    velocity_mps_ + acceleration * dt_s, -max_speed_mps_, max_speed_mps_);
+  return velocity_mps_;
+}
+
+PositionTractionController::PositionTractionController(const PositionControlConfig & config)
+: config_(config), estimated_stiffness_n_per_m_(config.initial_stiffness_n_per_m)
+{
+  const PositionControlConfig defaults;
+  if (!std::isfinite(config_.tolerance_n) || config_.tolerance_n <= 0.0) {
+    config_.tolerance_n = defaults.tolerance_n;
+  }
+  if (!std::isfinite(config_.maximum_speed_mps) || config_.maximum_speed_mps <= 0.0) {
+    config_.maximum_speed_mps = defaults.maximum_speed_mps;
+  }
+  if (!std::isfinite(config_.far_gain_mps_per_n) || config_.far_gain_mps_per_n <= 0.0) {
+    config_.far_gain_mps_per_n = defaults.far_gain_mps_per_n;
+  }
+  if (!std::isfinite(config_.near_gain_mps_per_n) || config_.near_gain_mps_per_n <= 0.0 ||
+    config_.near_gain_mps_per_n > config_.far_gain_mps_per_n)
+  {
+    config_.near_gain_mps_per_n = defaults.near_gain_mps_per_n;
+  }
+  if (!std::isfinite(config_.near_window_n) || config_.near_window_n <= config_.tolerance_n) {
+    config_.near_window_n = defaults.near_window_n;
+  }
+  if (!std::isfinite(config_.prediction_horizon_s) || config_.prediction_horizon_s < 0.0) {
+    config_.prediction_horizon_s = defaults.prediction_horizon_s;
+  }
+  if (!std::isfinite(config_.prediction_limit_n) || config_.prediction_limit_n <= 0.0) {
+    config_.prediction_limit_n = defaults.prediction_limit_n;
+  }
+  if (!std::isfinite(config_.force_rate_cutoff_hz) || config_.force_rate_cutoff_hz <= 0.0) {
+    config_.force_rate_cutoff_hz = defaults.force_rate_cutoff_hz;
+  }
+  if (!std::isfinite(config_.maximum_acceleration_mps2) ||
+    config_.maximum_acceleration_mps2 <= 0.0)
+  {
+    config_.maximum_acceleration_mps2 = defaults.maximum_acceleration_mps2;
+  }
+  if (!std::isfinite(config_.maximum_deceleration_mps2) ||
+    config_.maximum_deceleration_mps2 < config_.maximum_acceleration_mps2)
+  {
+    config_.maximum_deceleration_mps2 = defaults.maximum_deceleration_mps2;
+  }
+  if (!std::isfinite(config_.settling_speed_mps) || config_.settling_speed_mps <= 0.0) {
+    config_.settling_speed_mps = defaults.settling_speed_mps;
+  }
+  if (!std::isfinite(config_.minimum_stiffness_n_per_m) ||
+    config_.minimum_stiffness_n_per_m <= 0.0)
+  {
+    config_.minimum_stiffness_n_per_m = defaults.minimum_stiffness_n_per_m;
+  }
+  if (!std::isfinite(config_.maximum_stiffness_n_per_m) ||
+    config_.maximum_stiffness_n_per_m <= config_.minimum_stiffness_n_per_m)
+  {
+    config_.maximum_stiffness_n_per_m = defaults.maximum_stiffness_n_per_m;
+  }
+  if (!std::isfinite(config_.initial_stiffness_n_per_m)) {
+    config_.initial_stiffness_n_per_m = defaults.initial_stiffness_n_per_m;
+  }
+  config_.initial_stiffness_n_per_m = std::clamp(
+    config_.initial_stiffness_n_per_m, config_.minimum_stiffness_n_per_m,
+    config_.maximum_stiffness_n_per_m);
+  if (!std::isfinite(config_.stiffness_time_constant_s) ||
+    config_.stiffness_time_constant_s <= 0.0)
+  {
+    config_.stiffness_time_constant_s = defaults.stiffness_time_constant_s;
+  }
+  estimated_stiffness_n_per_m_ = config_.initial_stiffness_n_per_m;
+}
+
+void PositionTractionController::reset()
+{
+  initialized_ = false;
+  previous_force_n_ = 0.0;
+  force_rate_nps_ = 0.0;
+  estimated_stiffness_n_per_m_ = config_.initial_stiffness_n_per_m;
+  velocity_mps_ = 0.0;
+}
+
+double PositionTractionController::braking_speed_limit(double force_margin_n) const
+{
+  if (!std::isfinite(force_margin_n) || force_margin_n <= 0.0) {return 0.0;}
+  const double travel_margin_m = force_margin_n / estimated_stiffness_n_per_m_;
+  const double reaction_delay_s = config_.prediction_horizon_s;
+  const double acceleration = config_.maximum_deceleration_mps2;
+  const double discriminant = reaction_delay_s * reaction_delay_s +
+    2.0 * travel_margin_m / acceleration;
+  return std::clamp(
+    acceleration * (std::sqrt(std::max(0.0, discriminant)) - reaction_delay_s),
+    0.0, config_.maximum_speed_mps);
+}
+
+PositionControlResult PositionTractionController::update(
+  double target_force_n, double actual_force_n, double dt_s)
+{
+  PositionControlResult result;
+  if (!std::isfinite(target_force_n) || target_force_n < 0.0 ||
+    !std::isfinite(actual_force_n) || actual_force_n < 0.0 ||
+    !std::isfinite(dt_s) || dt_s <= 0.0 || dt_s > 0.25)
+  {
+    reset();
+    return result;
+  }
+  if (!initialized_) {
+    initialized_ = true;
+    previous_force_n_ = actual_force_n;
+    result.predicted_force_n = actual_force_n;
+    result.estimated_stiffness_n_per_m = estimated_stiffness_n_per_m_;
+    result.valid = true;
+    return result;
+  }
+
+  const double raw_force_rate_nps = std::clamp(
+    (actual_force_n - previous_force_n_) / dt_s, -100.0, 100.0);
+  previous_force_n_ = actual_force_n;
+  const double rate_alpha = 1.0 - std::exp(-2.0 * kPi * config_.force_rate_cutoff_hz * dt_s);
+  force_rate_nps_ += std::clamp(rate_alpha, 0.0, 1.0) *
+    (raw_force_rate_nps - force_rate_nps_);
+
+  if (std::abs(velocity_mps_) >= 0.001 && force_rate_nps_ * velocity_mps_ > 0.0) {
+    const double stiffness_sample = std::abs(force_rate_nps_ / velocity_mps_);
+    if (std::isfinite(stiffness_sample)) {
+      const double bounded_sample = std::clamp(
+        stiffness_sample, config_.minimum_stiffness_n_per_m,
+        config_.maximum_stiffness_n_per_m);
+      const double stiffness_alpha = 1.0 - std::exp(-dt_s / config_.stiffness_time_constant_s);
+      estimated_stiffness_n_per_m_ += stiffness_alpha *
+        (bounded_sample - estimated_stiffness_n_per_m_);
+    }
+  }
+
+  const double prediction_delta_n = std::clamp(
+    force_rate_nps_ * config_.prediction_horizon_s,
+    -config_.prediction_limit_n, config_.prediction_limit_n);
+  const double predicted_force_n = actual_force_n + prediction_delta_n;
+  const double actual_error_n = target_force_n - actual_force_n;
+  const double predicted_error_n = target_force_n - predicted_force_n;
+  const double absolute_error_n = std::abs(actual_error_n);
+  double desired_velocity_mps = 0.0;
+
+  if (absolute_error_n <= config_.tolerance_n) {
+    // Being inside the force band is not sufficient while the robot still
+    // has appreciable residual motion. Keep braking and only expose SETTLING
+    // after velocity is genuinely quiet. The manager independently requires
+    // the force to remain inside this band for 0.5 s, so short force-rate
+    // spikes cannot falsely complete the operation or restart motion inside
+    // the accepted band.
+    result.phase = std::abs(velocity_mps_) <= config_.settling_speed_mps ?
+      PositionControlPhase::SETTLING : PositionControlPhase::BRAKING;
+  } else {
+    const double blend = std::clamp(
+      (absolute_error_n - config_.tolerance_n) /
+      (config_.near_window_n - config_.tolerance_n), 0.0, 1.0);
+    const double gain = config_.near_gain_mps_per_n +
+      blend * (config_.far_gain_mps_per_n - config_.near_gain_mps_per_n);
+    double control_error_n = predicted_error_n;
+    if (actual_error_n > config_.tolerance_n && predicted_error_n <= 0.0) {
+      control_error_n = 0.0;
+      result.phase = PositionControlPhase::BRAKING;
+    } else if (actual_error_n < -config_.tolerance_n && predicted_error_n >= 0.0) {
+      control_error_n = 0.0;
+      result.phase = PositionControlPhase::BRAKING;
+    } else if (actual_error_n < -config_.tolerance_n) {
+      result.phase = PositionControlPhase::CORRECTING;
+    } else if (absolute_error_n <= config_.near_window_n) {
+      result.phase = PositionControlPhase::FINE_ADJUST;
+    } else {
+      result.phase = PositionControlPhase::APPROACH;
+    }
+    desired_velocity_mps = gain * control_error_n;
+    result.raw_velocity_mps = desired_velocity_mps;
+    // Brake toward the target centre rather than the outer tolerance edge.
+    // Otherwise a noiseless plant can stop at target-tolerance and never
+    // enter the dwell timer because of floating-point or sensor variation.
+    const double force_margin_n = absolute_error_n;
+    const double braking_limit_mps = braking_speed_limit(force_margin_n);
+    const double magnitude_limit_mps = std::min(config_.maximum_speed_mps, braking_limit_mps);
+    if (std::abs(desired_velocity_mps) > magnitude_limit_mps) {
+      desired_velocity_mps = std::copysign(magnitude_limit_mps, desired_velocity_mps);
+      result.speed_limited = true;
+      if (result.phase == PositionControlPhase::APPROACH) {
+        result.phase = PositionControlPhase::BRAKING;
+      }
+    }
+  }
+
+  if (desired_velocity_mps * velocity_mps_ < 0.0) {
+    desired_velocity_mps = 0.0;
+    result.phase = PositionControlPhase::BRAKING;
+  }
+  const bool decelerating = std::abs(desired_velocity_mps) < std::abs(velocity_mps_) ||
+    desired_velocity_mps * velocity_mps_ < 0.0;
+  const double acceleration_limit = decelerating ?
+    config_.maximum_deceleration_mps2 : config_.maximum_acceleration_mps2;
+  const double maximum_velocity_step = acceleration_limit * dt_s;
+  const double requested_step = desired_velocity_mps - velocity_mps_;
+  const double applied_step = std::clamp(
+    requested_step, -maximum_velocity_step, maximum_velocity_step);
+  result.acceleration_limited = std::abs(applied_step - requested_step) > 1e-12;
+  velocity_mps_ += applied_step;
+  if (std::abs(desired_velocity_mps) <= 1e-12 &&
+    std::abs(velocity_mps_) <= maximum_velocity_step)
+  {
+    velocity_mps_ = 0.0;
+  }
+
+  result.velocity_mps = velocity_mps_;
+  result.force_rate_nps = force_rate_nps_;
+  result.predicted_force_n = predicted_force_n;
+  result.estimated_stiffness_n_per_m = estimated_stiffness_n_per_m_;
+  result.valid = std::isfinite(result.velocity_mps) && std::isfinite(result.force_rate_nps) &&
+    std::isfinite(result.predicted_force_n) &&
+    std::isfinite(result.estimated_stiffness_n_per_m);
+  if (!result.valid) {reset();}
+  return result;
+}
+
+namespace
+{
+
+double median(std::vector<double> values)
+{
+  if (values.empty()) {return std::numeric_limits<double>::quiet_NaN();}
+  const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2);
+  std::nth_element(values.begin(), middle, values.end());
+  double result = *middle;
+  if (values.size() % 2 == 0) {
+    const auto lower = std::max_element(values.begin(), middle);
+    result = (*lower + *middle) * 0.5;
+  }
+  return result;
+}
+
+double percentile(std::vector<double> values, double fraction)
+{
+  if (values.empty()) {return std::numeric_limits<double>::quiet_NaN();}
+  std::sort(values.begin(), values.end());
+  const double index = std::clamp(fraction, 0.0, 1.0) * (values.size() - 1);
+  const auto lower = static_cast<size_t>(std::floor(index));
+  const auto upper = static_cast<size_t>(std::ceil(index));
+  const double weight = index - lower;
+  return values[lower] * (1.0 - weight) + values[upper] * weight;
+}
+
+}  // namespace
+
+CalibrationResult robust_calibrate_direction(
+  const std::vector<Vec3> & samples,
+  std::size_t minimum_samples,
+  double maximum_angle_p95_deg)
+{
+  CalibrationResult result;
+  if (samples.size() < minimum_samples || minimum_samples == 0) {
+    result.reason = "CALIBRATION_TOO_FEW_SAMPLES";
+    return result;
+  }
+  // Direction locking must be invariant to tension magnitude. During the
+  // three-second hold the rope can relax by several newtons while still
+  // pointing in one perfectly usable direction. Comparing the raw vectors
+  // made that ordinary magnitude drift look like an outlier cloud.
+  std::vector<Vec3> units;
+  std::vector<double> xs, ys, zs;
+  units.reserve(samples.size());
+  xs.reserve(samples.size()); ys.reserve(samples.size()); zs.reserve(samples.size());
+  for (const auto & sample : samples) {
+    if (!finite(sample)) {
+      result.reason = "CALIBRATION_NONFINITE_SAMPLE";
+      return result;
+    }
+    Vec3 unit;
+    if (!normalize(sample, unit)) {
+      result.reason = "CALIBRATION_SAMPLE_FORCE_INVALID";
+      return result;
+    }
+    units.push_back(unit);
+    xs.push_back(unit.x); ys.push_back(unit.y); zs.push_back(unit.z);
+  }
+  Vec3 center;
+  if (!normalize({median(xs), median(ys), median(zs)}, center)) {
+    result.reason = "CALIBRATION_MEAN_FORCE_INVALID";
+    return result;
+  }
+  std::vector<double> residuals;
+  residuals.reserve(samples.size());
+  for (const auto & unit : units) {
+    residuals.push_back(std::acos(std::clamp(dot(unit, center), -1.0, 1.0)));
+  }
+  const double residual_center = median(residuals);
+  std::vector<double> residual_deviations;
+  residual_deviations.reserve(residuals.size());
+  for (const double residual : residuals) {
+    residual_deviations.push_back(std::abs(residual - residual_center));
+  }
+  const double mad = median(residual_deviations);
+  constexpr double kMinimumAngularGate = 2.0 * kPi / 180.0;
+  const double threshold = std::max(
+    kMinimumAngularGate, residual_center + 4.0 * 1.4826 * mad);
+  std::vector<Vec3> retained;
+  retained.reserve(samples.size());
+  for (size_t i = 0; i < samples.size(); ++i) {
+    if (residuals[i] <= threshold) {retained.push_back(units[i]);}
+  }
+  result.retained_fraction = static_cast<double>(retained.size()) / samples.size();
+  if (retained.size() < minimum_samples || result.retained_fraction < 0.80) {
+    result.reason = "CALIBRATION_RETAINED_FRACTION_LOW";
+    return result;
+  }
+  Vec3 mean{};
+  for (const auto & sample : retained) {
+    mean = mean + sample;
+  }
+  mean = mean * (1.0 / retained.size());
+  Vec3 mean_unit;
+  if (!normalize(mean, mean_unit)) {
+    result.reason = "CALIBRATION_MEAN_FORCE_INVALID";
+    return result;
+  }
+  std::vector<double> angles;
+  angles.reserve(retained.size());
+  for (const auto & sample : retained) {
+    Vec3 sample_unit;
+    if (!normalize(sample, sample_unit)) {
+      result.reason = "CALIBRATION_SAMPLE_FORCE_INVALID";
+      return result;
+    }
+    const double cosine = std::clamp(dot(sample_unit, mean_unit), -1.0, 1.0);
+    angles.push_back(std::acos(cosine) * 180.0 / kPi);
+  }
+  result.angle_p95_deg = percentile(angles, 0.95);
+  if (!std::isfinite(result.angle_p95_deg) || result.angle_p95_deg > maximum_angle_p95_deg) {
+    result.reason = "CALIBRATION_DIRECTION_VARIATION";
+    return result;
+  }
+  result.direction = mean_unit;
+  result.success = true;
+  result.reason = "OK";
+  return result;
+}
+
+}  // namespace fr_traction

@@ -1,0 +1,58 @@
+#ifndef FR_TRACTION__TRACTION_SAFETY_HPP_
+#define FR_TRACTION__TRACTION_SAFETY_HPP_
+
+#include <string>
+
+#include "fr_traction/traction_math.hpp"
+
+namespace fr_traction
+{
+
+enum class SafetyFault : unsigned char
+{
+  NONE = 0,
+  WRENCH_INVALID,
+  WRENCH_TIMEOUT,
+  EE_STATE_TIMEOUT,
+  ROS2_CONTROL_ERROR,
+  HARD_OVERFORCE,
+  OVERFORCE,
+  LATERAL_FORCE,
+  UI_HEARTBEAT_TIMEOUT
+};
+
+struct SafetyLimits
+{
+  double hard_overforce_n = 150.0;
+  double hard_overforce_confirm_s = 0.20;
+};
+
+struct SafetySample
+{
+  bool wrench_valid = false;
+  bool wrench_fresh = false;
+  bool ee_fresh = false;
+  bool controller_healthy = false;
+  bool ui_heartbeat_fresh = false;
+  Vec3 raw_wrench;
+  ForceMetrics metrics;
+};
+
+class SafetyMonitor
+{
+public:
+  explicit SafetyMonitor(const SafetyLimits & limits = {});
+
+  void set_limits(const SafetyLimits & limits);
+  void reset();
+  SafetyFault update(const SafetySample & sample, double now_s, bool require_ui_heartbeat);
+  static const char * code(SafetyFault fault);
+
+private:
+  SafetyLimits limits_;
+  double hard_overforce_started_at_s_ = -1.0;
+};
+
+}  // namespace fr_traction
+
+#endif  // FR_TRACTION__TRACTION_SAFETY_HPP_

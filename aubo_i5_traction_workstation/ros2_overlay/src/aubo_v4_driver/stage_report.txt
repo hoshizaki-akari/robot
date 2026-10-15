@@ -1,0 +1,25 @@
+===== AUBO V4 STATE ADAPTER =====
+
+scope:
+read-only AUBOPE V4 waypoint/diagnosis state plus explicit fast-stop boundary
+
+interfaces:
+/joint_states
+/controller_manager/ee_state
+/controller_manager/healthy
+/aubo_i5/driver_identity = AUBO_I5_V4 (transient-local, 1 Hz)
+/diagnostics
+~/hardware_stop (std_srvs/srv/Trigger)
+
+safety:
+single ServiceInterface owner; environment-only login; no motion/power/fault-clear
+automatic recovery disabled; fast-stop result checked and health latches false
+
+offline_validation:
+colcon build = PASS
+state_validation_gtest = PASS
+SDK shared library = external audit bundle
+runtime libprotobuf.so.9 = MISSING
+
+status:
+READ_ONLY_RUNTIME_BLOCKED_BY_VENDOR_DEPENDENCY_AND_HARDWARE_CHECKPOINT

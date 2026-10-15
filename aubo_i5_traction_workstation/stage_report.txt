@@ -1,0 +1,38 @@
+===== AUBO I5 TRACTION WORKSTATION PORT / OFFLINE STAGE =====
+
+source:
+fr5_traction_workstation at 881117c; source tree untouched
+
+isolated_target:
+/home/zhj/projects/aubo_i5_traction_ws/aubo_i5_traction_workstation
+
+implemented:
+AUBO-only web identity guard and real-joint readout
+FR5-only launch and runtime packages excluded
+KWR75D COM4 frame protocol decoded and converted to SI
+uncalibrated sensor-to-base wrench bridge fails closed
+AUBO V4 read-only waypoint/diagnosis adapter and fast-stop request
+official AUBO i5 visualization-only URDF and fourteen meshes
+read-only opt-in launch; no motion controller starts
+
+automatic_verification:
+4 ROS packages build = PASS
+ROS tests = 145 tests, 0 errors, 0 failures, 26 skipped
+web/Python tests = 19 passed
+check_urdf = PASS
+launch arguments parse = PASS
+
+hardware_facts:
+Windows COM4 yielded valid KWR75D 28-byte frames at 460800 8N1
+Windows 192.168.1.10/24 pinged AUBO 192.168.1.40 previously
+no controller login, robot motion, or ROS sensor run in this stage
+
+not_verified:
+external V4 SDK runtime libprotobuf.so.9 is absent
+V4 high-rate Cartesian servo suitable for traction is unproven
+sensor mount transform, flange/TCP semantics, force direction uncalibrated
+return-zero, automatic emergency recovery, and assisted drag unsupported
+position and constant-force traction cannot be released for hardware
+
+status:
+WAITING_CHECKPOINT_AUBO_READ_ONLY_HARDWARE_AND_VENDOR_RUNTIME

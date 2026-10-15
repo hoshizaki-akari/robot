@@ -1,0 +1,21 @@
+===== AUBO I5 DESCRIPTION =====
+
+scope:
+visualization-only ROS 2 ament_cmake description package
+
+source:
+official AuboRobot/aubo_robot Noetic archive (see PROVENANCE.md)
+
+assets:
+URDF plus 7 visual DAE meshes and 7 collision STL meshes
+
+model_changes:
+package URI prefix only; source velocity=0 and effort=0 values preserved
+
+offline_validation:
+colcon build = PASS
+check_urdf = PASS
+archive_sha256 = 944fbd961adf50b4a0357d70e0e17976022572bcd11357a4c0c2a03626cb5af5
+
+status:
+VISUALIZATION_ONLY_NOT_HARDWARE_CALIBRATED

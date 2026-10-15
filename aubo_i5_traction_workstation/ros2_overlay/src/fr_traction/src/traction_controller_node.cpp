@@ -1,0 +1,575 @@
+#include "fr_traction/traction_controller_core.hpp"
+
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <string>
+
+#include "fr_traction/msg/traction_command.hpp"
+#include "fr_traction/msg/position_control_diagnostics.hpp"
+#include "fr_traction/msg/end_effector_state.hpp"
+#include "geometry_msgs/msg/twist.hpp"
+#include "geometry_msgs/msg/wrench_stamped.hpp"
+#include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/float64.hpp"
+
+namespace fr_traction
+{
+
+class TractionControllerNode final : public rclcpp::Node
+{
+public:
+  TractionControllerNode()
+  : Node("traction_controller"),
+    force_filter_(5.0),
+    drag_force_filter_(12.0),
+    core_(10.0, 80.0, 0.15, 0.020, 0.02)
+  {
+    control_rate_hz_ = declare_parameter("control_rate_hz", 100.0);
+    force_filter_cutoff_hz_ = declare_parameter("force_filter_cutoff_hz", 5.0);
+    drag_force_filter_cutoff_hz_ = declare_parameter("drag_force_filter_cutoff_hz", 12.0);
+    integral_gain_s_inv_ = declare_parameter("integral_gain_s_inv", 0.25);
+    integral_limit_n_ = declare_parameter("integral_limit_n", 3.0);
+    virtual_mass_ = declare_parameter("virtual_mass", 10.0);
+    virtual_damping_ = declare_parameter("virtual_damping", 80.0);
+    force_deadband_n_ = declare_parameter("force_deadband_n", 0.15);
+    max_speed_mps_ = declare_parameter("traction_max_speed_mps", 0.020);
+    max_acceleration_mps2_ = declare_parameter("traction_max_acc_mps2", 0.02);
+    drag_start_force_n_ = declare_parameter("drag_start_force_n", 1.0);
+    drag_release_force_n_ = declare_parameter("drag_release_force_n", 0.6);
+    drag_release_confirm_s_ = declare_parameter("drag_release_confirm_s", 0.15);
+    drag_gain_mps_per_n_ = declare_parameter("drag_gain_mps_per_n", 0.00625);
+    drag_max_speed_mps_ = declare_parameter("drag_max_speed_mps", 0.050);
+    drag_max_acceleration_mps2_ = declare_parameter(
+      "drag_max_acceleration_mps2", 0.60);
+    drag_max_jerk_mps3_ = declare_parameter("drag_max_jerk_mps3", 12.0);
+    drag_sign_x_ = declare_parameter("drag_sign_x", 1.0);
+    drag_sign_y_ = declare_parameter("drag_sign_y", 1.0);
+    drag_sign_z_ = declare_parameter("drag_sign_z", 1.0);
+    traction_sign_x_ = declare_parameter("traction_sign_x", 1.0);
+    traction_sign_y_ = declare_parameter("traction_sign_y", 1.0);
+    traction_sign_z_ = declare_parameter("traction_sign_z", 1.0);
+    position_tolerance_n_ = declare_parameter("position_tolerance_n", 1.0);
+    position_far_gain_mps_per_n_ = declare_parameter(
+      "position_far_gain_mps_per_n", 0.0060);
+    position_near_gain_mps_per_n_ = declare_parameter(
+      "position_near_gain_mps_per_n", 0.0045);
+    position_near_window_n_ = declare_parameter("position_near_window_n", 2.0);
+    position_prediction_horizon_s_ = declare_parameter(
+      "position_prediction_horizon_s", 0.15);
+    position_prediction_limit_n_ = declare_parameter("position_prediction_limit_n", 2.0);
+    position_force_rate_cutoff_hz_ = declare_parameter(
+      "position_force_rate_cutoff_hz", 2.0);
+    position_max_acceleration_mps2_ = declare_parameter(
+      "position_max_acceleration_mps2", 0.080);
+    position_max_deceleration_mps2_ = declare_parameter(
+      "position_max_deceleration_mps2", 0.160);
+    position_settling_speed_mps_ = declare_parameter(
+      "position_settling_speed_mps", 0.0005);
+    position_initial_stiffness_n_per_m_ = declare_parameter(
+      "position_initial_stiffness_n_per_m", 300.0);
+    position_min_stiffness_n_per_m_ = declare_parameter(
+      "position_min_stiffness_n_per_m", 50.0);
+    position_max_stiffness_n_per_m_ = declare_parameter(
+      "position_max_stiffness_n_per_m", 1500.0);
+    position_stiffness_time_constant_s_ = declare_parameter(
+      "position_stiffness_time_constant_s", 1.0);
+    smoothing_max_acceleration_mps2_ = declare_parameter(
+      "smoothing_max_acceleration_mps2", 0.30);
+    smoothing_max_jerk_mps3_ = declare_parameter("smoothing_max_jerk_mps3", 3.0);
+    direction_correction_max_speed_mps_ = declare_parameter(
+      "direction_correction_max_speed_mps", 0.020);
+    combined_max_speed_mps_ = declare_parameter("combined_max_speed_mps", 0.025);
+    pretension_speed_mps_ = declare_parameter("pretension_speed_mps", 0.002);
+    wrench_timeout_s_ = declare_parameter("wrench_timeout_s", 0.10);
+    command_timeout_s_ = declare_parameter("command_timeout_s", 0.10);
+    wrench_topic_ = declare_parameter(
+      "wrench_topic", std::string("/force_torque_sensor_broadcaster/wrench"));
+    command_topic_ = declare_parameter("command_topic", std::string("/traction/command"));
+    cartesian_command_topic_ = declare_parameter(
+      "cartesian_command_topic", std::string("/cartesian_velocity_controller/command_cart_vel"));
+    velocity_command_topic_ = declare_parameter(
+      "velocity_command_topic", std::string("/traction/controller_velocity_cmd"));
+    velocity_vector_topic_ = declare_parameter(
+      "velocity_vector_topic", std::string("/traction/controller_velocity_vector"));
+    position_diagnostics_topic_ = declare_parameter(
+      "position_diagnostics_topic", std::string("/traction/position_control_diagnostics"));
+    ee_state_topic_ = declare_parameter(
+      "ee_state_topic", std::string("/controller_manager/ee_state"));
+
+    if (!std::isfinite(control_rate_hz_) || control_rate_hz_ <= 0.0 ||
+      !std::isfinite(force_filter_cutoff_hz_) || force_filter_cutoff_hz_ <= 0.0 ||
+      !std::isfinite(drag_force_filter_cutoff_hz_) || drag_force_filter_cutoff_hz_ <= 0.0 ||
+      !std::isfinite(wrench_timeout_s_) || wrench_timeout_s_ <= 0.0 ||
+      !std::isfinite(command_timeout_s_) || command_timeout_s_ <= 0.0 ||
+      !std::isfinite(pretension_speed_mps_) || pretension_speed_mps_ <= 0.0 ||
+      !std::isfinite(direction_correction_max_speed_mps_) ||
+      direction_correction_max_speed_mps_ <= 0.0 ||
+      !std::isfinite(combined_max_speed_mps_) || combined_max_speed_mps_ <= 0.0)
+    {
+      throw std::runtime_error("invalid traction controller timing parameters");
+    }
+    if (!std::isfinite(drag_sign_x_) || std::abs(std::abs(drag_sign_x_) - 1.0) > 1e-9 ||
+      !std::isfinite(drag_sign_y_) || std::abs(std::abs(drag_sign_y_) - 1.0) > 1e-9 ||
+      !std::isfinite(drag_sign_z_) || std::abs(std::abs(drag_sign_z_) - 1.0) > 1e-9)
+    {
+      throw std::runtime_error("drag_sign_x/y/z must be either -1.0 or 1.0");
+    }
+    if (!std::isfinite(traction_sign_x_) ||
+      std::abs(std::abs(traction_sign_x_) - 1.0) > 1e-9 ||
+      !std::isfinite(traction_sign_y_) ||
+      std::abs(std::abs(traction_sign_y_) - 1.0) > 1e-9 ||
+      !std::isfinite(traction_sign_z_) ||
+      std::abs(std::abs(traction_sign_z_) - 1.0) > 1e-9)
+    {
+      throw std::runtime_error("traction_sign_x/y/z must be either -1.0 or 1.0");
+    }
+
+    force_filter_.set_cutoff(force_filter_cutoff_hz_);
+    drag_force_filter_.set_cutoff(drag_force_filter_cutoff_hz_);
+    PositionControlConfig position_config;
+    position_config.tolerance_n = position_tolerance_n_;
+    position_config.maximum_speed_mps = max_speed_mps_;
+    position_config.far_gain_mps_per_n = position_far_gain_mps_per_n_;
+    position_config.near_gain_mps_per_n = position_near_gain_mps_per_n_;
+    position_config.near_window_n = position_near_window_n_;
+    position_config.prediction_horizon_s = position_prediction_horizon_s_;
+    position_config.prediction_limit_n = position_prediction_limit_n_;
+    position_config.force_rate_cutoff_hz = position_force_rate_cutoff_hz_;
+    position_config.maximum_acceleration_mps2 = position_max_acceleration_mps2_;
+    position_config.maximum_deceleration_mps2 = position_max_deceleration_mps2_;
+    position_config.settling_speed_mps = position_settling_speed_mps_;
+    position_config.initial_stiffness_n_per_m = position_initial_stiffness_n_per_m_;
+    position_config.minimum_stiffness_n_per_m = position_min_stiffness_n_per_m_;
+    position_config.maximum_stiffness_n_per_m = position_max_stiffness_n_per_m_;
+    position_config.stiffness_time_constant_s = position_stiffness_time_constant_s_;
+    core_ = TractionControllerCore(
+      virtual_mass_, virtual_damping_, force_deadband_n_, max_speed_mps_,
+      max_acceleration_mps2_, integral_gain_s_inv_, integral_limit_n_,
+      drag_start_force_n_, drag_release_force_n_, drag_release_confirm_s_,
+      drag_gain_mps_per_n_, drag_max_speed_mps_, smoothing_max_acceleration_mps2_,
+      smoothing_max_jerk_mps3_, drag_sign_x_, drag_sign_y_, drag_sign_z_, position_config,
+      drag_max_acceleration_mps2_, drag_max_jerk_mps3_);
+
+    command_subscription_ = create_subscription<msg::TractionCommand>(
+      command_topic_, rclcpp::QoS(10).reliable(),
+      [this](const msg::TractionCommand::SharedPtr message) {on_command(*message);});
+    wrench_subscription_ = create_subscription<geometry_msgs::msg::WrenchStamped>(
+      // The direct FR5 driver publishes this stream reliably. Match that
+      // QoS so the force loop does not silently lose a feedback burst.
+      wrench_topic_, rclcpp::QoS(10).reliable(),
+      [this](const geometry_msgs::msg::WrenchStamped::SharedPtr message) {on_wrench(*message);});
+    ee_state_subscription_ = create_subscription<fr_traction::msg::EndEffectorState>(
+      ee_state_topic_, rclcpp::QoS(10).reliable(),
+      [this](const fr_traction::msg::EndEffectorState::SharedPtr message) {on_ee_state(*message);});
+    twist_publisher_ = create_publisher<geometry_msgs::msg::Twist>(
+      cartesian_command_topic_, rclcpp::QoS(10).reliable());
+    velocity_publisher_ = create_publisher<std_msgs::msg::Float64>(
+      velocity_command_topic_, rclcpp::QoS(10).reliable());
+    velocity_vector_publisher_ = create_publisher<geometry_msgs::msg::Twist>(
+      velocity_vector_topic_, rclcpp::QoS(10).reliable());
+    position_diagnostics_publisher_ = create_publisher<msg::PositionControlDiagnostics>(
+      position_diagnostics_topic_, rclcpp::QoS(10).reliable());
+    health_publisher_ = create_publisher<std_msgs::msg::Bool>(
+      "~/healthy", rclcpp::QoS(1).transient_local().reliable());
+
+    const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(1.0 / control_rate_hz_));
+    timer_ = create_wall_timer(period, [this]() {control_tick();});
+    publish_health(true);
+    RCLCPP_INFO(
+      get_logger(), "One-dimensional traction controller ready at %.1f Hz.", control_rate_hz_);
+  }
+
+private:
+  static Vec3 vector_from_message(const geometry_msgs::msg::Vector3 & value)
+  {
+    return {value.x, value.y, value.z};
+  }
+
+  static Vec3 force_from_message(const geometry_msgs::msg::WrenchStamped & message)
+  {
+    return {message.wrench.force.x, message.wrench.force.y, message.wrench.force.z};
+  }
+
+  static bool rotate_base_to_tool(
+    const Vec3 & base_vector,
+    const geometry_msgs::msg::Quaternion & orientation,
+    Vec3 & tool_vector)
+  {
+    const double quaternion_norm = std::sqrt(
+      orientation.x * orientation.x + orientation.y * orientation.y +
+      orientation.z * orientation.z + orientation.w * orientation.w);
+    if (!std::isfinite(quaternion_norm) || quaternion_norm <= 1e-12) {
+      return false;
+    }
+    const double x = orientation.x / quaternion_norm;
+    const double y = orientation.y / quaternion_norm;
+    const double z = orientation.z / quaternion_norm;
+    const double w = orientation.w / quaternion_norm;
+    // The pose quaternion maps tool vectors into base_link. Its transpose
+    // maps the measured base_link wrench into tool coordinates.
+    tool_vector = {
+      (1.0 - 2.0 * (y * y + z * z)) * base_vector.x +
+      2.0 * (x * y + w * z) * base_vector.y +
+      2.0 * (x * z - w * y) * base_vector.z,
+      2.0 * (x * y - w * z) * base_vector.x +
+      (1.0 - 2.0 * (x * x + z * z)) * base_vector.y +
+      2.0 * (y * z + w * x) * base_vector.z,
+      2.0 * (x * z + w * y) * base_vector.x +
+      2.0 * (y * z - w * x) * base_vector.y +
+      (1.0 - 2.0 * (x * x + y * y)) * base_vector.z};
+    return finite(tool_vector);
+  }
+
+  static bool rotate_tool_to_base(
+    const Vec3 & tool_vector,
+    const geometry_msgs::msg::Quaternion & orientation,
+    Vec3 & base_vector)
+  {
+    const double quaternion_norm = std::sqrt(
+      orientation.x * orientation.x + orientation.y * orientation.y +
+      orientation.z * orientation.z + orientation.w * orientation.w);
+    if (!std::isfinite(quaternion_norm) || quaternion_norm <= 1e-12) {
+      return false;
+    }
+    const double x = orientation.x / quaternion_norm;
+    const double y = orientation.y / quaternion_norm;
+    const double z = orientation.z / quaternion_norm;
+    const double w = orientation.w / quaternion_norm;
+    base_vector = {
+      (1.0 - 2.0 * (y * y + z * z)) * tool_vector.x +
+      2.0 * (x * y - w * z) * tool_vector.y +
+      2.0 * (x * z + w * y) * tool_vector.z,
+      2.0 * (x * y + w * z) * tool_vector.x +
+      (1.0 - 2.0 * (x * x + z * z)) * tool_vector.y +
+      2.0 * (y * z - w * x) * tool_vector.z,
+      2.0 * (x * z - w * y) * tool_vector.x +
+      2.0 * (y * z + w * x) * tool_vector.y +
+      (1.0 - 2.0 * (x * x + y * y)) * tool_vector.z};
+    return finite(base_vector);
+  }
+
+  void on_command(const msg::TractionCommand & message)
+  {
+    if (message.mode == msg::TractionCommand::DRAG &&
+      command_.mode != msg::TractionCommand::DRAG)
+    {
+      drag_force_filter_.reset();
+    }
+    command_ = message;
+    last_command_at_ = now();
+    last_command_steady_at_ = std::chrono::steady_clock::now();
+    ++command_generation_;
+    command_valid_ = message.mode <= msg::TractionCommand::POSITIONING &&
+      message.direction_correction_mode <= msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE &&
+      std::isfinite(message.target_force_n) && message.target_force_n >= 0.0 &&
+      finite(vector_from_message(message.locked_direction_base)) &&
+      finite(vector_from_message(message.lateral_velocity_base));
+  }
+
+  void on_wrench(const geometry_msgs::msg::WrenchStamped & message)
+  {
+    latest_wrench_ = force_from_message(message);
+    last_wrench_at_ = now();
+    last_wrench_steady_at_ = std::chrono::steady_clock::now();
+    wrench_valid_ = message.header.frame_id == "base_link" && finite(latest_wrench_) &&
+      std::isfinite(message.wrench.torque.x) && std::isfinite(message.wrench.torque.y) &&
+      std::isfinite(message.wrench.torque.z);
+  }
+
+  void on_ee_state(const fr_traction::msg::EndEffectorState & message)
+  {
+    latest_ee_orientation_ = message.pose.orientation;
+    const double quaternion_norm = std::sqrt(
+      latest_ee_orientation_.x * latest_ee_orientation_.x +
+      latest_ee_orientation_.y * latest_ee_orientation_.y +
+      latest_ee_orientation_.z * latest_ee_orientation_.z +
+      latest_ee_orientation_.w * latest_ee_orientation_.w);
+    ee_orientation_valid_ = message.header.frame_id == "base_link" &&
+      std::isfinite(quaternion_norm) && quaternion_norm > 1e-12;
+  }
+
+  void publish_health(bool healthy)
+  {
+    if (health_publisher_) {
+      std_msgs::msg::Bool message;
+      message.data = healthy;
+      health_publisher_->publish(message);
+    }
+  }
+
+  void publish_output(const ControllerOutput & output)
+  {
+    geometry_msgs::msg::Twist twist;
+    twist.linear.x = output.linear_velocity.x;
+    twist.linear.y = output.linear_velocity.y;
+    twist.linear.z = output.linear_velocity.z;
+    // Angular velocity is intentionally always zero for this controller.
+    twist_publisher_->publish(twist);
+    velocity_vector_publisher_->publish(twist);
+    std_msgs::msg::Float64 scalar;
+    scalar.data = output.scalar_velocity_mps;
+    velocity_publisher_->publish(scalar);
+    msg::PositionControlDiagnostics diagnostics;
+    diagnostics.header.stamp = now();
+    diagnostics.header.frame_id = "base_link";
+    diagnostics.phase = static_cast<uint8_t>(output.position_control.phase);
+    diagnostics.force_rate_nps = output.position_control.force_rate_nps;
+    diagnostics.predicted_force_n = output.position_control.predicted_force_n;
+    diagnostics.estimated_stiffness_n_per_m =
+      output.position_control.estimated_stiffness_n_per_m;
+    diagnostics.raw_velocity_mps = output.position_control.raw_velocity_mps;
+    diagnostics.limited_velocity_mps = output.position_control.velocity_mps;
+    diagnostics.speed_limited = output.position_control.speed_limited;
+    diagnostics.acceleration_limited = output.position_control.acceleration_limited;
+    position_diagnostics_publisher_->publish(diagnostics);
+  }
+
+  void publish_zero()
+  {
+    publish_output(ControllerOutput{});
+  }
+
+  void control_tick()
+  {
+    const rclcpp::Time current_time = now();
+    const auto steady_time = std::chrono::steady_clock::now();
+    double dt_s = 1.0 / control_rate_hz_;
+    if (last_control_steady_at_.time_since_epoch().count() != 0) {
+      dt_s = std::chrono::duration<double>(steady_time - last_control_steady_at_).count();
+    }
+    last_control_steady_at_ = steady_time;
+    if (!std::isfinite(dt_s) || dt_s <= 0.0 || dt_s > 0.25) {
+      RCLCPP_WARN(
+        get_logger(), "Control cycle interval invalid or too long: %.3f s; output disabled.",
+        dt_s);
+      publish_zero();
+      core_.reset();
+      // A long wall-timer gap is handled as a safe pause. The direct driver
+      // watchdog receives zero velocity, and the next fresh cycle may resume.
+      // Hardware/input faults are still reported by the freshness checks.
+      publish_health(true);
+      return;
+    }
+
+    const auto steady_now = std::chrono::steady_clock::now();
+    const double command_age = last_command_steady_at_.time_since_epoch().count() == 0 ?
+      std::numeric_limits<double>::infinity() :
+      std::chrono::duration<double>(steady_now - last_command_steady_at_).count();
+    const double wrench_age = last_wrench_steady_at_.time_since_epoch().count() == 0 ?
+      std::numeric_limits<double>::infinity() :
+      std::chrono::duration<double>(steady_now - last_wrench_steady_at_).count();
+    const bool command_fresh = command_valid_ && command_age >= 0.0 &&
+      command_age <= command_timeout_s_;
+    const bool wrench_fresh = wrench_valid_ && wrench_age >= 0.0 &&
+      wrench_age <= wrench_timeout_s_;
+    if (!command_fresh || !wrench_fresh) {
+      publish_zero();
+      core_.reset();
+      // A stale feedback interval is a safe one-cycle pause. Do not leave
+      // the controller permanently blocked after the stream recovers.
+      blocked_generation_ = command_generation_;
+      publish_health(true);
+      return;
+    }
+    if (blocked_generation_ == command_generation_) {
+      // Require one fresh, zero-output cycle after a feedback interruption,
+      // then resume the same command generation on the following cycle.
+      blocked_generation_ = 0;
+      publish_health(true);
+      return;
+    }
+
+    const auto mode = static_cast<ControlMode>(command_.mode);
+    const Vec3 filtered_wrench = mode == ControlMode::DRAGGING ?
+      drag_force_filter_.update(latest_wrench_, dt_s) :
+      force_filter_.update(latest_wrench_, dt_s);
+    Vec3 controller_wrench = filtered_wrench;
+    if (mode == ControlMode::DRAGGING) {
+      if (!ee_orientation_valid_ ||
+        !rotate_base_to_tool(filtered_wrench, latest_ee_orientation_, controller_wrench))
+      {
+        publish_zero();
+        publish_health(true);
+        return;
+      }
+    }
+    Vec3 lateral_velocity;
+    if ((mode == ControlMode::TRACTION || mode == ControlMode::RELEASING) &&
+      command_.direction_correction_mode == msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE)
+    {
+      lateral_velocity = vector_from_message(command_.lateral_velocity_base);
+      const double lateral_speed = norm(lateral_velocity);
+      if (lateral_speed > direction_correction_max_speed_mps_) {
+        lateral_velocity = lateral_velocity * (direction_correction_max_speed_mps_ / lateral_speed);
+      }
+    }
+    const ControllerOutput output = core_.update(
+      mode, vector_from_message(command_.locked_direction_base), command_.target_force_n,
+      controller_wrench, dt_s, lateral_velocity);
+    if (!output.valid) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Controller output invalid: mode=%u target=%.3f direction_norm=%.9f wrench=(%.3f, %.3f, %.3f).",
+        static_cast<unsigned>(command_.mode), command_.target_force_n,
+        norm(vector_from_message(command_.locked_direction_base)), latest_wrench_.x,
+        latest_wrench_.y, latest_wrench_.z);
+      publish_zero();
+      publish_health(false);
+      return;
+    }
+    ControllerOutput bounded_output = output;
+    if (mode == ControlMode::PRETENSION &&
+      std::abs(bounded_output.scalar_velocity_mps) > pretension_speed_mps_)
+    {
+      bounded_output.scalar_velocity_mps = std::copysign(
+        pretension_speed_mps_, bounded_output.scalar_velocity_mps);
+      bounded_output.linear_velocity = vector_from_message(command_.locked_direction_base);
+      Vec3 unit;
+      if (normalize(bounded_output.linear_velocity, unit)) {
+        bounded_output.linear_velocity = unit * bounded_output.scalar_velocity_mps;
+      }
+    }
+    if (mode == ControlMode::PRETENSION || mode == ControlMode::TRACTION ||
+      mode == ControlMode::RELEASING || mode == ControlMode::POSITIONING)
+    {
+      // AUBO-specific tool-axis signs must be established at the hardware
+      // checkpoint. Identity is only a mathematical placeholder while the
+      // hardware motion gate remains closed.
+      Vec3 tool_velocity;
+      Vec3 calibrated_base_velocity;
+      if (!ee_orientation_valid_ ||
+        !rotate_base_to_tool(
+          bounded_output.linear_velocity, latest_ee_orientation_, tool_velocity))
+      {
+        publish_zero();
+        publish_health(true);
+        return;
+      }
+      tool_velocity = {
+        traction_sign_x_ * tool_velocity.x,
+        traction_sign_y_ * tool_velocity.y,
+        traction_sign_z_ * tool_velocity.z};
+      if (!rotate_tool_to_base(tool_velocity, latest_ee_orientation_, calibrated_base_velocity)) {
+        publish_zero();
+        publish_health(true);
+        return;
+      }
+      bounded_output.linear_velocity = calibrated_base_velocity;
+    }
+    if (mode == ControlMode::TRACTION || mode == ControlMode::RELEASING ||
+      mode == ControlMode::DRAGGING || mode == ControlMode::POSITIONING)
+    {
+      const double combined_speed = norm(bounded_output.linear_velocity);
+      const double mode_speed_limit = mode == ControlMode::DRAGGING ?
+        drag_max_speed_mps_ : combined_max_speed_mps_;
+      if (combined_speed > mode_speed_limit) {
+        const double scale = mode_speed_limit / combined_speed;
+        bounded_output.linear_velocity = bounded_output.linear_velocity * scale;
+        bounded_output.scalar_velocity_mps *= scale;
+      }
+    }
+    publish_output(bounded_output);
+    publish_health(true);
+  }
+
+  double control_rate_hz_ = 100.0;
+  double force_filter_cutoff_hz_ = 5.0;
+  double drag_force_filter_cutoff_hz_ = 12.0;
+  double integral_gain_s_inv_ = 0.25;
+  double integral_limit_n_ = 3.0;
+  double virtual_mass_ = 10.0;
+  double virtual_damping_ = 80.0;
+  double force_deadband_n_ = 0.15;
+  double max_speed_mps_ = 0.020;
+  double max_acceleration_mps2_ = 0.02;
+  double drag_start_force_n_ = 1.0;
+  double drag_release_force_n_ = 0.6;
+  double drag_release_confirm_s_ = 0.15;
+  double drag_gain_mps_per_n_ = 0.00625;
+  double drag_max_speed_mps_ = 0.050;
+  double drag_max_acceleration_mps2_ = 0.60;
+  double drag_max_jerk_mps3_ = 12.0;
+  double drag_sign_x_ = 1.0;
+  double drag_sign_y_ = 1.0;
+  double drag_sign_z_ = 1.0;
+  double traction_sign_x_ = 1.0;
+  double traction_sign_y_ = 1.0;
+  double traction_sign_z_ = 1.0;
+  double position_tolerance_n_ = 1.0;
+  double position_far_gain_mps_per_n_ = 0.0040;
+  double position_near_gain_mps_per_n_ = 0.0015;
+  double position_near_window_n_ = 2.0;
+  double position_prediction_horizon_s_ = 0.25;
+  double position_prediction_limit_n_ = 2.0;
+  double position_force_rate_cutoff_hz_ = 3.0;
+  double position_max_acceleration_mps2_ = 0.080;
+  double position_max_deceleration_mps2_ = 0.120;
+  double position_settling_speed_mps_ = 0.0005;
+  double position_initial_stiffness_n_per_m_ = 300.0;
+  double position_min_stiffness_n_per_m_ = 50.0;
+  double position_max_stiffness_n_per_m_ = 1500.0;
+  double position_stiffness_time_constant_s_ = 1.0;
+  double smoothing_max_acceleration_mps2_ = 0.30;
+  double smoothing_max_jerk_mps3_ = 3.0;
+  double direction_correction_max_speed_mps_ = 0.020;
+  double combined_max_speed_mps_ = 0.025;
+  double pretension_speed_mps_ = 0.002;
+  double wrench_timeout_s_ = 0.10;
+  double command_timeout_s_ = 0.10;
+  std::string wrench_topic_;
+  std::string command_topic_;
+  std::string cartesian_command_topic_;
+  std::string velocity_command_topic_;
+  std::string velocity_vector_topic_;
+  std::string position_diagnostics_topic_;
+  std::string ee_state_topic_;
+
+  msg::TractionCommand command_;
+  Vec3 latest_wrench_;
+  geometry_msgs::msg::Quaternion latest_ee_orientation_;
+  bool command_valid_ = false;
+  bool wrench_valid_ = false;
+  bool ee_orientation_valid_ = false;
+  uint64_t command_generation_ = 0;
+  uint64_t blocked_generation_ = 0;
+  rclcpp::Time last_command_at_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_wrench_at_{0, 0, RCL_ROS_TIME};
+  std::chrono::steady_clock::time_point last_command_steady_at_{};
+  std::chrono::steady_clock::time_point last_wrench_steady_at_{};
+  std::chrono::steady_clock::time_point last_control_steady_at_{};
+  FirstOrderLowPass force_filter_;
+  FirstOrderLowPass drag_force_filter_;
+  TractionControllerCore core_;
+
+  rclcpp::Subscription<msg::TractionCommand>::SharedPtr command_subscription_;
+  rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr wrench_subscription_;
+  rclcpp::Subscription<fr_traction::msg::EndEffectorState>::SharedPtr ee_state_subscription_;
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr twist_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr velocity_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr velocity_vector_publisher_;
+  rclcpp::Publisher<msg::PositionControlDiagnostics>::SharedPtr
+    position_diagnostics_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr health_publisher_;
+  rclcpp::TimerBase::SharedPtr timer_;
+};
+
+}  // namespace fr_traction
+
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  try {
+    rclcpp::spin(std::make_shared<fr_traction::TractionControllerNode>());
+  } catch (const std::exception & error) {
+    fprintf(stderr, "traction_controller_node: %s\n", error.what());
+    rclcpp::shutdown();
+    return 1;
+  }
+  rclcpp::shutdown();
+  return 0;
+}

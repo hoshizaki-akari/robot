@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema#"?>
+<package format="3">
+  <name>aubo_i5_description</name>
+  <version>0.0.1</version>
+  <description>Visualization-only AUBO i5 V4-era robot description and mesh assets.</description>
+  <maintainer email="maintainer@example.com">AUBO i5 Traction Project</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

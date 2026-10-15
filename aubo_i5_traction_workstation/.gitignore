@@ -1,0 +1,20 @@
+.ruff_cache/
+.venv/
+__pycache__/
+*.py[cod]
+*.log
+debug/
+vendor/
+ros2_overlay/build/
+ros2_overlay/install/
+ros2_overlay/log/
+ros2_overlay/src/fairino_description/
+# Copied FR5 reference assets are intentionally excluded from the AUBO-only
+# project. They are not used by its build, UI, or read-only launch.
+/static/model/fairino5_v6/
+/static/vendor/
+/ros2_overlay/src/fairino_msgs/
+/ros2_overlay/src/fairino5_v6_moveit2_config/
+/ros2_overlay/src/fr_controllers/
+/ros2_overlay/reference/
+/docs/

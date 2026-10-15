@@ -1,0 +1,112 @@
+#include <gtest/gtest.h>
+
+#include <limits>
+
+#include "fr_traction/traction_safety.hpp"
+
+namespace
+{
+
+fr_traction::SafetySample nominal_sample()
+{
+  fr_traction::SafetySample sample;
+  sample.wrench_valid = true;
+  sample.wrench_fresh = true;
+  sample.ee_fresh = true;
+  sample.controller_healthy = true;
+  sample.ui_heartbeat_fresh = true;
+  sample.raw_wrench = {0.0, 0.0, -10.0};
+  sample.metrics.actual_force_n = 10.0;
+  sample.metrics.lateral_force_n = 0.0;
+  return sample;
+}
+
+}  // namespace
+
+TEST(TractionSafety, RejectsInvalidStaleAndUnhealthyInputs)
+{
+  fr_traction::SafetyMonitor monitor;
+  auto sample = nominal_sample();
+  sample.wrench_valid = false;
+  EXPECT_EQ(monitor.update(sample, 0.0, false), fr_traction::SafetyFault::WRENCH_INVALID);
+  sample = nominal_sample();
+  sample.wrench_fresh = false;
+  EXPECT_EQ(monitor.update(sample, 0.0, false), fr_traction::SafetyFault::WRENCH_TIMEOUT);
+  sample = nominal_sample();
+  sample.ee_fresh = false;
+  EXPECT_EQ(monitor.update(sample, 0.0, false), fr_traction::SafetyFault::EE_STATE_TIMEOUT);
+  sample = nominal_sample();
+  sample.controller_healthy = false;
+  EXPECT_EQ(monitor.update(sample, 0.0, false), fr_traction::SafetyFault::ROS2_CONTROL_ERROR);
+}
+
+TEST(TractionSafety, AxialForceDoesNotLatchAnOverforceFault)
+{
+  fr_traction::SafetyMonitor monitor;
+  auto sample = nominal_sample();
+  sample.raw_wrench = {0.0, 0.0, -30.0};
+  sample.metrics.actual_force_n = 30.0;
+  EXPECT_EQ(monitor.update(sample, 0.0, false), fr_traction::SafetyFault::NONE);
+
+  sample.raw_wrench = {0.0, 0.0, -149.9};
+  sample.metrics.actual_force_n = 149.9;
+  EXPECT_EQ(monitor.update(sample, 1.0, false), fr_traction::SafetyFault::NONE);
+
+  // A direction change may temporarily place all of the rope tension in the
+  // lateral component. It must remain available to the adaptive tracker.
+  monitor.reset();
+  sample = nominal_sample();
+  sample.metrics.lateral_force_n = 30.0;
+  EXPECT_EQ(monitor.update(sample, 2.0, false), fr_traction::SafetyFault::NONE);
+  EXPECT_EQ(monitor.update(sample, 20.0, false), fr_traction::SafetyFault::NONE);
+}
+
+TEST(TractionSafety, HardOverforceRequiresContinuousConfirmation)
+{
+  fr_traction::SafetyLimits limits;
+  limits.hard_overforce_n = 150.0;
+  limits.hard_overforce_confirm_s = 0.20;
+  fr_traction::SafetyMonitor monitor(limits);
+  auto sample = nominal_sample();
+  sample.raw_wrench = {0.0, 0.0, -151.0};
+  sample.metrics.actual_force_n = 151.0;
+  EXPECT_EQ(monitor.update(sample, 1.00, false), fr_traction::SafetyFault::NONE);
+  EXPECT_EQ(monitor.update(sample, 1.19, false), fr_traction::SafetyFault::NONE);
+
+  sample.raw_wrench = {0.0, 0.0, -149.0};
+  sample.metrics.actual_force_n = 149.0;
+  EXPECT_EQ(monitor.update(sample, 1.20, false), fr_traction::SafetyFault::NONE);
+
+  sample.raw_wrench = {0.0, 0.0, -151.0};
+  sample.metrics.actual_force_n = 151.0;
+  EXPECT_EQ(monitor.update(sample, 2.00, false), fr_traction::SafetyFault::NONE);
+  EXPECT_EQ(monitor.update(sample, 2.21, false), fr_traction::SafetyFault::HARD_OVERFORCE);
+}
+
+TEST(TractionSafety, ChecksOptionalUiHeartbeatWithoutSoftwareTravelLimit)
+{
+  fr_traction::SafetyMonitor monitor;
+  auto sample = nominal_sample();
+  sample.ui_heartbeat_fresh = false;
+  EXPECT_EQ(monitor.update(sample, 0.0, true), fr_traction::SafetyFault::UI_HEARTBEAT_TIMEOUT);
+  EXPECT_STREQ(fr_traction::SafetyMonitor::code(fr_traction::SafetyFault::OVERFORCE), "OVERFORCE");
+}
+
+TEST(TractionSafety, RejectsNonFiniteInputs)
+{
+  fr_traction::SafetyMonitor monitor;
+  auto sample = nominal_sample();
+  sample.raw_wrench.x = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(monitor.update(sample, 0.0, false), fr_traction::SafetyFault::WRENCH_INVALID);
+}
+
+TEST(TractionSafety, RejectsInvalidForceMetrics)
+{
+  fr_traction::SafetyMonitor monitor;
+  auto sample = nominal_sample();
+  sample.metrics.actual_force_n = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(monitor.update(sample, 0.0, false), fr_traction::SafetyFault::WRENCH_INVALID);
+  sample = nominal_sample();
+  sample.metrics.lateral_force_vector.x = std::numeric_limits<double>::infinity();
+  EXPECT_EQ(monitor.update(sample, 0.0, false), fr_traction::SafetyFault::WRENCH_INVALID);
+}

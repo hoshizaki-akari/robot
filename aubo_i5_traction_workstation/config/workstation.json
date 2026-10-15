@@ -1,0 +1,12 @@
+{
+  "title": "AUBO i5 骨伤牵引工作站",
+  "robot_model": "AUBO i5",
+  "controller_generation": "AUBOPE V4",
+  "force_sensor": "KWR75D",
+  "force_frame_calibrated": false,
+  "motion_verified": false,
+  "validated_target_max_n": 0.0,
+  "traction_max_speed_mps": 0.0,
+  "direction_follow_max_speed_mps": 0.0,
+  "combined_max_speed_mps": 0.0
+}

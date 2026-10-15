@@ -1,0 +1,153 @@
+traction_controller:
+  ros__parameters:
+    control_rate_hz: 100.0
+    force_filter_cutoff_hz: 5.0
+    # Assisted drag uses a faster, independent force path. Constant-force and
+    # position traction keep the existing 5 Hz filter and are not retuned.
+    drag_force_filter_cutoff_hz: 12.0
+    integral_gain_s_inv: 0.25
+    integral_limit_n: 3.0
+    virtual_mass: 10.0
+    virtual_damping: 80.0
+    force_deadband_n: 0.15
+    traction_max_speed_mps: 0.020
+    traction_max_acc_mps2: 0.02
+    drag_start_force_n: 0.5
+    drag_release_force_n: 0.2
+    drag_release_confirm_s: 0.08
+    drag_gain_mps_per_n: 0.015
+    drag_max_speed_mps: 0.050
+    drag_max_acceleration_mps2: 0.60
+    drag_max_jerk_mps3: 12.0
+    # AUBO axis directions are unverified. Identity placeholders are safe only
+    # because the AUBO motion gate remains closed until hardware calibration.
+    drag_sign_x: 1.0
+    drag_sign_y: 1.0
+    drag_sign_z: 1.0
+    # Never reuse the FR5 tool-Z inversion on the AUBO i5.
+    traction_sign_x: 1.0
+    traction_sign_y: 1.0
+    traction_sign_z: 1.0
+    # Position traction uses a dedicated predictive velocity loop. It keeps
+    # the 20 mm/s far-field response, brakes from the measured force trend,
+    # and enters the +/-1 N completion band only after motion settles.
+    position_tolerance_n: 1.0
+    position_far_gain_mps_per_n: 0.0060
+    position_near_gain_mps_per_n: 0.0045
+    position_near_window_n: 2.0
+    position_prediction_horizon_s: 0.15
+    position_prediction_limit_n: 2.0
+    position_force_rate_cutoff_hz: 2.0
+    position_max_acceleration_mps2: 0.080
+    position_max_deceleration_mps2: 0.160
+    position_settling_speed_mps: 0.0005
+    position_initial_stiffness_n_per_m: 300.0
+    position_min_stiffness_n_per_m: 50.0
+    position_max_stiffness_n_per_m: 1500.0
+    position_stiffness_time_constant_s: 1.0
+    smoothing_max_acceleration_mps2: 0.30
+    smoothing_max_jerk_mps3: 3.0
+    direction_correction_max_speed_mps: 0.020
+    combined_max_speed_mps: 0.025
+    pretension_speed_mps: 0.002
+    # Pause output quickly when feedback/commands stop. The manager below has
+    # a longer fault window so one recoverable SDK jitter does not end a run.
+    wrench_timeout_s: 0.25
+    command_timeout_s: 0.25
+    wrench_topic: /traction/corrected_wrench
+    command_topic: /traction/command
+    cartesian_command_topic: /controller_manager/command_cart_vel
+    velocity_command_topic: /traction/controller_velocity_cmd
+    velocity_vector_topic: /traction/controller_velocity_vector
+    position_diagnostics_topic: /traction/position_control_diagnostics
+    ee_state_topic: /controller_manager/ee_state
+
+traction_manager:
+  ros__parameters:
+    aubo_port_verified: false
+    control_rate_hz: 100.0
+    status_rate_hz: 20.0
+    force_filter_cutoff_hz: 5.0
+    # Active adaptive direction following. Small direction jitter is ignored;
+    # a sustained direction is accepted as the new rope direction.
+    direction_correction_mode: active
+    direction_fast_cutoff_hz: 4.0
+    direction_slow_cutoff_hz: 1.0
+    direction_robust_window_size: 11
+    direction_minimum_force_n: 0.5
+    direction_recovery_confirm_s: 0.30
+    direction_change_confirm_s: 0.20
+    direction_settling_s: 0.50
+    direction_candidate_max_dispersion_deg: 8.0
+    direction_ambiguity_timeout_s: 8.0
+    # Angular tracking rate is proportional to remaining angle (fast first,
+    # slow near the target); the maximum is only a numerical guard.
+    direction_tracking_gain_s_inv: 5.0
+    direction_tracking_max_rate_deg_s: 180.0
+    # Cartesian follow speed uses the same fast-then-slow angular law. There
+    # is intentionally no accumulated direction-following distance limit.
+    direction_follow_speed_gain_mps_per_rad: 0.020
+    direction_correction_max_speed_mps: 0.020
+    direction_follow_max_acceleration_mps2: 0.10
+    # Increasing force is fast when far away and progressively slows during
+    # the final 5 N. A lower target is applied immediately so the controller
+    # never continues pulling toward an obsolete higher force.
+    target_ramp_fast_nps: 12.0
+    target_ramp_slow_nps: 1.5
+    target_ramp_slow_window_n: 5.0
+    pretension_detect_n: 1.0
+    pretension_target_n: 3.0
+    calibration_min_force_n: 0.5
+    pretension_speed_mps: 0.002
+    pretension_timeout_s: 10.0
+    pretension_max_travel_m: 0.020
+    # Two seconds gives the real ROS graph enough time to collect the
+    # required stationary samples when WSL scheduling briefly jitters.
+    calibration_window_s: 3.0
+    calibration_min_samples: 40
+    calibration_max_angle_p95_deg: 15.0
+    target_force_min_n: 1.0
+    target_force_max_n: 100.0
+    validated_target_max_n: 100.0
+    force_tolerance_n: 1.0
+    # A 0.15 N deadband prevents the former 0.5 N shortfall while remaining
+    # wider than the normal sensor noise after filtering.
+    force_deadband_n: 0.15
+    # Covers the longest configurable position-driven return plus generous
+    # communication margin. Force control remains disabled throughout it.
+    release_timeout_s: 300.0
+    # Position traction stops once total rope tension stays within ±1 N for
+    # 1 s. Later force changes do not restart control in this mode.
+    position_reached_tolerance_n: 1.0
+    position_reached_confirm_s: 1.0
+    # A single spike does not stop motion. The measured rope tension must stay
+    # above 150 N continuously for 0.2 s before a hard-overforce stop is latched.
+    hard_overforce_n: 150.0
+    hard_overforce_confirm_s: 0.20
+    # Two-stage stale-data handling is retained from the baseline as an
+    # initial guard; AUBO feedback timing must be measured before release.
+    motion_pause_timeout_s: 0.25
+    wrench_timeout_s: 1.2
+    ee_state_timeout_s: 1.2
+    joint_state_topic: /joint_states
+    controller_health_timeout_s: 1.2
+    ui_heartbeat_timeout_s: 2.0
+    require_ui_heartbeat: false
+    # AUBO V4 bridge and KWR75 frame converter publish these compatibility
+    # topics only from verified real hardware data.
+    wrench_topic: /controller_manager/wrench
+    ee_state_topic: /controller_manager/ee_state
+    command_topic: /traction/command
+    controller_health_topic: /traction_controller/healthy
+    hardware_health_topic: /controller_manager/healthy
+    velocity_command_topic: /traction/controller_velocity_cmd
+    velocity_vector_topic: /traction/controller_velocity_vector
+    position_diagnostics_topic: /traction/position_control_diagnostics
+    corrected_wrench_topic: /traction/corrected_wrench
+    ui_heartbeat_topic: /traction/ui_heartbeat
+    slack_calibration_topic: /traction/slack_calibration
+    pretraction_return_service: /traction/return_pretraction_pose
+    pretraction_return_tolerance_m: 0.0015
+    data_directory: debug/traction_sessions
+    expected_wrench_frame: base_link
+    controller_manager_switch_service: /controller_manager/switch_controller

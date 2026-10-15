@@ -1,0 +1,11 @@
+{
+  "robot_model": "aubo_i5",
+  "controller_family": "AUBOPE_V4",
+  "geometry_calibrated": false,
+  "force_frame_calibrated": false,
+  "motion_direction_calibrated": false,
+  "force_control": {
+    "send_robot_motion": false,
+    "validated_target_max_n": 0.0
+  }
+}
