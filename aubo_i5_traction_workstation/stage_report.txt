@@ -1,7 +1,8 @@
-===== AUBO I5 TRACTION WORKSTATION PORT / OFFLINE STAGE =====
+===== AUBO I5 TRACTION WORKSTATION / READ-ONLY HARDWARE CHECK =====
 
 source:
 fr5_traction_workstation at 881117c; source tree untouched
+date: 2026-10-15
 
 isolated_target:
 /home/zhj/projects/aubo_i5_traction_ws/aubo_i5_traction_workstation
@@ -24,17 +25,22 @@ launch arguments parse = PASS
 local web smoke test = /api/health ok:false, POST /api/traction/start 409,
   POST /api/traction/mode 409
 
-hardware_facts:
-Windows COM4 yielded valid KWR75D 28-byte frames at 460800 8N1
-Windows 192.168.1.10/24 pinged AUBO 192.168.1.40 previously
-no controller login, robot motion, or ROS sensor run in this stage
+live_hardware:
+V4 SDK login 192.168.1.40:8899 and waypoint/diagnosis read = PASS
+real_robot=1, work_mode=real, arm_power=1, remote_halt=1 (remote shutdown signal)
+ROS robot_pose_m=0.083122,-0.352475,0.590270
+ROS robot_health=false; no motion commands sent
+Windows COM4 -> localhost TCP -> WSL PTY KWR75D frame = PASS
+ROS raw_wrench_valid=true
+ROS wrench_N_Nm=-2.057934,7.589141,1.205015,0.211428,-0.094142,0.023111
+Cyclone DDS interprocess communication = PASS
 
 not_verified:
-external V4 SDK runtime libprotobuf.so.9 is absent
+V4 libprotobuf.so.9 now extracted outside repo from official Ubuntu package
 V4 high-rate Cartesian servo suitable for traction is unproven
 sensor mount transform, flange/TCP semantics, force direction uncalibrated
 return-zero, automatic emergency recovery, and assisted drag unsupported
 position and constant-force traction cannot be released for hardware
 
 status:
-WAITING_CHECKPOINT_AUBO_READ_ONLY_HARDWARE_AND_VENDOR_RUNTIME
+WAITING_CHECKPOINT_EXTERNAL_REMOTE_HALT_SIGNAL_AND_CALIBRATION

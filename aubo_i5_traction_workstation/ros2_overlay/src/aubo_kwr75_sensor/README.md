@@ -17,9 +17,17 @@ The decoder accepts arbitrary read boundaries, ignores noise/corrupt frames, and
 
 The known stream commands are `48 AA 0D 0A` (start continuous) and `43 AA 0D 0A` (stop). They are never sent by the offline tests. A launched node sends the start command after it has opened and configured the requested device by default; both this behavior and shutdown stop are configurable.
 
-## Run on WSL only after device forwarding
+## Run on WSL after device forwarding or local bridge
 
 COM4 is a Windows device. Forward the physical USB serial device to the WSL distribution with `usbipd` first, then identify the resulting Linux device (for example `/dev/ttyUSB0`). Do not pass `COM4` directly as `serial_path`. Confirm device permissions and the actual `/dev/ttyUSB*` mapping before launching. The node has no hardware test mode and does not use replay data as live sensor data.
+
+On this Windows host, `usbipd bind` requires administrator privileges. The tested
+alternative is `scripts/kwr75_windows_bridge.ps1` plus
+`scripts/kwr75_wsl_pty_bridge.py` from the workstation root. The TCP listener is
+bound to `127.0.0.1:18755` only; the WSL relay exposes
+`/tmp/kwr75d-bridge-tty`. The existing node then uses that path as `serial_path`
+and keeps the same parser, SI conversion, and stale-data health check. A real
+28-byte frame and the live ROS wrench topic were verified on 2026-10-15.
 
 ```bash
 source /opt/ros/humble/setup.bash

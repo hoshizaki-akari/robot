@@ -35,6 +35,12 @@ AUBO V4 的高频连续关节/笛卡尔伺服、急停恢复、回零和软件�
 - 传感器原始数据单位是 kgf 和 kgf·m；ROS 发布前换算为 N、N·m。
 - 传感器到法兰、法兰到基座的方向与力符号没有通过真机检查，
   原 FR5 标定与轴符号不能复用。
+- 2026-10-15，AUBOPE V4 SDK 已在 `192.168.1.40:8899` 只读登录并读出
+  关节角、末端位姿与诊断；控制器报告 `remote_halt=1`（SDK 注释为
+  “远程关机信号”），所以机器人健康
+  状态为假，未发送运动指令。
+- Windows COM4 经本机 TCP + WSL 伪串口桥接，ROS 已收到真实六维力/力矩；
+  `/aubo/kwr75/raw_wrench_valid=true`。两个只读 ROS 节点可同时发布。
 
 ## 安装、构建与不接硬件的验证
 
@@ -70,18 +76,62 @@ source ros2_overlay/install/setup.bash
 ros2 launch fr_traction aubo_i5_readonly.launch.py --show-args
 ```
 
-在完成 SDK 运行时、USB 转接和现场 CHECKPOINT 之前，不要把
-`start_robot:=true` 或 `start_sensor:=true` 作为牵引启动方式。独立网页可用
+在完成 SDK 运行时、串口桥接和现场 CHECKPOINT 之前，不要把
+`start_robot:=true` 或 `start_sensor:=true` 作为牵引启动方式。现在它们仅
+用于只读数据检查，启动文件不会启动牵引控制器。独立网页可用
 `bash run_workstation.sh` 在本机 8082 端口查看，只读且不会自行连接机械臂。
 
-当前下载的 V4 SDK 运行库依赖 `libprotobuf.so.9`，本机 Ubuntu 22.04 仅有
-`libprotobuf.so.23`。两者不能靠改软链接冒充 ABI 兼容；需取得厂商匹配
-运行库并先做只读状态测试。
+当前 V4 SDK 运行库依赖 `libprotobuf.so.9`。已从 Ubuntu 官方
+`libprotobuf9v5_2.6.1-1.3_amd64.deb` 单独提取到本机临时目录，并通过
+动态库检查与只读登录；没有安装到系统，也没有把 `.23` 冒充 `.9`。
+此运行库与 SDK 仍是外部依赖，换机必须重新准备。
+
+## 本机只读硬件检查（不启动牵引）
+
+WSL 中 ROS 2 进程间通信使用 `rmw_cyclonedds_cpp`；本机已安装对应 Humble
+包，默认 Fast DDS 在当前 WSL 多网卡环境中没有通过发布/订阅测试。
+先在 Windows PowerShell 保持运行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\zhj\Desktop\骨伤牵引\aubo_i5_traction_ws_active\aubo_i5_traction_workstation\scripts\kwr75_windows_bridge.ps1"
+```
+
+在第一个 WSL 窗口保持运行：
+
+```bash
+python3 /home/zhj/projects/aubo_i5_traction_ws/aubo_i5_traction_workstation/scripts/kwr75_wsl_pty_bridge.py
+```
+
+在第二个 WSL 窗口执行；这些设置仅允许读状态和传感器，不启动运动：
+
+```bash
+cd /home/zhj/projects/aubo_i5_traction_ws/aubo_i5_traction_workstation
+export LD_LIBRARY_PATH=/mnt/c/Users/zhj/AppData/Local/Temp/aubo-v4-runtime-audit/extracted/usr/lib/x86_64-linux-gnu:/mnt/c/Users/zhj/AppData/Local/Temp/aubo-legacy-v4-audit/lib/lib64/aubocontroller:/mnt/c/Users/zhj/AppData/Local/Temp/aubo-legacy-v4-audit/lib/lib64/config:/mnt/c/Users/zhj/AppData/Local/Temp/aubo-legacy-v4-audit/lib/lib64/log4cplus
+export AUBO_V4_HOST=192.168.1.40 AUBO_V4_PORT=8899
+export AUBO_V4_USERNAME=aubo
+read -r -s -p 'AUBO V4 password: ' AUBO_V4_PASSWORD; echo
+export AUBO_V4_PASSWORD
+bash scripts/start_ros_stack.sh start_robot:=true start_sensor:=true serial_path:=/tmp/kwr75d-bridge-tty
+```
+
+在第三个 WSL 窗口运行只读核对：
+
+```bash
+cd /home/zhj/projects/aubo_i5_traction_ws/aubo_i5_traction_workstation
+source /opt/ros/humble/setup.bash
+source ros2_overlay/install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_DOMAIN_ID=42
+python3 scripts/verify_readonly_topics.py
+```
+
+如控制器账户已更改，应使用实际用户名和口令。口令只在本机终端输入，
+切勿提交到 Git。检查完依次停止 ROS、WSL 桥接、
+Windows 桥接；Windows 脚本会向传感器发送停止连续输出命令。
 
 ## 上线前 CHECKPOINT
 
-1. 在 WSL 使用 `usbipd` 将 COM4 对应 FTDI USB 设备转接进 Ubuntu，
-   确认传感器帧、采样间隔、单位、零点与方向。
+1. COM4 已通过本机桥接读入 WSL；还需确认采样间隔、零点、方向，以及
+   断线后的健康状态失效时间。
 2. 确认 AUBO 返回的末端姿态到底是法兰还是 TCP，完成传感器—法兰安装
    旋转/偏移标定；核对输出 `base_link` 方向。
 3. 以示教器受控确认每个关节、工具坐标方向与停止语义。

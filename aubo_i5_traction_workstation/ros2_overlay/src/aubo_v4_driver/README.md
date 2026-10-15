@@ -38,4 +38,11 @@ colcon test-result --verbose
 
 The SDK remains external. CMake requires `include/aubo_driver/serviceinterface.h` and `lib/lib64/aubocontroller/libauborobotcontroller.so` below `AUBO_V4_SDK_ROOT`; no vendor binary is copied into the repository.
 
-The supplied audit bundle's controller library also requires the legacy SONAME `libprotobuf.so.9`, which is not included in that bundle and is not ABI-compatible with Humble's system protobuf. The offline build therefore validates source compilation and links with unresolved shared-library dependencies allowed; do not start the node until the matching vendor runtime has been installed outside the repository.
+The supplied audit bundle's controller library also requires the legacy SONAME
+`libprotobuf.so.9`, which is not ABI-compatible with Humble's system protobuf.
+On this host, `libprotobuf9v5_2.6.1-1.3_amd64.deb` from the official Ubuntu
+archive was extracted to an external temporary directory (not installed). With
+its library directory and the SDK's three library directories in
+`LD_LIBRARY_PATH` **before sourcing ROS**, the node authenticated and read
+real waypoint/diagnosis data on 2026-10-15. The controller reported
+`remote_halt=1`; no motion was sent.
