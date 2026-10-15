@@ -30,6 +30,15 @@ bool valid_pose_sample(const PoseSample & sample, std::string * reason)
   }
   set_reason(reason, "valid"); return true;
 }
+bool needs_stream_waypoint(const std::array<double, 3> & velocity)
+{
+  double squared_speed = 0.0;
+  for (double component : velocity) {
+    if (!std::isfinite(component)) {return false;}
+    squared_speed += component * component;
+  }
+  return std::isfinite(squared_speed) && squared_speed > 1e-18;
+}
 bool diagnosis_is_healthy(const DiagnosisSample & s, std::string * reason)
 {
   if (!s.arm_power_status) {

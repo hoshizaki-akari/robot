@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded live driver test: stream zero velocity for two seconds, then stop."""
+"""Bounded live driver test: zero hold or a 1 mm base-X pulse, then stop."""
 
 import argparse
 import time
@@ -14,8 +14,11 @@ from rclpy.qos import QoSProfile, DurabilityPolicy
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--execute-zero-hold', action='store_true', required=True)
-    parser.parse_args()
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument('--execute-zero-hold', action='store_true')
+    modes.add_argument('--execute-bounded-pulse', action='store_true',
+                       help='base X+, 2 mm/s for at most 0.5 s; 2 mm measured envelope')
+    args = parser.parse_args()
     rclpy.init()
     node = rclpy.create_node('aubo_bounded_zero_hold_verifier')
     seen = {}
@@ -42,12 +45,15 @@ def main():
     publisher = node.create_publisher(Twist, '/controller_manager/command_cart_vel', 10)
     client = node.create_client(SwitchController, '/controller_manager/switch_controller')
     zero = Twist()
+    pulse = Twist()
+    pulse.linear.x = 0.002
+    command = zero
 
     def pump(duration, publish=True):
         deadline = time.monotonic() + duration
         while time.monotonic() < deadline:
             if publish:
-                publisher.publish(zero)
+                publisher.publish(command)
             rclpy.spin_once(node, timeout_sec=0.005)
 
     def switch(start):
@@ -82,7 +88,9 @@ def main():
         if not switch(True):
             print('status=STREAM_ENTRY_FAILED', flush=True)
             return 2
-        deadline = time.monotonic() + 2.0
+        if args.execute_bounded_pulse:
+            command = pulse
+        deadline = time.monotonic() + (0.5 if args.execute_bounded_pulse else 2.0)
         max_drift = 0.0
         while time.monotonic() < deadline:
             pump(0.01)
@@ -94,16 +102,27 @@ def main():
                 print(f'driver_error={status.message}', flush=True)
                 print('status=STREAM_FAILED', flush=True)
                 return 1
-            if time.monotonic() - seen['pose_at'] > 0.25 or max_drift > 0.0005:
+            envelope = 0.002 if args.execute_bounded_pulse else 0.0005
+            if time.monotonic() - seen['pose_at'] > 0.25 or max_drift > envelope:
                 print(f'max_hold_drift_m={max_drift:.9f}', flush=True)
                 print(f'pose_age_s={time.monotonic() - seen["pose_at"]:.6f}', flush=True)
                 print('status=FEEDBACK_OR_HOLD_FAILED', flush=True)
                 return 1
         print(f'max_hold_drift_m={max_drift:.9f}', flush=True)
-        print('status=ZERO_HOLD_PASS', flush=True)
+        if args.execute_bounded_pulse:
+            displacement = tuple(a - b for a, b in zip(seen['position'], origin))
+            print(f'displacement_m={displacement}', flush=True)
+            if displacement[0] < 0.0002 or abs(displacement[1]) > 0.0005 or abs(displacement[2]) > 0.0005:
+                print('status=PULSE_RESPONSE_NOT_VERIFIED', flush=True)
+                return 1
+            print('status=BOUNDED_PULSE_PASS', flush=True)
+        else:
+            print('status=ZERO_HOLD_PASS', flush=True)
         return 0
     finally:
         if start_attempted:
+            command = zero
+            publisher.publish(zero)
             print(f'stream_stop_acknowledged={switch(False)}', flush=True)
         _ = subscriptions
         node.destroy_node()

@@ -310,6 +310,13 @@ private:
       commanded_velocity_[0] * commanded_velocity_[0] +
       commanded_velocity_[1] * commanded_velocity_[1] +
       commanded_velocity_[2] * commanded_velocity_[2]);
+    // Match the vendor driver's changed-waypoint contract. In particular,
+    // starting a session must not flood the synchronous SDK with repeated
+    // stationary points before the first nonzero command can be dispatched.
+    if (!aubo_v4_driver::needs_stream_waypoint(commanded_velocity_)) {
+      stream_time_budget_s_ = 0.0;
+      return;
+    }
     for (unsigned int index = 0; index < point_count; ++index) {
       if (speed > 1e-9) {
         auto position = target_waypoint_.cartPos.position;
@@ -346,6 +353,7 @@ private:
     const auto send_started = std::chrono::steady_clock::now();
     request_quick_ack(controller_descriptors_);
     const int send = service_.robotServiceSetRobotPosData2Canbus(points);
+    ++stream_send_count_;
     last_send_ms_ = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - send_started).count();
     if (send != aubo_robot_namespace::ErrnoSucc) {
@@ -630,6 +638,8 @@ private:
         stop_requested_)); status.values.push_back(kv("fail_closed", fail_closed_));
     status.values.push_back(kv("motion_interface_enabled", enable_motion_interface_));
     status.values.push_back(kv("motion_stream_active", stream_active_));
+    status.values.push_back(kv("stream_send_count", stream_send_count_));
+    status.values.push_back(kv("last_send_ms", last_send_ms_));
     status.values.push_back(kv("diagnosis_requests", diagnosis_requests_snapshot_));
     status.values.push_back(kv("diagnosis_failures", diagnosis_failures_snapshot_));
     status.values.push_back(kv("tcp_nodelay_sockets", tcp_nodelay_sockets_));
@@ -716,6 +726,7 @@ private:
   std::chrono::steady_clock::time_point last_motion_tick_at_{};
   double last_send_ms_{0.0}, last_poll_ms_{0.0};
   double stream_time_budget_s_{0.0};
+  std::uint64_t stream_send_count_{0};
   int tcp_nodelay_sockets_{0};
   std::vector<int> controller_descriptors_;
 };

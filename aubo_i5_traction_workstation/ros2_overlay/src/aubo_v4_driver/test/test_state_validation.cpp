@@ -46,3 +46,24 @@ TEST(StateValidation, RemoteHaltIsNotAnActiveStopOnThisV4Controller) {
   d.soft_emergency = true;
   EXPECT_FALSE(aubo_v4_driver::diagnosis_is_healthy(d, &reason));
 }
+TEST(StateValidation, StationaryCommandDoesNotEnqueueWaypoints) {
+  EXPECT_FALSE(aubo_v4_driver::needs_stream_waypoint({0.0, 0.0, 0.0}));
+  EXPECT_FALSE(aubo_v4_driver::needs_stream_waypoint({1e-12, 0.0, 0.0}));
+}
+TEST(StateValidation, BothDirectionsAndEveryAxisEnqueueWaypoints) {
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    for (double speed : {-0.002, 0.002}) {
+      std::array<double, 3> command{};
+      command[axis] = speed;
+      EXPECT_TRUE(aubo_v4_driver::needs_stream_waypoint(command));
+    }
+  }
+}
+TEST(StateValidation, InvalidCommandsDoNotEnqueueWaypoints) {
+  EXPECT_FALSE(
+    aubo_v4_driver::needs_stream_waypoint(
+      {std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0}));
+  EXPECT_FALSE(
+    aubo_v4_driver::needs_stream_waypoint(
+      {0.0, std::numeric_limits<double>::infinity(), 0.0}));
+}

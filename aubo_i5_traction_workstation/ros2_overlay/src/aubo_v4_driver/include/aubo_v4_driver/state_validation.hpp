@@ -14,4 +14,6 @@ struct DiagnosisSample { bool arm_power_status{false}; unsigned int arm_canbus_s
   bool robot_current_alarm{false}; unsigned int tool_io_error{0U}; };
 bool valid_pose_sample(const PoseSample & sample, std::string * reason);
 bool diagnosis_is_healthy(const DiagnosisSample & sample, std::string * reason);
+// The legacy driver does not enqueue identical stationary waypoints.
+bool needs_stream_waypoint(const std::array<double, 3> & velocity);
 }  // namespace aubo_v4_driver
