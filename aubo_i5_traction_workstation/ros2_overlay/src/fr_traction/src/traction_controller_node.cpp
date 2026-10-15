@@ -423,6 +423,19 @@ private:
       return;
     }
     ControllerOutput bounded_output = output;
+    if (mode == ControlMode::DRAGGING) {
+      // The drag core receives tool-frame force and returns tool-frame velocity.
+      // The V4 Cartesian bridge consumes base-frame velocity like the other modes.
+      Vec3 base_velocity;
+      if (!rotate_tool_to_base(
+          bounded_output.linear_velocity, latest_ee_orientation_, base_velocity))
+      {
+        publish_zero();
+        publish_health(false);
+        return;
+      }
+      bounded_output.linear_velocity = base_velocity;
+    }
     if (mode == ControlMode::PRETENSION &&
       std::abs(bounded_output.scalar_velocity_mps) > pretension_speed_mps_)
     {

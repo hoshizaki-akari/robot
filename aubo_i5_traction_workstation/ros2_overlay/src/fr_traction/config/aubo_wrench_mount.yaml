@@ -1,0 +1,13 @@
+aubo_wrench_transform:
+  ros__parameters:
+    # Fill these from the physical sensor mounting and force-direction check.
+    # The identity quaternion is a placeholder, not a verified mounting.
+    q_flange_sensor: [0.0, 0.0, 0.0, 1.0]
+    p_flange_sensor_m: [0.0, 0.0, 0.0]
+    mounting_verified: false
+    pose_frame_verified: false
+    expected_sensor_frame: kwr75_sensor
+    expected_pose_frame: base_link
+    # V4 waypoint polling runs at 10 Hz; allow normal scheduling jitter.
+    pose_timeout_s: 0.25
+    sensor_timeout_s: 0.25

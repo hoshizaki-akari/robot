@@ -38,8 +38,10 @@ bool diagnosis_is_healthy(const DiagnosisSample & s, std::string * reason)
   if (s.arm_canbus_status != 0U) {
     set_reason(reason, "controller reports arm CAN bus fault"); return false;
   }
-  if (s.remote_halt || s.soft_emergency || s.remote_emergency) {
-    set_reason(reason, "controller reports halt or emergency state"); return false;
+  // This AUBOPE V4 firmware reports remoteHalt=1 even while accepting
+  // computer-issued moves. It is not an active-stop signal on this controller.
+  if (s.soft_emergency || s.remote_emergency) {
+    set_reason(reason, "controller reports emergency state"); return false;
   }
   if (s.robot_collision || s.joint_collision_detect != 0U) {
     set_reason(reason, "controller reports collision state"); return false;

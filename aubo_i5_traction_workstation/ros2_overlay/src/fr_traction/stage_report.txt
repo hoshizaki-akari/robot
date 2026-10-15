@@ -1,0 +1,24 @@
+===== AUBO I5 TRACTION PORT =====
+
+robot = AUBO i5 / AUBOPE V4
+sensor = KWR75D / Windows COM4
+isolated_source = FR5 traction workstation at 881117c
+
+real_robot_motion:
+tool_x_plus_1mm = PASS
+tool_x_plus_50mm = PASS (measured 50.136 mm)
+continuous_tcp2can_velocity = NOT YET ACCEPTED ON ROBOT
+
+software:
+assisted_drag = software force loop connected to V4 velocity topic
+position_traction = controller and manager retained; V4 stream not accepted
+constant_force = controller and manager retained; V4 stream not accepted
+offline_ros_tests = 147 total, 0 failures, 26 skipped
+
+remaining_functional_checks:
+sensor-to-flange mounting and force sign
+live TCP2CAN velocity tracking and stopping
+pre-traction pose return on AUBO (software path built; live test pending)
+three mode closed-loop runs with real force feedback
+
+status = NOT READY FOR REAL TRACTION

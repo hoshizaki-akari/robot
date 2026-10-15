@@ -116,6 +116,7 @@ traction_manager:
     # Covers the longest configurable position-driven return plus generous
     # communication margin. Force control remains disabled throughout it.
     release_timeout_s: 300.0
+    return_speed_mps: 0.020
     # Position traction stops once total rope tension stays within ±1 N for
     # 1 s. Later force changes do not restart control in this mode.
     position_reached_tolerance_n: 1.0
@@ -146,7 +147,6 @@ traction_manager:
     corrected_wrench_topic: /traction/corrected_wrench
     ui_heartbeat_topic: /traction/ui_heartbeat
     slack_calibration_topic: /traction/slack_calibration
-    pretraction_return_service: /traction/return_pretraction_pose
     pretraction_return_tolerance_m: 0.0015
     data_directory: debug/traction_sessions
     expected_wrench_frame: base_link

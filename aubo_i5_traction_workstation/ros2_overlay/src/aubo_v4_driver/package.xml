@@ -5,7 +5,7 @@
   <description>Fail-closed read-only AUBOPE V4 state adapter with an explicit hardware-stop boundary.</description>
   <maintainer email="robotics@example.com">AUBO i5 traction team</maintainer><license>BSD-3-Clause</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
-  <depend>diagnostic_msgs</depend><depend>fr_traction</depend><depend>geometry_msgs</depend><depend>rclcpp</depend><depend>sensor_msgs</depend><depend>std_msgs</depend><depend>std_srvs</depend>
+  <depend>controller_manager_msgs</depend><depend>diagnostic_msgs</depend><depend>fr_traction</depend><depend>geometry_msgs</depend><depend>rclcpp</depend><depend>sensor_msgs</depend><depend>std_msgs</depend><depend>std_srvs</depend>
   <test_depend>ament_cmake_gtest</test_depend><test_depend>ament_lint_auto</test_depend><test_depend>ament_lint_common</test_depend>
   <export><build_type>ament_cmake</build_type></export>
 </package>

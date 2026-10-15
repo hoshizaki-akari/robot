@@ -6,6 +6,7 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(ament_cmake REQUIRED)
+find_package(controller_manager_msgs REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(fr_traction REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -49,7 +50,7 @@ set_target_properties(aubo_v4_state_node PROPERTIES BUILD_RPATH
   "${AUBO_V4_SDK_ROOT}/lib/lib64/aubocontroller;${AUBO_V4_SDK_ROOT}/lib/lib64/config;${AUBO_V4_SDK_ROOT}/lib/lib64/log4cplus"
 )
 ament_target_dependencies(aubo_v4_state_node
-  diagnostic_msgs fr_traction geometry_msgs rclcpp sensor_msgs std_msgs std_srvs
+  controller_manager_msgs diagnostic_msgs fr_traction geometry_msgs rclcpp sensor_msgs std_msgs std_srvs
 )
 install(TARGETS aubo_v4_state_validation aubo_v4_state_node
   ARCHIVE DESTINATION lib

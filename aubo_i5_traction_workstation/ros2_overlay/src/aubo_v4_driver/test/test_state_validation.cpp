@@ -39,3 +39,10 @@ TEST(StateValidation, RejectsEmergencyAndCanFault) {
     reason.find(
       "CAN"), std::string::npos);
 }
+TEST(StateValidation, RemoteHaltIsNotAnActiveStopOnThisV4Controller) {
+  aubo_v4_driver::DiagnosisSample d; d.arm_power_status = true; d.remote_halt = true;
+  std::string reason;
+  EXPECT_TRUE(aubo_v4_driver::diagnosis_is_healthy(d, &reason));
+  d.soft_emergency = true;
+  EXPECT_FALSE(aubo_v4_driver::diagnosis_is_healthy(d, &reason));
+}

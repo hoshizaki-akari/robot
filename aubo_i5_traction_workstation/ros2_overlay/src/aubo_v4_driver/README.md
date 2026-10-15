@@ -1,11 +1,11 @@
 # AUBOPE V4 state adapter
 
-`aubo_v4_state_node` is the sole owner of one legacy AUBOPE V4 `ServiceInterface` session. It is limited to read-only state polling and an operator-requested hardware stop. It has no motion, power, brake-release, fault-clear, force-control, or I/O command endpoint.
+`aubo_v4_state_node` owns one legacy AUBOPE V4 `ServiceInterface` session. By default it exposes only state polling and operator-requested hardware stop. Setting `enable_motion_interface:=true` additionally exposes a Cartesian-velocity command subscriber and a controller-switch service backed by TCP2CAN joint streaming. This motion path has been built and unit-tested but has **not yet passed a live continuous-stream acceptance test**.
 
 - Real V4 `wayPoint_S` data is published as `/joint_states` and `/controller_manager/ee_state` (`fr_traction/msg/EndEffectorState`).
 - Linear twist is a finite-difference estimate only after two valid polls; angular twist remains zero because no V4 twist source is verified.
 - `/controller_manager/healthy` is true only after a successful real state read and a V4 diagnosis with arm power on and no checked faults. A TCP login alone is never healthy.
-- `/diagnostics` carries explicit state/failure reasons. There are no unverified motion services or command subscriptions.
+- `/diagnostics` carries explicit state/failure reasons and reports whether streaming is enabled/active. The read-only launch leaves the motion interface disabled.
 - `/aubo_i5/driver_identity` is transient-local and republished every second with the exact value `AUBO_I5_V4`, including while login is disabled, so integrations can reject an accidental FR5 ROS graph.
 - `~/hardware_stop` is `std_srvs/srv/Trigger` and invokes only `robotMoveFastStop()`. Its SDK result is checked. A returned success latches health false; it does not claim completed stopping. Operator review and a node restart are required before health can become true again.
 
@@ -45,4 +45,4 @@ archive was extracted to an external temporary directory (not installed). With
 its library directory and the SDK's three library directories in
 `LD_LIBRARY_PATH` **before sourcing ROS**, the node authenticated and read
 real waypoint/diagnosis data on 2026-10-15. The controller reported
-`remote_halt=1`; no motion was sent.
+`remote_halt=1`; subsequent isolated 1 mm and 50 mm computer-issued Tool X+ moves both succeeded, demonstrating that this bit is not an active-stop indication on this controller. Other emergency and fault checks remain in place.
