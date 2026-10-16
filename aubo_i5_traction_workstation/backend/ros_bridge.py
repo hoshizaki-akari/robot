@@ -30,6 +30,7 @@ STATE_NAMES = {
     10: "EMERGENCY_STOP",
     11: "DRAGGING",
     12: "POSITION_HOLD",
+    13: "RETURNING_ZERO",
 }
 
 # The V4 state adapter exposes only a hardware stop. Motion and hardware

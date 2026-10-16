@@ -30,6 +30,7 @@ let directionLocked = false;
 let tractionState = 0;
 let previousDirectionTrackState = 4;
 let pendingStart = false;
+let startRequestGeneration = 0;
 let finishRequested = false;
 let emergencyPending = false;
 let AUBO_MOTION_PORT_VERIFIED = false;
@@ -48,7 +49,8 @@ const TRACTION_STATE_LABELS = {
   9: '故障',
   10: '已急停',
   11: '拖拽中',
-  12: '已到位'
+  12: '已到位',
+  13: '正在回零'
 };
 const ACTION_SUCCESS_MESSAGES = {
   '/api/traction/prepare': '初始校准完成',
@@ -149,7 +151,7 @@ function applyPermissions() {
   const permission = permissions[sessionUser.role];
   $('currentUser').textContent = sessionUser.name;
   $('currentRole').textContent = sessionUser.role;
-  const motionActive = [6, 7, 11, 12].includes(tractionState) || pendingStart;
+  const motionActive = [6, 7, 11, 12, 13].includes(tractionState) || pendingStart;
   const liveTractionAdjustment =
     (operationMode === 0 && tractionState === 6) ||
     (operationMode === 1 && [6, 12].includes(tractionState));
@@ -158,13 +160,13 @@ function applyPermissions() {
     (motionActive && !liveTractionAdjustment);
   const startStateReady = operationMode === 2 ? tractionState === 2 : tractionState === 5;
   $('startBtn').disabled = !AUBO_MOTION_PORT_VERIFIED || !permission.operate || !startStateReady || !dataOnline || pendingStart;
-  $('stopBtn').disabled = !AUBO_MOTION_PORT_VERIFIED || !permission.operate || ![6, 11, 12].includes(tractionState) || !dataOnline;
+  $('stopBtn').disabled = !AUBO_MOTION_PORT_VERIFIED || !permission.operate || (!pendingStart && ![6, 11, 12, 13].includes(tractionState)) || !dataOnline;
   if ($('prepareBtn')) $('prepareBtn').disabled = !AUBO_MOTION_PORT_VERIFIED || !permission.operate || !dataOnline || ![1, 2, 5, 8, 9].includes(tractionState);
   if ($('calibrateBtn')) $('calibrateBtn').disabled = !AUBO_MOTION_PORT_VERIFIED || !permission.operate || !dataOnline || operationMode === 2 || tractionState !== 2;
   const showDirectionAction = operationMode !== 2 && tractionState === 2;
   $('prepareBtn').classList.toggle('slot-hidden', showDirectionAction);
   $('calibrateBtn').classList.toggle('slot-hidden', !showDirectionAction);
-  const showStopAction = [6, 7, 11, 12].includes(tractionState);
+  const showStopAction = pendingStart || [6, 7, 11, 12, 13].includes(tractionState);
   $('startBtn').classList.toggle('slot-hidden', showStopAction);
   $('stopBtn').classList.toggle('slot-hidden', !showStopAction);
   if ($('emergencyBtn')) {
@@ -309,6 +311,7 @@ async function startTraction() {
   if (!sessionUser || !permissions[sessionUser.role].operate) return;
   if (pendingStart) return toast('正在等待控制器接管');
   if (!dataOnline) return toast('设备未连接');
+  const requestGeneration = ++startRequestGeneration;
   if (operationMode === 2) {
     if (tractionState !== 2) return toast('请先完成初始校准');
     finishRequested = false;
@@ -321,6 +324,7 @@ async function startTraction() {
       applyPermissions();
       return toast(simpleErrorMessage(error));
     }
+    if (requestGeneration !== startRequestGeneration) return;
     toast('开始拖拽');
     return;
   }
@@ -342,6 +346,7 @@ async function startTraction() {
     currentForce = Math.round(requestedTarget);
     updateForceDisplay();
     await postJson('/api/traction/target', { target_force_n: currentForce });
+    if (requestGeneration !== startRequestGeneration) return;
     await postJson('/api/traction/start');
   } catch (error) {
     pendingStart = false;
@@ -349,6 +354,7 @@ async function startTraction() {
     return toast(simpleErrorMessage(error));
   }
 
+  if (requestGeneration !== startRequestGeneration) return;
   applyPermissions();
   toast('开始牵引');
 }
@@ -382,14 +388,17 @@ function saveFinishedRecord(status) {
 }
 
 async function finishTraction(status = '已完成') {
-  if (![6, 11, 12].includes(tractionState)) return toast('当前没有正在执行的任务');
+  if (!pendingStart && ![6, 11, 12, 13].includes(tractionState)) return toast('当前没有正在执行的任务');
+  const cancellingStart = pendingStart;
+  ++startRequestGeneration;
   try {
     await postJson('/api/traction/stop');
   } catch (error) {
     return toast(simpleErrorMessage(error));
   }
-  finishRequested = true;
-  $('workStatus').textContent = '正在结束';
+  pendingStart = false;
+  finishRequested = !cancellingStart || !!activeRecord;
+  $('workStatus').textContent = cancellingStart ? '启动已取消' : '正在结束';
   $('workStatus').classList.add('running');
   applyPermissions();
   toast(status === '已完成' ? (operationMode === 2 ? '结束拖拽' : '正在结束牵引') : '正在停止');
@@ -678,7 +687,7 @@ function handleState(state) {
       ? '正在结束'
       // The controller may still report the previous stop reason while a new
       // run is active. The live traction state always takes priority.
-      : ([6, 11, 12].includes(tractionState)
+      : ([6, 11, 12, 13].includes(tractionState)
         ? TRACTION_STATE_LABELS[tractionState]
         : (simpleReason(traction.fault_code || traction.stop_reason) || '牵引中'));
     $('workStatus').classList.add('running');

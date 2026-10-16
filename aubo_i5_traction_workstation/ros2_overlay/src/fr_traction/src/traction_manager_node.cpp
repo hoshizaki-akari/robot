@@ -2,8 +2,11 @@
 #include "fr_traction/direction_correction.hpp"
 #include "fr_traction/traction_safety.hpp"
 #include "fr_traction/traction_state_machine.hpp"
+#include "fr_traction/stepwise_traction.hpp"
+#include "fr_traction/zero_pose_policy.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -100,6 +103,7 @@ public:
     // packets arrived. This flag is enabled only after the AUBO motion,
     // force-frame, stop and direction checkpoints have all passed.
     aubo_port_verified_ = declare_parameter("aubo_port_verified", false);
+    require_measured_idle_ = declare_parameter("require_measured_motion_idle", false);
     pretension_speed_mps_ = declare_parameter("pretension_speed_mps", 0.002);
     pretension_timeout_s_ = declare_parameter("pretension_timeout_s", 10.0);
     pretension_max_travel_m_ = declare_parameter("pretension_max_travel_m", 0.020);
@@ -115,6 +119,9 @@ public:
     // a force-unloading timeout because RELEASING no longer runs force control.
     release_timeout_s_ = declare_parameter("release_timeout_s", 300.0);
     return_speed_mps_ = declare_parameter("return_speed_mps", 0.020);
+    zero_return_max_force_n_ = declare_parameter("zero_return_max_force_n", 1.0);
+    zero_return_max_travel_m_ = declare_parameter("zero_return_max_travel_m", 0.05);
+    zero_return_timeout_s_ = declare_parameter("zero_return_timeout_s", 30.0);
     position_reached_tolerance_n_ = declare_parameter("position_reached_tolerance_n", 1.0);
     position_reached_confirm_s_ = declare_parameter("position_reached_confirm_s", 1.0);
     hard_overforce_n_ = declare_parameter("hard_overforce_n", 150.0);
@@ -172,6 +179,12 @@ public:
       slack_calibration_topic_, rclcpp::QoS(1).reliable().transient_local());
     switch_client_ = create_client<controller_manager_msgs::srv::SwitchController>(
       switch_service_name_);
+    motion_idle_subscription_ = create_subscription<std_msgs::msg::Bool>(
+      "/controller_manager/motion_idle", rclcpp::QoS(1).reliable().transient_local(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr message) {
+        measured_motion_idle_ = message->data;
+        last_motion_idle_at_ = std::chrono::steady_clock::now();
+      });
 
     wrench_subscription_ = create_subscription<geometry_msgs::msg::WrenchStamped>(
       // The direct FR5 driver publishes this stream reliably. Match that
@@ -279,6 +292,18 @@ public:
       const srv::SetOperationMode::Response::SharedPtr response) {
         handle_set_operation_mode(request, response);
       });
+    set_zero_pose_service_ = create_service<std_srvs::srv::Trigger>(
+      "/traction/set_zero_pose",
+      [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+      const std_srvs::srv::Trigger::Response::SharedPtr response) {
+        handle_set_zero_pose(response);
+      });
+    return_zero_pose_service_ = create_service<std_srvs::srv::Trigger>(
+      "/traction/return_zero_pose",
+      [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+      const std_srvs::srv::Trigger::Response::SharedPtr response) {
+        handle_return_zero_pose(response);
+      });
 
     load_history();
     publish_history();
@@ -336,7 +361,11 @@ private:
       std::isfinite(ui_heartbeat_timeout_s_) && ui_heartbeat_timeout_s_ > 0.0 &&
       std::isfinite(controller_health_timeout_s_) && controller_health_timeout_s_ > 0.0 &&
       std::isfinite(pretraction_return_tolerance_m_) && pretraction_return_tolerance_m_ > 0.0 &&
-      std::isfinite(return_speed_mps_) && return_speed_mps_ > 0.0 && return_speed_mps_ <= 0.025;
+      std::isfinite(return_speed_mps_) && return_speed_mps_ > 0.0 && return_speed_mps_ <= 0.025 &&
+      std::isfinite(zero_return_max_force_n_) && zero_return_max_force_n_ >= 0.0 &&
+      std::isfinite(zero_return_max_travel_m_) && zero_return_max_travel_m_ > 0.0 &&
+      std::isfinite(zero_return_timeout_s_) && zero_return_timeout_s_ >= 5.0 &&
+      zero_return_timeout_s_ <= 30.0;
     const bool direction_valid =
       std::isfinite(direction_fast_cutoff_hz_) && direction_fast_cutoff_hz_ > 0.0 &&
       std::isfinite(direction_slow_cutoff_hz_) && direction_slow_cutoff_hz_ > 0.0 &&
@@ -398,7 +427,9 @@ private:
     latest_torque_finite_ = std::isfinite(message.wrench.torque.x) &&
       std::isfinite(message.wrench.torque.y) && std::isfinite(message.wrench.torque.z);
     wrench_frame_valid_ = message.header.frame_id == expected_wrench_frame_;
-    wrench_valid_ = finite(latest_wrench_) && latest_torque_finite_ && wrench_frame_valid_;
+    const bool source_fresh = source_stamp_fresh(message.header.stamp, wrench_timeout_s_);
+    wrench_valid_ = finite(latest_wrench_) && latest_torque_finite_ && wrench_frame_valid_ &&
+      (!require_measured_idle_ || source_fresh);
     last_wrench_at_ = now();
     last_wrench_steady_at_ = std::chrono::steady_clock::now();
     ++wrench_sequence_;
@@ -411,8 +442,15 @@ private:
       message.twist.linear.x, message.twist.linear.y, message.twist.linear.z};
     latest_ee_angular_velocity_ = {
       message.twist.angular.x, message.twist.angular.y, message.twist.angular.z};
+    latest_ee_orientation_ = {
+      message.pose.orientation.x, message.pose.orientation.y,
+      message.pose.orientation.z, message.pose.orientation.w};
     ee_valid_ = finite(latest_ee_position_) && finite(latest_ee_linear_velocity_) &&
-      finite(latest_ee_angular_velocity_);
+      finite(latest_ee_angular_velocity_) &&
+      (!require_measured_idle_ ||
+      (zero_pose_unit_quaternion(latest_ee_orientation_) &&
+      message.header.frame_id == "base_link" &&
+      source_stamp_fresh(message.header.stamp, ee_state_timeout_s_)));
     last_ee_at_ = now();
     last_ee_steady_at_ = std::chrono::steady_clock::now();
   }
@@ -451,11 +489,25 @@ private:
     return std::isfinite(age) && age >= 0.0 ? age : std::numeric_limits<double>::infinity();
   }
 
+  bool source_stamp_fresh(const builtin_interfaces::msg::Time & stamp, double timeout_s) const
+  {
+    if (stamp.sec == 0 && stamp.nanosec == 0) {return false;}
+    const rclcpp::Time source_time(stamp, RCL_ROS_TIME);
+    const double age_s = (now() - source_time).seconds();
+    return std::isfinite(age_s) && age_s >= 0.0 && age_s <= timeout_s;
+  }
+
   bool live_wrench() const
   {
     return wrench_valid_ && fresh(last_wrench_steady_at_, wrench_timeout_s_);
   }
   bool live_ee() const {return ee_valid_ && fresh(last_ee_steady_at_, ee_state_timeout_s_);}
+  bool measured_idle() const
+  {
+    return measured_idle_allows_completion(
+      require_measured_idle_, measured_motion_idle_,
+      age_seconds(last_motion_idle_at_), motion_pause_timeout_s_);
+  }
   bool motion_feedback_fresh() const
   {
     return wrench_valid_ && ee_valid_ &&
@@ -509,6 +561,95 @@ private:
   {
     return "Current state is " + std::string(state_name(state_machine_.state())) +
            "; allowed operation: " + allowed + ".";
+  }
+
+  ZeroPose current_zero_pose() const
+  {
+    return {{latest_ee_position_.x, latest_ee_position_.y, latest_ee_position_.z},
+      latest_ee_orientation_};
+  }
+
+  bool zero_pose_stopped_state() const
+  {
+    const auto state = state_machine_.state();
+    return state == TractionState::READY || state == TractionState::MANUAL_SETUP ||
+           state == TractionState::DIRECTION_LOCKED || state == TractionState::COMPLETED;
+  }
+
+  bool zero_pose_inputs_ready() const
+  {
+    return measured_idle() && live_ee() && live_joint() && live_hardware() &&
+           live_controller() && latest_joint_speed_norm_ <= 0.02 &&
+           !controller_start_pending_ && !controller_activation_confirming_ &&
+           !stop_completion_pending_;
+  }
+
+  void handle_set_zero_pose(const std_srvs::srv::Trigger::Response::SharedPtr response)
+  {
+    if (!require_measured_idle_) {
+      response->success = false;
+      response->message = "Set zero pose is unsupported without measured stepwise idle feedback.";
+      return;
+    }
+    const ZeroPose current = current_zero_pose();
+    if (!zero_pose_capture_allowed(
+        current, zero_pose_stopped_state(), zero_pose_inputs_ready(), live_ee(), live_joint(),
+        live_hardware(), controller_start_pending_ || controller_activation_confirming_ ||
+        stop_completion_pending_))
+    {
+      response->success = false;
+      response->message =
+        "Set zero pose rejected: fresh idle EE, joint, hardware and controller data are required.";
+      return;
+    }
+    zero_pose_ = current;
+    zero_pose_saved_ = true;
+    response->success = true;
+    response->message = "Zero pose saved for this process session only; it is not persisted.";
+  }
+
+  void handle_return_zero_pose(const std_srvs::srv::Trigger::Response::SharedPtr response)
+  {
+    if (!require_measured_idle_) {
+      response->success = false;
+      response->message =
+        "Return zero pose is unsupported without measured stepwise idle feedback.";
+      return;
+    }
+    const ZeroPose current = current_zero_pose();
+    if (!live_wrench() || !zero_pose_return_allowed(
+        current, zero_pose_, zero_pose_saved_, zero_pose_stopped_state(), zero_pose_inputs_ready(),
+        live_ee(), live_joint(), live_hardware(), controller_start_pending_ ||
+        controller_activation_confirming_ || stop_completion_pending_, norm(latest_wrench_),
+        zero_return_max_force_n_, 0.01, zero_return_max_travel_m_))
+    {
+      response->success = false;
+      response->message =
+        "Return zero rejected: saved session pose, unloaded wrench, fresh idle feedback, matching orientation and bounded travel are required.";
+      return;
+    }
+    if (zero_pose_distance_m(current, zero_pose_) <= pretraction_return_tolerance_m_) {
+      response->success = true;
+      response->message =
+        "Already within zero-return tolerance; no controller activation was requested.";
+      return;
+    }
+    if (!transition(TractionState::RETURNING_ZERO)) {
+      response->success = false;
+      response->message = "Return zero rejected: state transition failed.";
+      return;
+    }
+    return_zero_active_ = false;
+    return_zero_started_at_.reset();
+    if (!request_controller_start()) {
+      transition(TractionState::READY);
+      response->success = false;
+      response->message = "Return zero rejected: Cartesian controller could not be activated.";
+      return;
+    }
+    response->success = true;
+    response->message =
+      "Zero return requested; motion begins after controller acknowledgement and fresh feedback.";
   }
 
   void handle_prepare(const std_srvs::srv::Trigger::Response::SharedPtr response)
@@ -618,6 +759,11 @@ private:
 
   void handle_start(const std_srvs::srv::Trigger::Response::SharedPtr response)
   {
+    if (stop_completion_pending_) {
+      response->success = false;
+      response->message = "Start rejected: measured stop confirmation is pending.";
+      return;
+    }
     if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
       if (state_machine_.state() != TractionState::MANUAL_SETUP) {
         response->success = false;
@@ -673,7 +819,7 @@ private:
         std::to_string(validated_target_max_n_) + " N.";
       return;
     }
-    if (controller_start_pending_) {
+    if (controller_start_pending_ || controller_activation_confirming_) {
       response->success = false;
       response->message = "Start is already waiting for the Cartesian controller handoff.";
       return;
@@ -692,11 +838,51 @@ private:
   void handle_stop(const std_srvs::srv::Trigger::Response::SharedPtr response)
   {
     const auto state = state_machine_.state();
+    if ((state == TractionState::MANUAL_SETUP || state == TractionState::DIRECTION_LOCKED) &&
+      (controller_start_pending_ || controller_activation_confirming_ ||
+      stop_cancelled_activation_))
+    {
+      publish_disabled();
+      request_controller_stop();
+      stop_reason_ = "PENDING_START_CANCELLED";
+      stop_cancelled_activation_ = require_measured_idle_ && !measured_idle();
+      if (stop_cancelled_activation_ && !stop_completion_pending_) {
+        stop_completion_pending_ = true;
+        stop_completion_started_at_ = std::chrono::steady_clock::now();
+      }
+      response->success = true;
+      response->message = stop_cancelled_activation_ ?
+        "Start cancelled; waiting for measured stationary confirmation." :
+        "Pending controller start cancelled; no traction task was started.";
+      return;
+    }
     if (state != TractionState::TRACTION && state != TractionState::DRAGGING &&
-      state != TractionState::POSITION_HOLD)
+      state != TractionState::POSITION_HOLD && state != TractionState::RETURNING_ZERO)
     {
       response->success = false;
       response->message = state_and_allowed("stop from an active traction or drag task");
+      return;
+    }
+    if (require_measured_idle_ && !measured_idle()) {
+      if (!stop_completion_pending_) {
+        stop_completion_pending_ = true;
+        stop_completion_started_at_ = std::chrono::steady_clock::now();
+        publish_disabled();
+        request_controller_stop();
+      }
+      response->success = true;
+      response->message = "Stop requested; waiting for measured stationary confirmation.";
+      return;
+    }
+    if (state == TractionState::RETURNING_ZERO) {
+      publish_disabled();
+      request_controller_stop();
+      return_zero_active_ = false;
+      return_zero_started_at_.reset();
+      stop_reason_ = "RETURN_ZERO_STOPPED";
+      transition(TractionState::READY);
+      response->success = true;
+      response->message = "Zero return stopped after measured stationary confirmation.";
       return;
     }
     if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
@@ -741,6 +927,7 @@ private:
     fault_code_ = "SOFTWARE_EMERGENCY_STOP";
     if (stop_reason_.empty()) {stop_reason_ = "SOFTWARE_EMERGENCY_STOP";}
     publish_disabled();
+    clear_zero_return_state();
     request_controller_stop();
     finalize_session();
     response->success = true;
@@ -1096,6 +1283,15 @@ private:
     velocity_command_mps_ = 0.0;
   }
 
+  void clear_zero_return_state()
+  {
+    stop_cancelled_activation_ = false;
+    return_zero_active_ = false;
+    return_zero_started_at_.reset();
+    zero_pose_saved_ = false;
+    zero_pose_ = {};
+  }
+
   void enter_fault(const std::string & code, const std::string & reason)
   {
     if (state_machine_.state() == TractionState::FAULT ||
@@ -1105,6 +1301,7 @@ private:
       return;
     }
     fault_code_ = code;
+    clear_zero_return_state();
     if (stop_reason_.empty()) {stop_reason_ = reason;}
     transition(TractionState::FAULT);
     publish_disabled();
@@ -1118,6 +1315,7 @@ private:
 
   void request_controller_stop()
   {
+    ++controller_request_generation_;
     controller_activation_confirming_ = false;
     controller_start_pending_ = false;
     if (!switch_client_ || !switch_client_->service_is_ready()) {
@@ -1135,6 +1333,7 @@ private:
 
   bool request_controller_start()
   {
+    if (stop_completion_pending_) {return false;}
     if (!switch_client_ || !switch_client_->service_is_ready()) {
       RCLCPP_ERROR(get_logger(), "Controller switch service is unavailable during traction start.");
       return false;
@@ -1145,9 +1344,13 @@ private:
     request->start_asap = true;
     request->activate_asap = true;
     controller_start_pending_ = true;
+    const auto generation = ++controller_request_generation_;
     switch_client_->async_send_request(
       request,
-      [this](rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedFuture future) {
+      [this,
+      generation](rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedFuture
+      future) {
+        if (generation != controller_request_generation_) {return;}
         controller_start_pending_ = false;
         try {
           const auto result = future.get();
@@ -1161,7 +1364,7 @@ private:
           (operation_mode_ == OperationMode::POSITION_TRACTION &&
           state == TractionState::POSITION_HOLD) ||
           (operation_mode_ == OperationMode::ASSISTED_DRAG &&
-          state == TractionState::MANUAL_SETUP);
+          state == TractionState::MANUAL_SETUP) || state == TractionState::RETURNING_ZERO;
           if (!expected_state) {return;}
           controller_activation_confirming_ = true;
           controller_activation_started_at_ = now();
@@ -1180,7 +1383,8 @@ private:
     const auto state = state_machine_.state();
     const bool needs_live_data = state == TractionState::PRETENSION ||
       state == TractionState::TRACTION || state == TractionState::RELEASING ||
-      state == TractionState::DRAGGING || state == TractionState::POSITION_HOLD;
+      state == TractionState::DRAGGING || state == TractionState::POSITION_HOLD ||
+      state == TractionState::RETURNING_ZERO;
     if (!needs_live_data) {
       safety_monitor_.reset();
       return;
@@ -1326,7 +1530,7 @@ private:
       publish_command(
         msg::TractionCommand::RELEASING, {}, 0.0,
         msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE, {});
-      if (latest_joint_speed_norm_ < 0.02) {
+      if (latest_joint_speed_norm_ < 0.02 && measured_idle()) {
         publish_disabled();
         request_controller_stop();
         stop_reason_ = "NORMAL_RELEASE_COMPLETED";
@@ -1344,6 +1548,61 @@ private:
       msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE, velocity);
     if (elapsed > release_timeout_s_) {
       enter_fault("PRETRACTION_RETURN_TIMEOUT", "PRETRACTION_RETURN_TIMEOUT");
+    }
+  }
+
+  void handle_returning_zero(const rclcpp::Time & current_time)
+  {
+    if (!return_zero_active_) {
+      publish_disabled();
+      return;
+    }
+    if (!live_wrench() || !live_ee() || !live_joint() || !live_hardware() ||
+      !live_controller() || !finite(latest_wrench_) ||
+      norm(latest_wrench_) > zero_return_max_force_n_)
+    {
+      enter_fault("ZERO_RETURN_INPUT_INVALID", "ZERO_RETURN_INPUT_INVALID");
+      return;
+    }
+    if (!return_zero_started_at_) {return_zero_started_at_ = current_time;}
+    if ((current_time - *return_zero_started_at_).seconds() > zero_return_timeout_s_) {
+      enter_fault("ZERO_RETURN_TIMEOUT", "ZERO_RETURN_TIMEOUT");
+      return;
+    }
+    const ZeroPose current = current_zero_pose();
+    if (!zero_pose_finite(current) ||
+      zero_pose_orientation_error_rad(current, zero_pose_) > 0.01 ||
+      zero_pose_distance_m(current, zero_pose_) > zero_return_max_travel_m_)
+    {
+      enter_fault("ZERO_RETURN_POSE_INVALID", "ZERO_RETURN_POSE_INVALID");
+      return;
+    }
+    const Vec3 delta{
+      zero_pose_.position[0] - latest_ee_position_.x,
+      zero_pose_.position[1] - latest_ee_position_.y,
+      zero_pose_.position[2] - latest_ee_position_.z};
+    const double distance = norm(delta);
+    if (distance <= pretraction_return_tolerance_m_) {
+      publish_command(
+        msg::TractionCommand::RELEASING, {}, 0.0,
+        msg::TractionCommand::DIRECTION_CORRECTION_OFF, {});
+      if (measured_idle() && latest_joint_speed_norm_ <= 0.02) {
+        publish_disabled();
+        request_controller_stop();
+        return_zero_active_ = false;
+        return_zero_started_at_.reset();
+        stop_reason_ = "RETURN_ZERO_COMPLETED";
+        transition(TractionState::READY);
+      }
+      return;
+    }
+    const double speed = std::min(return_speed_mps_, 0.002);
+    const Vec3 velocity = delta * (speed / distance);
+    publish_command(
+      msg::TractionCommand::RELEASING, {}, 0.0,
+      msg::TractionCommand::DIRECTION_CORRECTION_OFF, velocity);
+    if ((current_time - *return_zero_started_at_).seconds() > zero_return_timeout_s_) {
+      enter_fault("ZERO_RETURN_TIMEOUT", "ZERO_RETURN_TIMEOUT");
     }
   }
 
@@ -1375,39 +1634,67 @@ private:
       if (readiness_check(reason)) {transition(TractionState::READY);}
     }
     check_safety(monotonic_now_s);
+    if (stop_completion_pending_) {
+      publish_disabled();
+      const auto state = state_machine_.state();
+      if (state == TractionState::FAULT || state == TractionState::EMERGENCY_STOP) {
+        stop_completion_pending_ = false;
+      } else if (measured_idle()) {
+        stop_completion_pending_ = false;
+        if (stop_cancelled_activation_) {
+          stop_cancelled_activation_ = false;
+          return;
+        }
+        auto response = std::make_shared<std_srvs::srv::Trigger::Response>();
+        handle_stop(response);
+      } else if (age_seconds(stop_completion_started_at_) > 5.0) {
+        stop_completion_pending_ = false;
+        enter_fault(
+          "STEPWISE_STOP_UNCONFIRMED",
+          "Measured stop was not confirmed within 5 seconds.");
+      }
+      return;
+    }
     const bool activation_state_ready =
       state_machine_.state() == TractionState::DIRECTION_LOCKED ||
       (operation_mode_ == OperationMode::POSITION_TRACTION &&
       state_machine_.state() == TractionState::POSITION_HOLD) ||
       (operation_mode_ == OperationMode::ASSISTED_DRAG &&
-      state_machine_.state() == TractionState::MANUAL_SETUP);
+      state_machine_.state() == TractionState::MANUAL_SETUP) ||
+      state_machine_.state() == TractionState::RETURNING_ZERO;
     if (activation_state_ready && controller_activation_confirming_) {
       publish_disabled();
       const bool activation_inputs_ready = live_wrench() && live_controller() && live_ee();
       if (activation_inputs_ready) {
         controller_activation_confirming_ = false;
-        const bool resuming_position =
-          state_machine_.state() == TractionState::POSITION_HOLD &&
-          operation_mode_ == OperationMode::POSITION_TRACTION;
-        if (!resuming_position) {
-          session_start_position_ = latest_ee_position_;
-          if (direction_estimator_) {direction_estimator_->reset();}
-          if (direction_controller_) {direction_controller_->reset();}
-          direction_estimate_ = {};
-          lateral_correction_result_ = {};
-          lateral_correction_velocity_base_ = {};
-        }
-        if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
-          current_command_target_n_ = 0.0;
-          transition(TractionState::DRAGGING);
-          RCLCPP_INFO(get_logger(), "Fresh EE feedback confirmed; assisted drag started.");
+        if (state_machine_.state() == TractionState::RETURNING_ZERO) {
+          return_zero_active_ = true;
+          return_zero_started_at_ = current_time;
+          RCLCPP_INFO(get_logger(), "Fresh EE feedback confirmed; zero return started.");
         } else {
-          current_command_target_n_ = std::clamp(
-            current_metrics().actual_force_n, 0.0, target_force_n_);
-          position_reached_ = false;
-          position_reached_started_at_.reset();
-          transition(TractionState::TRACTION);
-          RCLCPP_INFO(get_logger(), "Fresh EE feedback confirmed; traction control started.");
+          const bool resuming_position =
+            state_machine_.state() == TractionState::POSITION_HOLD &&
+            operation_mode_ == OperationMode::POSITION_TRACTION;
+          if (!resuming_position) {
+            session_start_position_ = latest_ee_position_;
+            if (direction_estimator_) {direction_estimator_->reset();}
+            if (direction_controller_) {direction_controller_->reset();}
+            direction_estimate_ = {};
+            lateral_correction_result_ = {};
+            lateral_correction_velocity_base_ = {};
+          }
+          if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
+            current_command_target_n_ = 0.0;
+            transition(TractionState::DRAGGING);
+            RCLCPP_INFO(get_logger(), "Fresh EE feedback confirmed; assisted drag started.");
+          } else {
+            current_command_target_n_ = std::clamp(
+              current_metrics().actual_force_n, 0.0, target_force_n_);
+            position_reached_ = false;
+            position_reached_started_at_.reset();
+            transition(TractionState::TRACTION);
+            RCLCPP_INFO(get_logger(), "Fresh EE feedback confirmed; traction control started.");
+          }
         }
       } else if ((current_time - controller_activation_started_at_).seconds() > 2.0) {
         controller_activation_confirming_ = false;
@@ -1437,7 +1724,9 @@ private:
             last_position_diagnostics_steady_at_, motion_pause_timeout_s_);
           const bool controller_settled = diagnostics_fresh &&
             position_diagnostics_.phase == msg::PositionControlDiagnostics::SETTLING;
-          if (force_error <= position_reached_tolerance_n_ && controller_settled) {
+          if (force_error <= position_reached_tolerance_n_ && controller_settled &&
+            measured_idle())
+          {
             if (!position_reached_started_at_) {position_reached_started_at_ = current_time;}
             if ((current_time - *position_reached_started_at_).seconds() >=
               position_reached_confirm_s_)
@@ -1494,6 +1783,7 @@ private:
         publish_command(msg::TractionCommand::DRAG, {}, 0.0);
         break;
       case TractionState::RELEASING: handle_releasing(current_time); break;
+      case TractionState::RETURNING_ZERO: handle_returning_zero(current_time); break;
       case TractionState::INITIALIZING:
       case TractionState::READY:
       case TractionState::DIRECTION_LOCKED:
@@ -1689,6 +1979,7 @@ private:
     status.ready = state_machine_.state() != TractionState::INITIALIZING &&
       state_machine_.state() != TractionState::FAULT &&
       state_machine_.state() != TractionState::EMERGENCY_STOP &&
+      state_machine_.state() != TractionState::RETURNING_ZERO &&
       live_controller() && live_hardware();
     // The message exposes the operator-selected target, not the instantaneous
     // release/disabled command. This keeps READY/DIRECTION_LOCKED observable
@@ -1760,6 +2051,7 @@ private:
         status.message = "省力拖拽中；施力即动，松手即停";
         break;
       case TractionState::POSITION_HOLD: status.message = "已到位，机械臂保持当前位置"; break;
+      case TractionState::RETURNING_ZERO: status.message = "正在回到本次进程保存的零位"; break;
     }
     status_publisher_->publish(status);
   }
@@ -1802,6 +2094,9 @@ private:
   double force_deadband_n_ = 0.15;
   double release_timeout_s_ = 300.0;
   double return_speed_mps_ = 0.020;
+  double zero_return_max_force_n_ = 1.0;
+  double zero_return_max_travel_m_ = 0.05;
+  double zero_return_timeout_s_ = 30.0;
   double position_reached_tolerance_n_ = 1.0;
   double position_reached_confirm_s_ = 1.0;
   double hard_overforce_n_ = 150.0;
@@ -1845,6 +2140,7 @@ private:
   Vec3 latest_ee_position_;
   Vec3 latest_ee_linear_velocity_;
   Vec3 latest_ee_angular_velocity_;
+  std::array<double, 4> latest_ee_orientation_{0.0, 0.0, 0.0, 1.0};
   Vec3 temporary_direction_;
   Vec3 locked_direction_;
   Vec3 session_start_position_;
@@ -1855,6 +2151,13 @@ private:
   bool latest_torque_finite_ = false;
   bool ee_valid_ = false;
   bool controller_healthy_ = false;
+  bool require_measured_idle_{false}, measured_motion_idle_{false};
+  bool stop_completion_pending_{false};
+  bool stop_cancelled_activation_{false};
+  std::chrono::steady_clock::time_point stop_completion_started_at_{};
+  std::uint64_t controller_request_generation_{0};
+  std::chrono::steady_clock::time_point last_motion_idle_at_{};
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr motion_idle_subscription_;
   bool hardware_healthy_ = false;
   bool calibration_requested_ = false;
   bool temporary_direction_valid_ = false;
@@ -1879,6 +2182,7 @@ private:
   std::optional<rclcpp::Time> calibration_started_at_;
   std::optional<rclcpp::Time> release_started_at_;
   std::optional<rclcpp::Time> position_reached_started_at_;
+  std::optional<rclcpp::Time> return_zero_started_at_;
   std::vector<Vec3> pretension_detection_samples_;
   std::vector<Vec3> calibration_samples_;
   double target_force_n_ = 10.0;
@@ -1891,6 +2195,9 @@ private:
   msg::PositionControlDiagnostics position_diagnostics_;
   std::string fault_code_;
   std::string stop_reason_;
+  ZeroPose zero_pose_;
+  bool zero_pose_saved_ = false;
+  bool return_zero_active_ = false;
 
   bool session_active_ = false;
   std::string session_id_;
@@ -1926,6 +2233,8 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_fault_service_;
   rclcpp::Service<srv::SetTargetForce>::SharedPtr target_force_service_;
   rclcpp::Service<srv::SetOperationMode>::SharedPtr operation_mode_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr set_zero_pose_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr return_zero_pose_service_;
   rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedPtr switch_client_;
   rclcpp::TimerBase::SharedPtr control_timer_;
   rclcpp::TimerBase::SharedPtr status_timer_;

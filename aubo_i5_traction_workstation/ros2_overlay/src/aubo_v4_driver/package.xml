@@ -7,5 +7,6 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>controller_manager_msgs</depend><depend>diagnostic_msgs</depend><depend>fr_traction</depend><depend>geometry_msgs</depend><depend>rclcpp</depend><depend>sensor_msgs</depend><depend>std_msgs</depend><depend>std_srvs</depend>
   <test_depend>ament_cmake_gtest</test_depend><test_depend>ament_lint_auto</test_depend><test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend><test_depend>rclpy</test_depend><test_depend>rmw_cyclonedds_cpp</test_depend>
   <export><build_type>ament_cmake</build_type></export>
 </package>

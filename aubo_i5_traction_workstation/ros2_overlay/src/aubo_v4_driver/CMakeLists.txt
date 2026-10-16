@@ -14,6 +14,7 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(Threads REQUIRED)
 set(AUBO_V4_SDK_ROOT "$ENV{AUBO_V4_SDK_ROOT}" CACHE PATH "Root of the externally installed AUBOPE V4 legacy SDK")
 if(NOT AUBO_V4_SDK_ROOT)
   message(FATAL_ERROR
@@ -29,7 +30,7 @@ if(NOT AUBO_V4_INCLUDE_DIR OR NOT AUBO_V4_CONTROLLER_LIBRARY OR NOT AUBO_V4_CONF
     "AUBOPE V4 SDK is incomplete under AUBO_V4_SDK_ROOT='${AUBO_V4_SDK_ROOT}'."
   )
 endif()
-add_library(aubo_v4_state_validation SHARED src/state_validation.cpp)
+add_library(aubo_v4_state_validation SHARED src/state_validation.cpp src/stepwise_scheduler.cpp)
 target_include_directories(aubo_v4_state_validation PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
@@ -52,7 +53,14 @@ set_target_properties(aubo_v4_state_node PROPERTIES BUILD_RPATH
 ament_target_dependencies(aubo_v4_state_node
   controller_manager_msgs diagnostic_msgs fr_traction geometry_msgs rclcpp sensor_msgs std_msgs std_srvs
 )
-install(TARGETS aubo_v4_state_validation aubo_v4_state_node
+add_executable(aubo_v4_stepwise_node src/aubo_v4_stepwise_node.cpp src/stepwise_transport.cpp)
+target_include_directories(aubo_v4_stepwise_node PRIVATE "${AUBO_V4_INCLUDE_DIR}")
+target_link_libraries(aubo_v4_stepwise_node aubo_v4_state_validation Threads::Threads
+  "${AUBO_V4_CONTROLLER_LIBRARY}" "${AUBO_V4_CONFIG_LIBRARY}" "${AUBO_V4_LOG4CPLUS_LIBRARY}")
+target_link_options(aubo_v4_stepwise_node PRIVATE "-Wl,--allow-shlib-undefined")
+ament_target_dependencies(aubo_v4_stepwise_node
+  controller_manager_msgs diagnostic_msgs fr_traction geometry_msgs rclcpp sensor_msgs std_msgs std_srvs)
+install(TARGETS aubo_v4_state_validation aubo_v4_state_node aubo_v4_stepwise_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -61,10 +69,25 @@ install(DIRECTORY include/ DESTINATION include)
 install(FILES README.md stage_report.txt DESTINATION share/${PROJECT_NAME})
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
   set(AMENT_LINT_AUTO_EXCLUDE ament_cmake_copyright ament_cmake_cpplint ament_cmake_xmllint)
   ament_add_gtest(test_state_validation test/test_state_validation.cpp)
   target_link_libraries(test_state_validation aubo_v4_state_validation)
+  ament_add_gtest(test_stepwise_scheduler test/test_stepwise_scheduler.cpp)
+  target_link_libraries(test_stepwise_scheduler aubo_v4_state_validation)
+  # Only this automated test target overrides the SDK header. Never link the
+  # vendor library or install this test double into an operational package.
+  ament_add_gtest(test_stepwise_transport test/test_stepwise_transport.cpp src/stepwise_transport.cpp)
+  target_include_directories(test_stepwise_transport BEFORE PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/fake_sdk" "${AUBO_V4_INCLUDE_DIR}")
+  target_link_libraries(test_stepwise_transport aubo_v4_state_validation Threads::Threads)
+  add_library(stepwise_sdk_constructor_guard SHARED test/sdk_constructor_guard.cpp)
+  ament_add_pytest_test(test_stepwise_offline_node test/test_stepwise_offline_node.py
+    TIMEOUT 40
+    ENV
+      "AUBO_SDK_GUARD=$<TARGET_FILE:stepwise_sdk_constructor_guard>"
+      "AUBO_STEPWISE_EXECUTABLE=$<TARGET_FILE:aubo_v4_stepwise_node>")
   ament_lint_auto_find_test_dependencies()
 endif()
 ament_export_include_directories(include)

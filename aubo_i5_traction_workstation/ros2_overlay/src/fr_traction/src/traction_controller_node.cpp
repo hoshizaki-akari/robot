@@ -1,4 +1,5 @@
 #include "fr_traction/traction_controller_core.hpp"
+#include "fr_traction/stepwise_traction.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -29,6 +30,35 @@ public:
     core_(10.0, 80.0, 0.15, 0.020, 0.02)
   {
     control_rate_hz_ = declare_parameter("control_rate_hz", 100.0);
+    stepwise_backend_ = declare_parameter("stepwise_backend", false);
+    stepwise_config_.force_polarity_verified = declare_parameter(
+      "stepwise_force_polarity_verified",
+      false);
+    stepwise_config_.drag_axes_verified = declare_parameter("stepwise_drag_axes_verified", false);
+    stepwise_config_.axis_sign = declare_parameter("stepwise_axis_sign", 0.0);
+    stepwise_config_.force_gain_mps_per_n = declare_parameter(
+      "stepwise_force_gain_mps_per_n",
+      0.0002);
+    stepwise_config_.force_deadband_n = declare_parameter("stepwise_force_deadband_n", 0.5);
+    stepwise_config_.maximum_speed_mps = declare_parameter("stepwise_maximum_speed_mps", 0.002);
+    stepwise_config_.minimum_command_speed_mps = declare_parameter(
+      "stepwise_minimum_command_speed_mps", 0.0012);
+    if (stepwise_backend_ && (!std::isfinite(stepwise_config_.axis_sign) ||
+      (stepwise_config_.axis_sign != 0.0 && std::abs(stepwise_config_.axis_sign) != 1.0) ||
+      (stepwise_config_.force_polarity_verified && stepwise_config_.axis_sign == 0.0) ||
+      !std::isfinite(stepwise_config_.force_gain_mps_per_n) ||
+      stepwise_config_.force_gain_mps_per_n <= 0.0 ||
+      stepwise_config_.force_gain_mps_per_n > 0.005 ||
+      !std::isfinite(stepwise_config_.force_deadband_n) ||
+      stepwise_config_.force_deadband_n < 0.0 ||
+      !std::isfinite(stepwise_config_.maximum_speed_mps) ||
+      stepwise_config_.maximum_speed_mps <= 0.0 || stepwise_config_.maximum_speed_mps > 0.005 ||
+      !std::isfinite(stepwise_config_.minimum_command_speed_mps) ||
+      stepwise_config_.minimum_command_speed_mps <= 0.0 ||
+      stepwise_config_.minimum_command_speed_mps > stepwise_config_.maximum_speed_mps))
+    {
+      throw std::invalid_argument("invalid stepwise force configuration or unverified axis sign");
+    }
     force_filter_cutoff_hz_ = declare_parameter("force_filter_cutoff_hz", 5.0);
     drag_force_filter_cutoff_hz_ = declare_parameter("drag_force_filter_cutoff_hz", 12.0);
     integral_gain_s_inv_ = declare_parameter("integral_gain_s_inv", 0.25);
@@ -52,7 +82,9 @@ public:
     traction_sign_x_ = declare_parameter("traction_sign_x", 1.0);
     traction_sign_y_ = declare_parameter("traction_sign_y", 1.0);
     traction_sign_z_ = declare_parameter("traction_sign_z", 1.0);
+    stepwise_config_.drag_signs = {drag_sign_x_, drag_sign_y_, drag_sign_z_};
     position_tolerance_n_ = declare_parameter("position_tolerance_n", 1.0);
+    stepwise_config_.position_tolerance_n = position_tolerance_n_;
     position_far_gain_mps_per_n_ = declare_parameter(
       "position_far_gain_mps_per_n", 0.0060);
     position_near_gain_mps_per_n_ = declare_parameter(
@@ -269,6 +301,12 @@ private:
       std::isfinite(message.target_force_n) && message.target_force_n >= 0.0 &&
       finite(vector_from_message(message.locked_direction_base)) &&
       finite(vector_from_message(message.lateral_velocity_base));
+    if (stepwise_backend_) {
+      const double age = (now() - rclcpp::Time(message.header.stamp)).seconds();
+      command_valid_ = command_valid_ && message.header.frame_id == "base_link" &&
+        rclcpp::Time(message.header.stamp).nanoseconds() > 0 && age >= 0.0 &&
+        age <= command_timeout_s_;
+    }
   }
 
   void on_wrench(const geometry_msgs::msg::WrenchStamped & message)
@@ -279,10 +317,16 @@ private:
     wrench_valid_ = message.header.frame_id == "base_link" && finite(latest_wrench_) &&
       std::isfinite(message.wrench.torque.x) && std::isfinite(message.wrench.torque.y) &&
       std::isfinite(message.wrench.torque.z);
+    if (stepwise_backend_) {
+      const double age = (now() - rclcpp::Time(message.header.stamp)).seconds();
+      wrench_valid_ = wrench_valid_ && rclcpp::Time(message.header.stamp).nanoseconds() > 0 &&
+        age >= 0.0 && age <= wrench_timeout_s_;
+    }
   }
 
   void on_ee_state(const fr_traction::msg::EndEffectorState & message)
   {
+    last_ee_steady_at_ = std::chrono::steady_clock::now();
     latest_ee_orientation_ = message.pose.orientation;
     const double quaternion_norm = std::sqrt(
       latest_ee_orientation_.x * latest_ee_orientation_.x +
@@ -291,6 +335,12 @@ private:
       latest_ee_orientation_.w * latest_ee_orientation_.w);
     ee_orientation_valid_ = message.header.frame_id == "base_link" &&
       std::isfinite(quaternion_norm) && quaternion_norm > 1e-12;
+    if (stepwise_backend_) {
+      const double age = (now() - rclcpp::Time(message.header.stamp)).seconds();
+      ee_orientation_valid_ = ee_orientation_valid_ &&
+        std::abs(quaternion_norm - 1.0) < 1e-3 &&
+        rclcpp::Time(message.header.stamp).nanoseconds() > 0 && age >= 0.0 && age <= 0.5;
+    }
   }
 
   void publish_health(bool healthy)
@@ -385,6 +435,13 @@ private:
     }
 
     const auto mode = static_cast<ControlMode>(command_.mode);
+    if (stepwise_backend_ && (!ee_orientation_valid_ ||
+      std::chrono::duration<double>(steady_time - last_ee_steady_at_).count() > 0.5))
+    {
+      publish_zero();
+      publish_health(false);
+      return;
+    }
     const Vec3 filtered_wrench = mode == ControlMode::DRAGGING ?
       drag_force_filter_.update(latest_wrench_, dt_s) :
       force_filter_.update(latest_wrench_, dt_s);
@@ -400,7 +457,8 @@ private:
     }
     Vec3 lateral_velocity;
     if ((mode == ControlMode::TRACTION || mode == ControlMode::RELEASING) &&
-      command_.direction_correction_mode == msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE)
+      (command_.direction_correction_mode == msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE ||
+      (stepwise_backend_ && mode == ControlMode::RELEASING)))
     {
       lateral_velocity = vector_from_message(command_.lateral_velocity_base);
       const double lateral_speed = norm(lateral_velocity);
@@ -408,12 +466,17 @@ private:
         lateral_velocity = lateral_velocity * (direction_correction_max_speed_mps_ / lateral_speed);
       }
     }
-    const ControllerOutput output = core_.update(
+    const ControllerOutput output = stepwise_backend_ ?
+      stepwise_traction_output(
+      stepwise_config_, mode,
+      vector_from_message(command_.locked_direction_base), command_.target_force_n,
+      controller_wrench, lateral_velocity) : core_.update(
       mode, vector_from_message(command_.locked_direction_base), command_.target_force_n,
       controller_wrench, dt_s, lateral_velocity);
     if (!output.valid) {
-      RCLCPP_ERROR(
+      RCLCPP_ERROR_THROTTLE(
         get_logger(),
+        *get_clock(), 2000,
         "Controller output invalid: mode=%u target=%.3f direction_norm=%.9f wrench=(%.3f, %.3f, %.3f).",
         static_cast<unsigned>(command_.mode), command_.target_force_n,
         norm(vector_from_message(command_.locked_direction_base)), latest_wrench_.x,
@@ -447,8 +510,9 @@ private:
         bounded_output.linear_velocity = unit * bounded_output.scalar_velocity_mps;
       }
     }
-    if (mode == ControlMode::PRETENSION || mode == ControlMode::TRACTION ||
-      mode == ControlMode::RELEASING || mode == ControlMode::POSITIONING)
+    if (!stepwise_backend_ && (mode == ControlMode::PRETENSION ||
+      mode == ControlMode::TRACTION || mode == ControlMode::RELEASING ||
+      mode == ControlMode::POSITIONING))
     {
       // AUBO-specific tool-axis signs must be established at the hardware
       // checkpoint. Identity is only a mathematical placeholder while the
@@ -558,6 +622,9 @@ private:
   FirstOrderLowPass force_filter_;
   FirstOrderLowPass drag_force_filter_;
   TractionControllerCore core_;
+  bool stepwise_backend_{false};
+  StepwiseTractionConfig stepwise_config_;
+  std::chrono::steady_clock::time_point last_ee_steady_at_{};
 
   rclcpp::Subscription<msg::TractionCommand>::SharedPtr command_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr wrench_subscription_;

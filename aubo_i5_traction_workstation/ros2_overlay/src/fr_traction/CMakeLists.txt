@@ -86,6 +86,16 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_traction_controller_core test/test_traction_controller_core.cpp)
   target_link_libraries(test_traction_controller_core fr_traction_core)
+  ament_add_gtest(test_stepwise_traction test/test_stepwise_traction.cpp)
+  target_link_libraries(test_stepwise_traction fr_traction_core)
+  ament_add_gtest(test_zero_pose_policy test/test_zero_pose_policy.cpp)
+  target_link_libraries(test_zero_pose_policy fr_traction_core)
+  ament_add_pytest_test(test_stepwise_controller_ros test/test_stepwise_controller_ros.py
+    TIMEOUT 120
+    ENV AUBO_TRACTION_CONTROLLER_EXECUTABLE=$<TARGET_FILE:traction_controller_node>)
+  ament_add_pytest_test(test_stepwise_manager_ros test/test_stepwise_manager_ros.py
+    TIMEOUT 180
+    ENV AUBO_TRACTION_MANAGER_EXECUTABLE=$<TARGET_FILE:traction_manager_node>)
 
   ament_add_gtest(test_traction_safety test/test_traction_safety.cpp)
   target_link_libraries(test_traction_safety fr_traction_core)

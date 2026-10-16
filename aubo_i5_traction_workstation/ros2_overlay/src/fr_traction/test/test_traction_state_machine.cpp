@@ -91,4 +91,18 @@ TEST(TractionStateMachine, SupportsAssistedDragAndPositionHoldFlows)
   }
 }
 
+TEST(TractionStateMachine, SupportsReturningZeroOnlyFromStoppedStates)
+{
+  for (const auto start : {TractionState::READY, TractionState::MANUAL_SETUP,
+      TractionState::DIRECTION_LOCKED, TractionState::COMPLETED})
+  {
+    EXPECT_TRUE(can_transition(start, TractionState::RETURNING_ZERO));
+    EXPECT_TRUE(can_transition(TractionState::RETURNING_ZERO, TractionState::READY));
+    EXPECT_TRUE(can_transition(TractionState::RETURNING_ZERO, TractionState::FAULT));
+    EXPECT_TRUE(can_transition(TractionState::RETURNING_ZERO, TractionState::EMERGENCY_STOP));
+  }
+  EXPECT_TRUE(is_motion_state(TractionState::RETURNING_ZERO));
+  EXPECT_FALSE(can_transition(TractionState::TRACTION, TractionState::RETURNING_ZERO));
+}
+
 }  // namespace fr_traction
