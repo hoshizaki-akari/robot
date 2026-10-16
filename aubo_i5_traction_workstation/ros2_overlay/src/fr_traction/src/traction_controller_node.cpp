@@ -7,6 +7,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "fr_traction/msg/traction_command.hpp"
 #include "fr_traction/msg/position_control_diagnostics.hpp"
@@ -31,6 +32,23 @@ public:
   {
     control_rate_hz_ = declare_parameter("control_rate_hz", 100.0);
     stepwise_backend_ = declare_parameter("stepwise_backend", false);
+    const auto stepwise_drag_axis_mask = declare_parameter<std::vector<double>>(
+      "stepwise_drag_axis_mask", std::vector<double>{1.0, 1.0, 1.0});
+    if (stepwise_drag_axis_mask.size() != 3U) {
+      throw std::invalid_argument("stepwise_drag_axis_mask must contain exactly three values");
+    }
+    stepwise_config_.drag_axis_mask = {
+      stepwise_drag_axis_mask[0], stepwise_drag_axis_mask[1], stepwise_drag_axis_mask[2]};
+    if (!finite(stepwise_config_.drag_axis_mask) ||
+      (stepwise_config_.drag_axis_mask.x != 0.0 && stepwise_config_.drag_axis_mask.x != 1.0) ||
+      (stepwise_config_.drag_axis_mask.y != 0.0 && stepwise_config_.drag_axis_mask.y != 1.0) ||
+      (stepwise_config_.drag_axis_mask.z != 0.0 && stepwise_config_.drag_axis_mask.z != 1.0) ||
+      stepwise_config_.drag_axis_mask.x + stepwise_config_.drag_axis_mask.y +
+      stepwise_config_.drag_axis_mask.z < 1.0)
+    {
+      throw std::invalid_argument(
+              "stepwise_drag_axis_mask values must be 0 or 1 with at least one enabled axis");
+    }
     stepwise_config_.force_polarity_verified = declare_parameter(
       "stepwise_force_polarity_verified",
       false);

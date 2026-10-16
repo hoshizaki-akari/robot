@@ -55,10 +55,18 @@ class TransformConfiguration:
     pose_timeout_s: float = 0.10
     timestamp_future_tolerance_s: float = 0.05
     quaternion_norm_tolerance: float = 0.05
+    fixed_pose_tare_enabled: bool = False
+    force_bias_sensor_n: Vector3 = (0.0, 0.0, 0.0)
+    force_sensor_sign: Vector3 = (1.0, 1.0, 1.0)
+    torque_bias_sensor_nm: Vector3 = (0.0, 0.0, 0.0)
+    tare_q_base_flange: Quaternion = (0.0, 0.0, 0.0, 1.0)
+    tare_pose_tolerance_rad: float = 0.01
 
 
 @dataclass(frozen=True)
 class TransformedWrench:
+    """Validated base-frame wrench expressed about the flange origin."""
+
     stamp: Stamp
     force_base: Vector3
     torque_base_about_flange: Vector3
@@ -113,6 +121,27 @@ def _cross(left: Vector3, right: Vector3) -> Vector3:
 
 def _add(left: Vector3, right: Vector3) -> Vector3:
     return (left[0] + right[0], left[1] + right[1], left[2] + right[2])
+
+
+def _subtract(left: Vector3, right: Vector3) -> Vector3:
+    return (left[0] - right[0], left[1] - right[1], left[2] - right[2])
+
+
+def _multiply_components(left: Vector3, right: Vector3) -> Vector3:
+    return (left[0] * right[0], left[1] * right[1], left[2] * right[2])
+
+
+def _force_sensor_sign(value: Any) -> Vector3:
+    sign = _vector3(value)
+    if any(component not in (-1.0, 1.0) for component in sign):
+        raise ValueError("force sensor signs must each be -1 or 1")
+    return sign
+
+
+def _quaternion_angle_rad(left: Quaternion, right: Quaternion) -> float:
+    """Return the shortest orientation distance, treating q and -q as equal."""
+    dot = sum(first * second for first, second in zip(left, right, strict=True))
+    return 2.0 * math.acos(min(1.0, max(0.0, abs(dot))))
 
 
 def rotate_vector(quaternion: Quaternion, vector: Vector3) -> Vector3:
@@ -179,8 +208,17 @@ class WrenchTransformCore:
     """
 
     def __init__(self, configuration: TransformConfiguration):
+        """Initialize the transform cache with a fully validated configuration."""
         self._configuration = configuration
         self._validate_configuration()
+        self._force_sensor_sign = _force_sensor_sign(configuration.force_sensor_sign)
+        self._tare_q_base_flange = (
+            _normalize_quaternion(
+                configuration.tare_q_base_flange, configuration.quaternion_norm_tolerance
+            )
+            if configuration.fixed_pose_tare_enabled
+            else None
+        )
         self._sensor: _SensorSample | None = None
         self._pose: _PoseSample | None = None
 
@@ -198,6 +236,16 @@ class WrenchTransformCore:
             raise ValueError("timestamp future tolerance must be finite and nonnegative")
         _normalize_quaternion(config.q_flange_sensor, config.quaternion_norm_tolerance)
         _vector3(config.p_flange_sensor_m)
+        _force_sensor_sign(config.force_sensor_sign)
+        if config.fixed_pose_tare_enabled:
+            _vector3(config.force_bias_sensor_n)
+            _vector3(config.torque_bias_sensor_nm)
+            _normalize_quaternion(config.tare_q_base_flange, config.quaternion_norm_tolerance)
+            if (
+                not math.isfinite(config.tare_pose_tolerance_rad)
+                or config.tare_pose_tolerance_rad < 0.0
+            ):
+                raise ValueError("tare pose tolerance must be finite and nonnegative")
 
     def _validate_header(
         self, message: Any, expected_frame: str, source_timeout_s: float, ros_now_s: float
@@ -281,9 +329,22 @@ class WrenchTransformCore:
             return None
         if sensor_age > config.sensor_timeout_s or pose_age > config.pose_timeout_s:
             return None
+        if (
+            config.fixed_pose_tare_enabled
+            and self._tare_q_base_flange is not None
+            and _quaternion_angle_rad(self._pose.q_base_flange, self._tare_q_base_flange)
+            > config.tare_pose_tolerance_rad
+        ):
+            return None
+        force_sensor = self._sensor.force_sensor
+        torque_sensor = self._sensor.torque_sensor
+        if config.fixed_pose_tare_enabled:
+            force_sensor = _subtract(force_sensor, _vector3(config.force_bias_sensor_n))
+            torque_sensor = _subtract(torque_sensor, _vector3(config.torque_bias_sensor_nm))
+        force_sensor = _multiply_components(force_sensor, self._force_sensor_sign)
         force_base, torque_base = transform_sensor_wrench(
-            self._sensor.force_sensor,
-            self._sensor.torque_sensor,
+            force_sensor,
+            torque_sensor,
             _normalize_quaternion(config.q_flange_sensor, config.quaternion_norm_tolerance),
             _vector3(config.p_flange_sensor_m),
             self._pose.q_base_flange,
@@ -297,6 +358,7 @@ class AuboWrenchTransformNode(Node):
     """ROS wrapper around :class:`WrenchTransformCore`."""
 
     def __init__(self) -> None:
+        """Declare the bridge parameters and create ROS subscriptions/publisher."""
         if rclpy is None:
             raise RuntimeError("rclpy and generated fr_traction messages are required")
         super().__init__("aubo_wrench_transform")
@@ -328,6 +390,24 @@ class AuboWrenchTransformNode(Node):
             ),
             quaternion_norm_tolerance=float(
                 self.declare_parameter("quaternion_norm_tolerance", 0.05).value
+            ),
+            fixed_pose_tare_enabled=bool(
+                self.declare_parameter("fixed_pose_tare_enabled", False).value
+            ),
+            force_bias_sensor_n=tuple(
+                self.declare_parameter("force_bias_sensor_n", [0.0, 0.0, 0.0]).value
+            ),  # type: ignore[arg-type]
+            force_sensor_sign=tuple(
+                self.declare_parameter("force_sensor_sign", [1.0, 1.0, 1.0]).value
+            ),  # type: ignore[arg-type]
+            torque_bias_sensor_nm=tuple(
+                self.declare_parameter("torque_bias_sensor_nm", [0.0, 0.0, 0.0]).value
+            ),  # type: ignore[arg-type]
+            tare_q_base_flange=tuple(
+                self.declare_parameter("tare_q_base_flange", [0.0, 0.0, 0.0, 1.0]).value
+            ),  # type: ignore[arg-type]
+            tare_pose_tolerance_rad=float(
+                self.declare_parameter("tare_pose_tolerance_rad", 0.01).value
             ),
         )
         self._core = WrenchTransformCore(configuration)
@@ -386,6 +466,7 @@ class AuboWrenchTransformNode(Node):
 
 
 def main(args: Sequence[str] | None = None) -> None:
+    """Run the ROS wrench transform bridge until shutdown."""
     if rclpy is None:
         raise RuntimeError("rclpy and generated fr_traction messages are required")
     rclpy.init(args=args)

@@ -29,6 +29,8 @@ def generate_launch_description():
     arguments.extend([
         DeclareLaunchArgument("serial_path", default_value="/dev/ttyUSB0"),
         DeclareLaunchArgument("axis_sign", default_value="0.0"),
+        DeclareLaunchArgument("wrench_calibration_file", default_value=mount),
+        DeclareLaunchArgument("drag_axis_mask", default_value="[1.0, 1.0, 0.0]"),
     ])
     return LaunchDescription(arguments + [
         Node(
@@ -38,6 +40,12 @@ def generate_launch_description():
                 "connect_hardware": boolean("connect_hardware"),
                 "enable_motion_interface": boolean("enable_motion"),
                 "pose_frame_id": "base_link",
+                # Real V4 first-step feedback differed from the IK endpoint by
+                # ~0.10 mm. Use 1 mm steps and 0.2 mm arrival tolerance rather
+                # than claiming 0.05 mm repeatability on this controller.
+                "maximum_step_m": 0.001,
+                "planning_horizon_s": 0.5,
+                "arrival_tolerance_m": 0.0002,
             }],
         ),
         Node(
@@ -49,7 +57,7 @@ def generate_launch_description():
         Node(
             package="fr_traction", executable="aubo_wrench_transform_node.py",
             name="aubo_wrench_transform", output="screen",
-            parameters=[mount, {
+            parameters=[LaunchConfiguration("wrench_calibration_file"), {
                 "mounting_verified": boolean("mounting_verified"),
                 "pose_frame_verified": boolean("pose_frame_verified"),
                 "pose_timeout_s": 0.5,
@@ -65,6 +73,7 @@ def generate_launch_description():
                 "stepwise_axis_sign": ParameterValue(
                     LaunchConfiguration("axis_sign"), value_type=float),
                 "stepwise_maximum_speed_mps": 0.002,
+                "stepwise_drag_axis_mask": ParameterValue(LaunchConfiguration("drag_axis_mask")),
             }],
         ),
         Node(

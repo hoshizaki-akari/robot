@@ -359,6 +359,9 @@ private:
       healthy ? diagnostic_msgs::msg::DiagnosticStatus::OK : diagnostic_msgs::msg::DiagnosticStatus
       ::ERROR;
     status.message = connected_ ? scheduler_->reason() : connection_error_;
+    if (connected_ && !scheduler_->fault_reason().empty()) {
+      status.message = scheduler_->fault_reason() + "; " + scheduler_->reason();
+    }
     const auto add = [&status](const std::string & key, const std::string & value) {
         diagnostic_msgs::msg::KeyValue entry;
         entry.key = key;
@@ -373,6 +376,10 @@ private:
     add("motion_idle", idle.data ? "1" : "0");
     add("epoch", std::to_string(scheduler_->epoch()));
     add("last_sdk_result", last_sdk_result_);
+    add("fault_reason", scheduler_->fault_reason());
+    add("planning_horizon_s", std::to_string(config_.horizon_s));
+    add("maximum_step_m", std::to_string(config_.maximum_step_m));
+    add("arrival_tolerance_m", std::to_string(config_.arrival_tolerance_m));
     diagnostic_msgs::msg::DiagnosticArray array;
     array.header.stamp = now();
     array.status.push_back(status);

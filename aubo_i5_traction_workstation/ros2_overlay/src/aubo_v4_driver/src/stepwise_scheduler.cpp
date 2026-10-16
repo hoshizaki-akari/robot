@@ -126,6 +126,7 @@ void StepwiseScheduler::clear_motion_cache()
 
 void StepwiseScheduler::begin_stop(double now, const std::string & reason, bool fault)
 {
+  if (fault && fault_reason_.empty()) {fault_reason_ = reason;}
   if (state_ == StepwiseState::STOPPING) {
     const bool fault_escalated = fault && !stop_fault_;
     stop_fault_ = stop_fault_ || fault;
@@ -514,6 +515,11 @@ bool StepwiseScheduler::healthy(double now) const
 const std::string & StepwiseScheduler::reason() const
 {
   return reason_;
+}
+
+const std::string & StepwiseScheduler::fault_reason() const
+{
+  return fault_reason_;
 }
 
 std::uint64_t StepwiseScheduler::epoch() const

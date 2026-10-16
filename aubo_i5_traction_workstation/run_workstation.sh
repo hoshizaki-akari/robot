@@ -21,6 +21,7 @@ source "$VENV_DIR/bin/activate"
 set -u
 export ROS_DOMAIN_ID="${AUBO_ROS_DOMAIN_ID:-42}"
 export RMW_IMPLEMENTATION="${AUBO_RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
+export ROS_LOCALHOST_ONLY="${AUBO_ROS_LOCALHOST_ONLY:-1}"
 WORKSTATION_PORT="${WORKSTATION_PORT:-8082}"
 cd "$PROJECT_DIR"
 exec python -m uvicorn app:app --host 127.0.0.1 --port "$WORKSTATION_PORT"

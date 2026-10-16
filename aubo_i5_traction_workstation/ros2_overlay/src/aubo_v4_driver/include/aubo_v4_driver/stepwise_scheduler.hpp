@@ -77,6 +77,7 @@ public:
   bool motion_idle(double now) const;
   bool healthy(double now) const;
   const std::string & reason() const;
+  const std::string & fault_reason() const;
   std::uint64_t epoch() const;
 
 private:
@@ -95,6 +96,7 @@ private:
   StepwiseConfig config_;
   StepwiseState state_{StepwiseState::DISABLED};
   std::string reason_{"disabled"};
+  std::string fault_reason_;
   std::optional<StepwiseFeedback> feedback_;
   std::optional<std::array<double, 3>> velocity_;
   std::optional<StepwiseCommand> pending_;

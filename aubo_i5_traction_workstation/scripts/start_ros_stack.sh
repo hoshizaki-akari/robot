@@ -11,5 +11,6 @@ fi
 source "$ROS_WS/install/setup.bash"
 export ROS_DOMAIN_ID="${AUBO_ROS_DOMAIN_ID:-42}"
 export RMW_IMPLEMENTATION="${AUBO_RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
+export ROS_LOCALHOST_ONLY="${AUBO_ROS_LOCALHOST_ONLY:-1}"
 echo "Read-only AUBO status launch; robot and sensor connections are opt-in."
 exec ros2 launch fr_traction aubo_i5_readonly.launch.py "$@"

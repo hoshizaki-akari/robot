@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import sys
 
+import pytest
+
 
 _NODE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "aubo_wrench_transform_node.py"
 _SPEC = importlib.util.spec_from_file_location("aubo_wrench_transform_node", _NODE_PATH)
@@ -73,6 +75,7 @@ def _accept_both(core, sensor=None, pose=None, receipt=10.0, ros_now=10.0):
 
 
 def test_identity_transform_preserves_sensor_wrench():
+    """The legacy identity mounting still passes its unaltered wrench through."""
     core = _core()
     _accept_both(core)
 
@@ -85,6 +88,7 @@ def test_identity_transform_preserves_sensor_wrench():
 
 
 def test_90_degree_sensor_to_flange_rotation_is_applied_before_base_rotation():
+    """Sensor-frame values rotate into flange coordinates before base rotation."""
     half_sqrt_two = math.sqrt(0.5)
     core = _core(q_flange_sensor=(0.0, 0.0, half_sqrt_two, half_sqrt_two))
     _accept_both(
@@ -100,6 +104,7 @@ def test_90_degree_sensor_to_flange_rotation_is_applied_before_base_rotation():
 
 
 def test_lever_arm_shifts_torque_to_flange_origin():
+    """A nonzero mounting lever arm adds the expected torque contribution."""
     core = _core(p_flange_sensor_m=(0.0, 0.1, 0.0))
     _accept_both(core, sensor=_sensor(force=(10.0, 0.0, 0.0), torque=(0.0, 0.0, 0.0)))
 
@@ -111,6 +116,7 @@ def test_lever_arm_shifts_torque_to_flange_origin():
 
 
 def test_stale_receipt_and_stale_source_timestamp_never_publish():
+    """Expired receipts and source stamps cannot produce an output."""
     core = _core()
     _accept_both(core)
     assert core.output_if_fresh(10.21) is None
@@ -125,6 +131,7 @@ def test_stale_receipt_and_stale_source_timestamp_never_publish():
 
 
 def test_calibration_gate_defaults_fail_closed():
+    """The unchanged default calibration flags continue to suppress output."""
     core = module.WrenchTransformCore(
         module.TransformConfiguration(
             q_flange_sensor=(0.0, 0.0, 0.0, 1.0),
@@ -137,6 +144,7 @@ def test_calibration_gate_defaults_fail_closed():
 
 
 def test_malformed_data_clears_cache_and_never_reuses_prior_wrench():
+    """Invalid input clears cached state rather than reusing a prior wrench."""
     core = _core()
     _accept_both(core)
     assert core.output_if_fresh(10.01) is not None
@@ -149,8 +157,92 @@ def test_malformed_data_clears_cache_and_never_reuses_prior_wrench():
     assert core.output_if_fresh(10.05) is None
 
 
+def test_fixed_pose_tare_subtracts_sensor_frame_offsets_before_transform():
+    """Configured offsets are removed in sensor coordinates before transformation."""
+    core = _core(
+        fixed_pose_tare_enabled=True,
+        force_bias_sensor_n=(1.0, 2.0, 3.0),
+        torque_bias_sensor_nm=(4.0, 5.0, 6.0),
+    )
+    _accept_both(core, sensor=_sensor(force=(3.0, 2.0, 1.0), torque=(5.0, 7.0, 9.0)))
+
+    result = core.output_if_fresh(10.01)
+
+    assert result is not None
+    assert result.force_base == (2.0, 0.0, -2.0)
+    assert result.torque_base_about_flange == (1.0, 2.0, 3.0)
+
+
+def test_fixed_pose_tare_rotates_bias_corrected_sensor_wrench():
+    """The corrected sensor wrench is subsequently rotated through the mount."""
+    half_sqrt_two = math.sqrt(0.5)
+    core = _core(
+        fixed_pose_tare_enabled=True,
+        q_flange_sensor=(0.0, 0.0, half_sqrt_two, half_sqrt_two),
+        force_bias_sensor_n=(1.0, 1.0, 0.0),
+    )
+    _accept_both(core, sensor=_sensor(force=(2.0, 1.0, 0.0), torque=(0.0, 0.0, 0.0)))
+
+    result = core.output_if_fresh(10.01)
+
+    assert result is not None
+    assert result.force_base == pytest.approx((0.0, 1.0, 0.0), abs=1e-12)
+
+
+def test_force_sensor_sign_follows_bias_correction_before_mount_rotation():
+    """Explicit force signs apply after tare correction and before rotation."""
+    half_sqrt_two = math.sqrt(0.5)
+    core = _core(
+        fixed_pose_tare_enabled=True,
+        q_flange_sensor=(0.0, 0.0, half_sqrt_two, half_sqrt_two),
+        force_bias_sensor_n=(1.0, 0.0, 0.0),
+        force_sensor_sign=(-1.0, 1.0, 1.0),
+    )
+    _accept_both(core, sensor=_sensor(force=(3.0, 0.0, 0.0), torque=(1.0, 2.0, 3.0)))
+
+    result = core.output_if_fresh(10.01)
+
+    assert result is not None
+    assert result.force_base == pytest.approx((0.0, -2.0, 0.0), abs=1e-12)
+    assert result.torque_base_about_flange == pytest.approx((-2.0, 1.0, 3.0), abs=1e-12)
+
+
+def test_fixed_pose_tare_treats_opposite_quaternion_sign_as_same_pose():
+    """Quaternion sign aliases describe the same accepted fixed tare pose."""
+    core = _core(fixed_pose_tare_enabled=True)
+    _accept_both(core, pose=_pose(quaternion=(0.0, 0.0, 0.0, -1.0)))
+
+    assert core.output_if_fresh(10.01) is not None
+
+
+def test_fixed_pose_tare_rejects_orientation_drift():
+    """A flange orientation beyond the configured tare tolerance fails closed."""
+    angle = 0.02
+    core = _core(fixed_pose_tare_enabled=True, tare_pose_tolerance_rad=0.01)
+    _accept_both(
+        core, pose=_pose(quaternion=(0.0, 0.0, math.sin(angle / 2.0), math.cos(angle / 2.0))))
+
+    assert core.output_if_fresh(10.01) is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"force_bias_sensor_n": (math.nan, 0.0, 0.0)},
+        {"force_sensor_sign": (1.0, 0.0, 1.0)},
+        {"torque_bias_sensor_nm": (0.0, math.inf, 0.0)},
+        {"tare_q_base_flange": (0.0, 0.0, 0.0, 0.0)},
+        {"tare_pose_tolerance_rad": math.nan},
+    ],
+)
+def test_fixed_pose_tare_rejects_invalid_configuration(overrides):
+    """Nonfinite offsets, invalid quaternions, and invalid tolerances are rejected."""
+    values = dict(fixed_pose_tare_enabled=True)
+    values.update(overrides)
+    with pytest.raises(ValueError):
+        _core(**values)
+
+
 def pytest_approx(values):
     """Avoid a pytest runtime dependency inside the bridge module itself."""
-    import pytest
-
     return pytest.approx(values, abs=1e-12)

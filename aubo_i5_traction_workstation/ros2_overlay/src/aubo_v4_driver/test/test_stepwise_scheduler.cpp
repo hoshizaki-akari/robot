@@ -506,3 +506,42 @@ TEST(StepwiseSchedulerStatus, HealthyAndMotionIdleHaveStrictMeaning)
   EXPECT_FALSE(scheduler.motion_idle(0.11));
   EXPECT_FALSE(scheduler.healthy(0.6));
 }
+
+TEST(StepwiseSchedulerHardwareResolution, OneMillimetreProfileAcceptsObservedEndpointError)
+{
+  StepwiseConfig config;
+  config.maximum_step_m = 0.001;
+  config.horizon_s = 0.5;
+  config.arrival_tolerance_m = 0.0002;
+  StepwiseScheduler scheduler(config);
+  arm(scheduler);
+  const auto command = send(scheduler, {0.002, 0.0, 0.0});
+  acknowledge(scheduler, command);
+  const std::array<double, 3> actual{command.target[0] + 0.0000768, 0.0000613, 0.0};
+  ASSERT_TRUE(scheduler.set_feedback(feedback(2U, 0.03, true, 0.0, actual), 0.03));
+  ASSERT_TRUE(scheduler.set_feedback(feedback(3U, 0.05, true, 0.0, actual), 0.05));
+  ASSERT_TRUE(scheduler.set_feedback(feedback(4U, 0.07, true, 0.0, actual), 0.07));
+  EXPECT_EQ(scheduler.state(), StepwiseState::SETTLING);
+  scheduler.poll(0.18);
+  EXPECT_EQ(scheduler.state(), StepwiseState::READY);
+  ASSERT_TRUE(scheduler.set_velocity({0.0012, 0.0, 0.0}, 0.19));
+  EXPECT_TRUE(scheduler.take_command(0.19).has_value());
+}
+
+TEST(StepwiseSchedulerStop, PreservesOriginalFaultReasonAfterStopConfirmation)
+{
+  StepwiseScheduler scheduler;
+  arm(scheduler);
+  const auto command = send(scheduler, {0.002, 0.0, 0.0});
+  acknowledge(scheduler, command);
+  scheduler.request_stop(0.03, "original completion failure", true);
+  const auto epoch = scheduler.take_stop_request();
+  ASSERT_TRUE(epoch.has_value());
+  scheduler.acknowledge_stop(*epoch, true, 0.04);
+  for (std::uint64_t sequence = 2; sequence <= 4; ++sequence) {
+    const double time = 0.03 + 0.01 * static_cast<double>(sequence);
+    ASSERT_TRUE(scheduler.set_feedback(feedback(sequence, time), time));
+  }
+  EXPECT_EQ(scheduler.state(), StepwiseState::FAULT);
+  EXPECT_EQ(scheduler.fault_reason(), "original completion failure");
+}

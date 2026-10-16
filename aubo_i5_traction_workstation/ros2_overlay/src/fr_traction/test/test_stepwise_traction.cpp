@@ -94,6 +94,40 @@ TEST(StepwiseTraction, DragAxesAndLetGo)
         config, ft::ControlMode::DRAGGING, {}, 0,
         {}).linear_velocity), 0);
 }
+TEST(StepwiseTraction, DefaultDragMaskRetainsAllAxes)
+{
+  const auto out = ft::stepwise_traction_output(
+    verified(), ft::ControlMode::DRAGGING, {}, 0, {0, 0, 2});
+  EXPECT_TRUE(out.valid);
+  EXPECT_GT(out.linear_velocity.z, 0);
+}
+TEST(StepwiseTraction, DragRejectsAllAxesMasked)
+{
+  auto config = verified();
+  config.drag_axis_mask = {0, 0, 0};
+  EXPECT_FALSE(
+    ft::stepwise_traction_output(config, ft::ControlMode::DRAGGING, {}, 0, {2, 0, 0}).valid);
+}
+TEST(StepwiseTraction, DragRejectsNonBinaryMask)
+{
+  auto config = verified();
+  config.drag_axis_mask = {1, 0.5, 0};
+  EXPECT_FALSE(
+    ft::stepwise_traction_output(config, ft::ControlMode::DRAGGING, {}, 0, {2, 0, 0}).valid);
+}
+TEST(StepwiseTraction, DragMaskExcludesZBeforeMagnitudeAndVelocity)
+{
+  auto config = verified();
+  config.drag_axis_mask = {1, 1, 0};
+  const auto xy_only = ft::stepwise_traction_output(
+    config, ft::ControlMode::DRAGGING, {}, 0, {2, -3, 0});
+  const auto with_masked_z = ft::stepwise_traction_output(
+    config, ft::ControlMode::DRAGGING, {}, 0, {2, -3, 100});
+  EXPECT_TRUE(with_masked_z.valid);
+  EXPECT_DOUBLE_EQ(with_masked_z.linear_velocity.x, xy_only.linear_velocity.x);
+  EXPECT_DOUBLE_EQ(with_masked_z.linear_velocity.y, xy_only.linear_velocity.y);
+  EXPECT_DOUBLE_EQ(with_masked_z.linear_velocity.z, 0.0);
+}
 TEST(StepwiseTraction, SmallErrorProducesResolvableStepNotSilentStall)
 {
   const auto out = ft::stepwise_traction_output(

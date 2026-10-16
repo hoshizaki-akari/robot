@@ -16,6 +16,7 @@ struct StepwiseTractionConfig
   double minimum_command_speed_mps{0.0012};
   double drag_deadband_n{1.0}, drag_gain_mps_per_n{0.001};
   Vec3 drag_signs{1.0, 1.0, 1.0};
+  Vec3 drag_axis_mask{1.0, 1.0, 1.0};
 };
 
 // Stateless decision policy: no integral, virtual momentum or delay-based
@@ -41,24 +42,33 @@ inline ControllerOutput stepwise_traction_output(
     };
   if (mode == ControlMode::DRAGGING) {
     if (!config.drag_axes_verified || !finite(config.drag_signs) ||
+      !finite(config.drag_axis_mask) ||
       std::abs(std::abs(config.drag_signs.x) - 1.0) > 1e-9 ||
       std::abs(std::abs(config.drag_signs.y) - 1.0) > 1e-9 ||
       std::abs(std::abs(config.drag_signs.z) - 1.0) > 1e-9 ||
+      (config.drag_axis_mask.x != 0.0 && config.drag_axis_mask.x != 1.0) ||
+      (config.drag_axis_mask.y != 0.0 && config.drag_axis_mask.y != 1.0) ||
+      (config.drag_axis_mask.z != 0.0 && config.drag_axis_mask.z != 1.0) ||
+      (config.drag_axis_mask.x + config.drag_axis_mask.y + config.drag_axis_mask.z < 1.0) ||
       !std::isfinite(config.drag_deadband_n) || config.drag_deadband_n < 0.0 ||
       !std::isfinite(config.drag_gain_mps_per_n) || config.drag_gain_mps_per_n <= 0.0)
     {
       return result;
     }
-    const double force = norm(wrench);
+    const Vec3 masked_wrench{
+      wrench.x * config.drag_axis_mask.x,
+      wrench.y * config.drag_axis_mask.y,
+      wrench.z * config.drag_axis_mask.z};
+    const double force = norm(masked_wrench);
     if (!std::isfinite(force)) {return result;}
     if (force > config.drag_deadband_n) {
       const double speed = std::clamp(
         config.drag_gain_mps_per_n * (force - config.drag_deadband_n),
         config.minimum_command_speed_mps, config.maximum_speed_mps);
       result.linear_velocity = {
-        config.drag_signs.x * wrench.x * speed / force,
-        config.drag_signs.y * wrench.y * speed / force,
-        config.drag_signs.z * wrench.z * speed / force};
+        config.drag_signs.x * masked_wrench.x * speed / force,
+        config.drag_signs.y * masked_wrench.y * speed / force,
+        config.drag_signs.z * masked_wrench.z * speed / force};
     }
     result.scalar_velocity_mps = norm(result.linear_velocity);
     result.valid = finite(result.linear_velocity);

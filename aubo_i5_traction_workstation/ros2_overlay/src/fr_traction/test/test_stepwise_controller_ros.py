@@ -43,8 +43,10 @@ def _reliable_qos(depth=10, transient_local=False):
 class ControllerProcess:
     """Own one controller subprocess and never signal another process."""
 
-    def __init__(self, verified):
+    def __init__(self, verified, extra_parameters=None):
+        """Record the verified-mode flag and optional test-only ROS parameters."""
         self.verified = verified
+        self.extra_parameters = extra_parameters or []
         self.process = None
 
     def start(self):
@@ -80,6 +82,7 @@ class ControllerProcess:
                     "stepwise_axis_sign:=1.0",
                 ]
             )
+        arguments.extend(self.extra_parameters)
         environment = os.environ.copy()
         environment.update(
             {
@@ -116,6 +119,7 @@ class ControllerHarness:
     """Publish scripted ROS inputs and collect only fresh controller outputs."""
 
     def __init__(self, runtime, controller):
+        """Create the isolated test node around one owned controller process."""
         self.controller = controller
         self.node = Node("stepwise_controller_ros_test", context=runtime)
         input_qos = _reliable_qos()
@@ -335,6 +339,21 @@ def unverified_controller(ros_runtime):
         harness.close()
 
 
+@pytest.fixture
+def xy_drag_controller(ros_runtime):
+    """Run a verified controller that explicitly permits only XY drag motion."""
+    child = ControllerProcess(
+        verified=True,
+        extra_parameters=["-p", "stepwise_drag_axis_mask:=[1.0, 1.0, 0.0]"],
+    ).start()
+    harness = ControllerHarness(ros_runtime, child)
+    try:
+        harness.wait_until(lambda: bool(harness.health), timeout_s=5.0)
+        yield harness
+    finally:
+        harness.close()
+
+
 @pytest.mark.parametrize(
     ("force", "expected_sign"),
     [((3.0, 0.0, 0.0), 1.0), ((7.0, 0.0, 0.0), -1.0)],
@@ -399,6 +418,28 @@ def test_drag_axes_follow_identity_pose_and_let_go_returns_zero(controller):
     controller.configure(TractionCommand.DRAG, 0.0, (0.0, 0.0, 0.0))
     controller.wait_for_stable_output(
         released, lambda message: _norm(message) <= ZERO_EPSILON, timeout_s=3.0
+    )
+
+
+def test_drag_axis_mask_blocks_z_and_preserves_xy_response(xy_drag_controller):
+    """An explicit XY mask rejects Z force while retaining XY drag response."""
+    masked_z = xy_drag_controller.mark()
+    xy_drag_controller.configure(TractionCommand.DRAG, 0.0, (0.0, 0.0, 4.0))
+    xy_drag_controller.wait_for_stable_output(
+        masked_z, lambda message: _norm(message) <= ZERO_EPSILON, timeout_s=3.0
+    )
+
+    xy_force = xy_drag_controller.mark()
+    xy_drag_controller.configure(TractionCommand.DRAG, 0.0, (2.0, -3.0, 4.0))
+    xy_drag_controller.wait_for_stable_output(
+        xy_force,
+        lambda message: (
+            message.linear.x > 0.0
+            and message.linear.y < 0.0
+            and abs(message.linear.z) <= ZERO_EPSILON
+            and _norm(message) <= 0.002000001
+        ),
+        timeout_s=3.0,
     )
 
 
