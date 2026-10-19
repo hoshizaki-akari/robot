@@ -17,7 +17,15 @@ old sensor-Z / flange-Z tilt = 16.505 deg
 software chain = proper rotation, no evident transpose/sign error
 new operator X under old calibration = unit [0.8143, 0.5440, -0.2023]
 new unloaded / X captures = real sensor data, stationary, no motion commands
-new Y capture = pending; runtime mounting/signs not changed
+new Y capture = complete, 863 real samples; operator identified direction by tool Y+ jog
+pose change X to Y = 0.01233 deg, stationary during capture
+new XY angle = 89.41408 deg; fit residual = 0.29296 deg per axis
+new rotation = proper SO(3), determinant +1, no per-axis sign flips
+actual transform roundtrip X/Y = dominant component 0.999987, cross-axis 0.005113
+released zero = 891 real samples, stationary, new local tare applied
+new local profile = debug/session_20261019_hardware/xy_recheck_commissioning.yaml
+old local profile = preserved unchanged; not the active profile
+Z = user-approved derived right-handed basis, not independently force-verified
 
 offline = fr_traction 206 reported entries / 0 errors / 0 failures / 24 skipped
 driver = 127 reported entries / 0 errors / 0 failures / 14 skipped
@@ -27,14 +35,18 @@ scheduler / transport = each 20 repeats passed; Python/web 53 passed; Ruff passe
 ROS reported entries include lint/test aggregation, not live trials
 
 runtime = http://127.0.0.1:8082/ ; startup READY / connected / measured idle
-logs = debug/session_20261019_155900_workstation
+logs = debug/session_20261019_160544_workstation
 debug = debug/session_20261019_hardware/source_freshness_offline.log
 debug = debug/session_20261019_hardware/light_drag_curve_tests.log
 debug = debug/session_20261019_hardware/xy_recheck_unloaded.json
 debug = debug/session_20261019_hardware/xy_recheck_tool_x_push.json
+debug = debug/session_20261019_hardware/xy_recheck_tool_y_push.json
+debug = debug/session_20261019_hardware/xy_recheck_released.json
+debug = debug/session_20261019_hardware/xy_recheck_transform_validation.log
+latest config-only regression = Python/web 53 passed, Ruff passed
 details = DRAG_DIRECTION_RESPONSE_20261019.md
-status = WAITING_CHECKPOINT_OPERATOR_Y_POSITIVE_FORCE_SAMPLE
-operator_action = hold actual tool Y+ force, reply Y+ held; no active motion
+status = WAITING_CHECKPOINT_OPERATOR_NEW_XY_LOADED_DRAG
+operator_action = refresh web, initial calibration unloaded, manually start drag, check XY
 not_accepted = new lightness / physical directions / loaded position and constant-force
 
 ===== HISTORICAL: NATIVE TRACKING INITIAL CHECKPOINT =====
