@@ -1,6 +1,7 @@
 #include <controller_manager_msgs/srv/switch_controller.hpp>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <fr_traction/msg/end_effector_state.hpp>
+#include <fr_traction/msg/traction_command.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -11,12 +12,14 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <future>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 #include "aubo_v4_driver/stepwise_scheduler.hpp"
 #include "aubo_v4_driver/stepwise_transport.hpp"
+#include "aubo_v4_driver/stop_handoff.hpp"
 
 namespace av = aubo_v4_driver;
 namespace
@@ -51,6 +54,7 @@ public:
     // both. Two independent opt-ins protect against accidental hardware use.
     const bool connect_hardware = declare_parameter<bool>("connect_hardware", false);
     enable_motion_ = declare_parameter<bool>("enable_motion_interface", false);
+    enable_follow_drag_ = declare_parameter<bool>("enable_follow_drag", false);
     av::StepwiseConfig config;
     config.maximum_step_m = declare_parameter("maximum_step_m", 0.0005);
     config.maximum_speed_mps = declare_parameter("maximum_speed_mps", 0.002);
@@ -62,7 +66,7 @@ public:
     config.settling_time_s = declare_parameter("settling_time_s", 0.1);
     config.arrival_tolerance_m = declare_parameter("arrival_tolerance_m", 0.00005);
     config.quiet_speed_mps = declare_parameter("quiet_speed_mps", 0.0002);
-    if (config.maximum_step_m > 0.001 || config.maximum_speed_mps > 0.005 ||
+    if (config.maximum_step_m > 0.005 || config.maximum_speed_mps > 0.020 ||
       config.horizon_s > 0.5 || config.feedback_timeout_s > 1.0)
     {
       throw std::invalid_argument("stepwise prototype step/speed/timing limits exceeded");
@@ -103,6 +107,13 @@ public:
     diagnostic_pub_ = create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
       "/diagnostics", rclcpp::QoS(
         1).transient_local());
+    session_limit_client_ = create_client<std_srvs::srv::Trigger>("/traction/session_limit_stop");
+    mode_sub_ = create_subscription<fr_traction::msg::TractionCommand>(
+      "/traction/command", rclcpp::QoS(1).reliable(),
+      [this](fr_traction::msg::TractionCommand::ConstSharedPtr message) {
+        last_command_mode_ = message->mode;
+        mode_at_ = av::steady_seconds();
+      });
     velocity_sub_ = create_subscription<geometry_msgs::msg::Twist>(
       "/controller_manager/command_cart_vel", rclcpp::QoS(1).reliable(),
       [this](geometry_msgs::msg::Twist::ConstSharedPtr message) {
@@ -120,6 +131,11 @@ public:
           return;
         }
         if (session_enabled_) {
+          if (enable_follow_drag_ && scheduler_->state() == av::StepwiseState::READY) {
+            if (time - mode_at_ > config_.command_timeout_s) {return;}
+            scheduler_->set_follow_mode(
+              last_command_mode_ == fr_traction::msg::TractionCommand::DRAG, time);
+          }
           scheduler_->set_velocity({message->linear.x, message->linear.y, message->linear.z}, time);
         }
       });
@@ -148,6 +164,7 @@ public:
           return;
         }
         if (request->start_controllers.empty()) {response->ok = true; return;}
+        if (session_limit_handoff_pending_) {response->ok = false; return;}
         if (session_enabled_) {
           response->ok = !scheduler_->fault_pending();
           return;
@@ -156,6 +173,7 @@ public:
         scheduler_->set_enabled(true, av::steady_seconds());
         session_enabled_ = response->ok;
         if (response->ok) {
+          session_limit_reached_ = false;
           const auto sample = transport_->sample();
           session_origin_ = sample.feedback.position;
           session_orientation_ = sample.feedback.orientation;
@@ -193,7 +211,9 @@ public:
       options.speed_mps = config_.maximum_speed_mps;
       options.maximum_step_m = config_.maximum_step_m;
       options.acceleration_mps2 = declare_parameter("line_acceleration_mps2", 0.01);
+      options.fast_acceleration_mps2 = declare_parameter("fast_line_acceleration_mps2", 0.01);
       options.state_poll_interval_s = declare_parameter("state_poll_interval_s", 0.1);
+      options.allow_follow_mode = enable_follow_drag_;
       transport_ = std::make_unique<av::StepwiseTransport>();
       connected_ = transport_->connect(options, connection_error_);
     } else {
@@ -207,6 +227,38 @@ public:
 private:
   void tick()
   {
+    const auto tick_time = av::steady_seconds();
+    if (last_tick_at_ > 0.0) {
+      const double gap = tick_time - last_tick_at_;
+      maximum_tick_gap_s_ = std::max(maximum_tick_gap_s_, gap);
+      if (session_enabled_ && gap > config_.feedback_timeout_s) {
+        scheduler_->request_stop(
+          tick_time, "driver execution gap " + std::to_string(gap) + " s", true);
+      }
+    }
+    last_tick_at_ = tick_time;
+    if (session_limit_handoff_pending_) {
+      bool ready = session_limit_future_.wait_for(std::chrono::seconds(0)) ==
+        std::future_status::ready;
+      bool accepted = false;
+      if (ready) {
+        try {accepted = session_limit_future_.get()->success;} catch (...) {accepted = false;}
+      }
+      const auto state = av::stop_handoff_status(
+        ready, accepted, tick_time, session_limit_deadline_);
+      if (state != av::StopHandoff::PENDING) {
+        session_limit_handoff_pending_ = false;
+        if (state != av::StopHandoff::ACCEPTED) {
+          session_limit_handoff_error_ = state == av::StopHandoff::TIMED_OUT ?
+            "session-limit stop handoff timeout" : "session-limit stop rejected by manager";
+          if (state == av::StopHandoff::TIMED_OUT) {
+            session_limit_client_->remove_pending_request(session_limit_request_id_);
+          }
+          session_enabled_ = false;
+          scheduler_->request_stop(tick_time, session_limit_handoff_error_, true);
+        }
+      }
+    }
     if (!connected_) {publish_status(av::steady_seconds()); return;}
     if (count_publishers("/aubo_i5/driver_identity") > 1 ||
       count_publishers("/controller_manager/command_cart_vel") > 1)
@@ -290,8 +342,26 @@ private:
           squared_travel += delta * delta;
         }
         if (std::sqrt(squared_travel) > maximum_session_travel_) {
+          session_enabled_ = false;
+          session_limit_reached_ = true;
           scheduler_->request_stop(
-            av::steady_seconds(), "stepwise session travel bound reached", true);
+            av::steady_seconds(), "stepwise session travel bound reached", false);
+          if (session_limit_client_->service_is_ready()) {
+            try {
+              auto request = session_limit_client_->async_send_request(
+                std::make_shared<std_srvs::srv::Trigger::Request>());
+              session_limit_request_id_ = request.request_id;
+              session_limit_future_ = request.future.share();
+              session_limit_deadline_ = av::steady_seconds() + 2.0;
+              session_limit_handoff_pending_ = true;
+            } catch (...) {
+              scheduler_->request_stop(
+                av::steady_seconds(), "session-limit stop request failed", true);
+            }
+          } else {
+            scheduler_->request_stop(
+              av::steady_seconds(), "session-limit stop handoff unavailable", true);
+          }
         } else if (!transport_->submit(*command, sample.joints)) {
           scheduler_->acknowledge(command->id, command->epoch, false, av::steady_seconds());
         }
@@ -391,6 +461,10 @@ private:
     add("maximum_step_m", std::to_string(config_.maximum_step_m));
     add("arrival_tolerance_m", std::to_string(config_.arrival_tolerance_m));
     add("maximum_speed_mps", std::to_string(config_.maximum_speed_mps));
+    add("enable_follow_drag", enable_follow_drag_ ? "1" : "0");
+    add("session_limit_reached", session_limit_reached_ ? "1" : "0");
+    add("session_limit_handoff_error", session_limit_handoff_error_);
+    add("maximum_session_travel_m", std::to_string(maximum_session_travel_));
     if (transport_) {
       const auto sample = transport_->sample();
       add("sdk_profile_speed_mps", std::to_string(sample.sdk_speed_mps));
@@ -400,7 +474,17 @@ private:
       add("motion_ack_count", std::to_string(sample.motion_ack_count));
       add("last_command_id", std::to_string(sample.last_command_id));
       add("requested_speed_mps", std::to_string(sample.requested_speed_mps));
+      add("diagnosis_age_s", std::to_string(time - sample.diagnosis_at));
+      add("robot_state_age_s", std::to_string(time - sample.robot_state_at));
+      add("waypoint_age_s", std::to_string(time - sample.feedback.received_at));
+      add("diagnosis_result", std::to_string(sample.diagnosis_result));
+      add("state_result", std::to_string(sample.state_result));
+      add("query_duration_s", std::to_string(sample.query_duration_s));
+      add("telemetry_error", sample.error);
+      add("last_telemetry_failure", sample.last_telemetry_failure);
+      add("follow_joint_mode", sample.follow_joint_mode ? "1" : "0");
     }
+    add("maximum_tick_gap_s", std::to_string(maximum_tick_gap_s_));
     diagnostic_msgs::msg::DiagnosticArray array;
     array.header.stamp = now();
     array.status.push_back(status);
@@ -411,10 +495,20 @@ private:
   std::unique_ptr<av::StepwiseScheduler> scheduler_;
   std::unique_ptr<av::StepwiseTransport> transport_;
   bool connected_{false}, enable_motion_{false}, session_enabled_{false};
+  bool session_limit_reached_{false};
+  bool session_limit_handoff_pending_{false};
+  double session_limit_deadline_{0.0};
+  std::int64_t session_limit_request_id_{0};
+  std::string session_limit_handoff_error_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture session_limit_future_;
+  bool enable_follow_drag_{false};
+  unsigned last_command_mode_{0};
+  double mode_at_{0.0};
   std::string connection_error_, last_sdk_result_, pose_frame_;
   std::vector<std::string> names_;
   std::uint64_t intent_sequence_{0}, resume_after_intent_{0}, published_sequence_{0};
   double intent_at_{0.0}, state_fence_at_{0.0};
+  double last_tick_at_{0.0}, maximum_tick_gap_s_{0.0};
   double maximum_session_travel_{0.05};
   std::array<double, 3> session_origin_{};
   std::array<double, 4> session_orientation_{0, 0, 0, 1};
@@ -425,6 +519,8 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr health_pub_, idle_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr identity_pub_, phase_pub_;
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostic_pub_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr session_limit_client_;
+  rclcpp::Subscription<fr_traction::msg::TractionCommand>::SharedPtr mode_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr velocity_sub_;
   rclcpp::Service<controller_manager_msgs::srv::SwitchController>::SharedPtr switch_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_service_;

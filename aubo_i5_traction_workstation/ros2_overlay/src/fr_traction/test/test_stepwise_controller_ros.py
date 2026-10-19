@@ -421,12 +421,18 @@ def test_drag_axes_follow_identity_pose_and_let_go_returns_zero(controller):
     )
 
 
-def test_responsive_drag_parameters_reach_all_axes_without_retuning_force_modes(ros_runtime):
+@pytest.mark.parametrize(("gain", "minimum", "maximum"), [
+    (0.003, 0.0012, 0.005), (0.010, 0.005, 0.020),
+])
+def test_responsive_drag_parameters_reach_all_axes_without_retuning_force_modes(
+    ros_runtime, gain, minimum, maximum,
+):
     """Exercise real ROS parameter wiring, not only the pure decision policy."""
     child = ControllerProcess(verified=True, extra_parameters=[
         "-p", "stepwise_drag_deadband_n:=0.5",
-        "-p", "stepwise_drag_gain_mps_per_n:=0.003",
-        "-p", "stepwise_drag_maximum_speed_mps:=0.005",
+        "-p", f"stepwise_drag_gain_mps_per_n:={gain}",
+        "-p", f"stepwise_drag_minimum_speed_mps:={minimum}",
+        "-p", f"stepwise_drag_maximum_speed_mps:={maximum}",
     ]).start()
     harness = ControllerHarness(ros_runtime, child)
     try:
@@ -434,7 +440,7 @@ def test_responsive_drag_parameters_reach_all_axes_without_retuning_force_modes(
         for force in ((0.8, 0.0, 0.0), (0.0, 2.0, 0.0), (0.0, 0.0, 3.0)):
             mark = harness.mark()
             harness.configure(TractionCommand.DRAG, 0.0, force)
-            expected = min(0.005, max(0.0012, 0.003 * (math.sqrt(
+            expected = min(maximum, max(minimum, gain * (math.sqrt(
                 sum(value * value for value in force)) - 0.5)))
             harness.wait_for_stable_output(
                 mark, lambda message: abs(_norm(message) - expected) < 0.00001)

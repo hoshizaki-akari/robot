@@ -14,9 +14,12 @@ struct TransportOptions
   std::string host, username, password;
   int port{8899};
   double speed_mps{0.002}, acceleration_mps2{0.01};
+  // Slow force regulation keeps the original profile. Faster drag opts in.
+  double fast_acceleration_mps2{0.01};
   double maximum_joint_step_rad{0.05};
   double maximum_step_m{0.0005};
   double state_poll_interval_s{0.1};
+  bool allow_follow_mode{false};
 };
 struct TransportSample
 {
@@ -27,6 +30,10 @@ struct TransportSample
   double sdk_speed_mps{0.0}, sdk_acceleration_mps2{0.0}, waypoint_interval_s{0.0};
   std::uint64_t motion_ack_count{0}, last_command_id{0};
   double requested_speed_mps{0.0};
+  int diagnosis_result{-1}, state_result{-1};
+  double query_duration_s{0.0};
+  std::string last_telemetry_failure;
+  bool follow_joint_mode{false};
   std::string error;
 };
 struct TransportResult

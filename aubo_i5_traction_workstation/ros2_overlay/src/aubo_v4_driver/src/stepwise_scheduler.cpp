@@ -178,6 +178,9 @@ bool StepwiseScheduler::set_enabled(bool enabled, double now)
     activation_orientation_ = feedback_->orientation;
     reason_ = "enabled; waiting for a new velocity";
     activation_velocity_generation_ = velocity_generation_;
+    follow_progress_at_ = now;
+    follow_progress_position_ = feedback_->position;
+    last_follow_feedback_sequence_ = 0;
     return true;
   }
   if (state_ == StepwiseState::FAULT) {
@@ -194,6 +197,19 @@ bool StepwiseScheduler::set_enabled(bool enabled, double now)
     return true;
   }
   begin_stop(now, "disabled by caller", false);
+  return true;
+}
+
+bool StepwiseScheduler::set_follow_mode(bool enabled, double now)
+{
+  if (!accept_time(now)) {return false;}
+  if (follow_mode_ == enabled) {return true;}
+  if ((state_ != StepwiseState::DISABLED && state_ != StepwiseState::READY) || pending_) {
+    return false;
+  }
+  follow_mode_ = enabled;
+  follow_progress_at_ = now;
+  if (feedback_) {follow_progress_position_ = feedback_->position;}
   return true;
 }
 
@@ -244,6 +260,10 @@ bool StepwiseScheduler::set_feedback(const StepwiseFeedback & feedback, double n
   have_feedback_timestamp_ = true;
   last_feedback_sequence_ = feedback.sequence;
   have_feedback_sequence_ = true;
+  if (distance3(feedback.position, follow_progress_position_) >= config_.arrival_tolerance_m) {
+    follow_progress_position_ = feedback.position;
+    follow_progress_at_ = feedback.received_at;
+  }
 
   if ((state_ == StepwiseState::SENDING || state_ == StepwiseState::MOVING ||
     state_ == StepwiseState::SETTLING) && !feedback.healthy)
@@ -251,7 +271,7 @@ bool StepwiseScheduler::set_feedback(const StepwiseFeedback & feedback, double n
     begin_stop(now, "unhealthy feedback during motion", true);
     return true;
   }
-  if (state_ == StepwiseState::MOVING || state_ == StepwiseState::SETTLING) {
+  if (!follow_mode_ && (state_ == StepwiseState::MOVING || state_ == StepwiseState::SETTLING)) {
     evaluate_arrival(feedback);
   } else if (state_ == StepwiseState::STOPPING) {
     evaluate_stop_confirmation(feedback);
@@ -291,7 +311,10 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
     return std::nullopt;
   }
   poll(now);
-  if (state_ != StepwiseState::READY || pending_.has_value()) {
+  const bool updating_follow = follow_mode_ && state_ == StepwiseState::MOVING &&
+    now - last_follow_dispatch_at_ >= 0.1 && feedback_is_fresh(now) && feedback_->healthy &&
+    feedback_->sequence > last_follow_feedback_sequence_;
+  if (!updating_follow && (state_ != StepwiseState::READY || pending_.has_value())) {
     return std::nullopt;
   }
   if (!velocity_is_current(now)) {
@@ -299,17 +322,18 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
     return std::nullopt;
   }
   if (velocity_is_zero() || velocity_generation_ <= activation_velocity_generation_ ||
-    !feedback_is_healthy_and_quiet(now))
+    (!updating_follow && !feedback_is_healthy_and_quiet(now)))
   {
     return std::nullopt;
   }
   std::array<double, 3> displacement = *velocity_;
   const double requested_speed = norm3(displacement);
+  const double horizon = follow_mode_ ? std::min(config_.horizon_s, 0.15) : config_.horizon_s;
   const double speed_scale = std::min(1.0, config_.maximum_speed_mps / requested_speed);
   const double step_scale = std::min(
-    1.0, config_.maximum_step_m / (requested_speed * speed_scale * config_.horizon_s));
+    1.0, config_.maximum_step_m / (requested_speed * speed_scale * horizon));
   for (double & component : displacement) {
-    component *= speed_scale * config_.horizon_s * step_scale;
+    component *= speed_scale * horizon * step_scale;
   }
   const double displacement_norm = norm3(displacement);
   if (!finite(displacement_norm) || displacement_norm <= 2.0 * config_.arrival_tolerance_m) {
@@ -318,6 +342,7 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
   }
   StepwiseCommand command;
   command.speed_mps = std::min(requested_speed, config_.maximum_speed_mps);
+  command.follow_joint_mode = follow_mode_;
   command.id = next_command_id_++;
   command.epoch = epoch_;
   command.start = feedback_->position;
@@ -329,7 +354,13 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
     reason_ = "belowminimumstep";
     return std::nullopt;
   }
+  if (follow_mode_ && !updating_follow) {
+    follow_progress_at_ = now;
+    follow_progress_position_ = feedback_->position;
+  }
   pending_ = command;
+  last_follow_dispatch_at_ = now;
+  last_follow_feedback_sequence_ = feedback_->sequence;
   ack_deadline_ = now + config_.ack_timeout_s;
   completion_deadline_ = now + config_.completion_timeout_s;
   state_ = StepwiseState::SENDING;
@@ -477,6 +508,10 @@ void StepwiseScheduler::poll(double now)
   }
   if (!velocity_is_current(now) || velocity_is_zero()) {
     begin_stop(now, "velocity expired during motion", false);
+    return;
+  }
+  if (follow_mode_ && now - follow_progress_at_ >= 2.0) {
+    begin_stop(now, "follow target acknowledged but no measured progress", true);
     return;
   }
   if (state_ == StepwiseState::SENDING && now >= ack_deadline_) {

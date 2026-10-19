@@ -57,7 +57,7 @@ SafetyFault SafetyMonitor::update(
     hard_overforce_started_at_s_ = -1.0;
   }
   // Lateral force and software travel remain control/diagnostic inputs. The
-  // only software force trip is the separately debounced 150 N hard limit;
+  // software force trip is the separately debounced, configured mode limit;
   // native controller reach protection remains in force as well.
   if (require_ui_heartbeat && !sample.ui_heartbeat_fresh) {
     return SafetyFault::UI_HEARTBEAT_TIMEOUT;

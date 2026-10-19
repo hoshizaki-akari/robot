@@ -32,6 +32,8 @@ namespace aubo_v4_test_sdk
     double profile_speed {0.0}, profile_acceleration {0.0};
     bool bad_profile_readback {false};
     bool block_profile {false}, profile_entered {false}, release_profile {false};
+    int follow_move_count {0};
+    aubo_robot_namespace::JointVelcAccParam joint_velocity {}, joint_acceleration {};
     std::size_t login_index {0};
     std::vector < int > login_results {aubo_robot_namespace::ErrnoSucc};
     int ik_result {aubo_robot_namespace::ErrnoSucc};
@@ -82,6 +84,9 @@ namespace aubo_v4_test_sdk
       profile_speed = profile_acceleration = 0.0;
       bad_profile_readback = false;
       block_profile = profile_entered = release_profile = false;
+      follow_move_count = 0;
+      joint_velocity = {};
+      joint_acceleration = {};
       login_index = 0;
       login_results = {aubo_robot_namespace::ErrnoSucc};
       ik_result = aubo_robot_namespace::ErrnoSucc;
@@ -339,6 +344,51 @@ public:
       std::lock_guard < std::mutex > lock(s.mutex);
       value = s.profile_acceleration;
       s.notify("get_acc");
+    }
+
+    int robotServiceSetGlobalMoveJointMaxVelc(const aubo_robot_namespace::JointVelcAccParam & value)
+    {
+      State & s = state();
+      std::lock_guard < std::mutex > lock(s.mutex);
+      s.joint_velocity = value;
+      return 0;
+    }
+
+    int robotServiceSetGlobalMoveJointMaxAcc(const aubo_robot_namespace::JointVelcAccParam & value)
+    {
+      State & s = state();
+      std::lock_guard < std::mutex > lock(s.mutex);
+      s.joint_acceleration = value;
+      return 0;
+    }
+
+    void robotServiceGetGlobalMoveJointMaxVelc(aubo_robot_namespace::JointVelcAccParam & value)
+    {
+      State & s = state();
+      std::lock_guard < std::mutex > lock(s.mutex);
+      value = s.joint_velocity;
+    }
+
+    void robotServiceGetGlobalMoveJointMaxAcc(aubo_robot_namespace::JointVelcAccParam & value)
+    {
+      State & s = state();
+      std::lock_guard < std::mutex > lock(s.mutex);
+      value = s.joint_acceleration;
+    }
+
+    int robotServiceSetNoArrivalAhead() {return 0;}
+    int robotServiceSetArrivalAheadTimeMode(double) {return 0;}
+
+    int robotServiceFollowModeJointMove(double *)
+    {
+      State & s = state();
+      std::unique_lock < std::mutex > lock(s.mutex);
+      ++s.follow_move_count;
+      s.line_move_entered = true;
+      s.notify("follow_move_enter");
+      s.changed.wait(lock, [&s]() {return !s.block_line_move || s.release_line_move;});
+      s.notify("follow_move_exit");
+      return s.line_move_result;
     }
 
     int robotServiceRegisterRealTimeRoadPointCallback(

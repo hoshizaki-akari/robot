@@ -275,6 +275,111 @@ TEST_F(StepwiseTransportTest, InvalidOptionsRejectBeforeSdkConstruction)
   EXPECT_EQ(constructor_count(), 0);
 }
 
+TEST_F(StepwiseTransportTest, FastDragProfileReturnsToOriginalSlowForceProfile)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.speed_mps = 0.020;
+  settings.maximum_step_m = 0.005;
+  settings.fast_acceleration_mps2 = 0.05;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  auto fast = command(1, 1);
+  fast.speed_mps = 0.020;
+  fast.target[0] = fast.start[0] + 0.005;
+  ASSERT_TRUE(transport.submit(fast, seed));
+  const auto result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result->success);
+  EXPECT_DOUBLE_EQ(transport.sample().sdk_acceleration_mps2, 0.05);
+  auto slow = command(2, 1);
+  ASSERT_TRUE(submit_when_available(transport, slow, 1s));
+  const auto slow_result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(slow_result);
+  EXPECT_TRUE(slow_result->success);
+  EXPECT_DOUBLE_EQ(transport.sample().sdk_acceleration_mps2, 0.01);
+  EXPECT_DOUBLE_EQ(transport.sample().sdk_speed_mps, 0.002);
+}
+
+TEST_F(StepwiseTransportTest, FollowModeRequiresOptInAndChecksJointProfiles)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = true;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  auto value = command(1, 1);
+  value.follow_joint_mode = true;
+  ASSERT_TRUE(transport.submit(value, seed));
+  const auto result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(result);
+  EXPECT_TRUE(result->success);
+  EXPECT_TRUE(transport.sample().follow_joint_mode);
+  auto & state = aubo_v4_test_sdk::state();
+  std::lock_guard<std::mutex> lock(state.mutex);
+  EXPECT_EQ(state.follow_move_count, 1);
+  EXPECT_EQ(state.line_move_count, 0);
+  for (unsigned i = 0; i < 6; ++i) {
+    EXPECT_GT(state.joint_velocity.jointPara[i], 0);
+    EXPECT_LE(state.joint_velocity.jointPara[i], 0.2);
+    EXPECT_LE(state.joint_acceleration.jointPara[i], 0.5);
+  }
+}
+
+TEST_F(StepwiseTransportTest, DisabledFollowCannotReachSdk)
+{
+  StepwiseTransport transport;
+  ASSERT_TRUE(connect(transport));
+  auto value = command(1, 1);
+  value.follow_joint_mode = true;
+  EXPECT_FALSE(transport.submit(value, seed));
+  EXPECT_EQ(ik_call_count(), 0);
+}
+
+TEST_F(StepwiseTransportTest, FollowStopCannotBeConfirmedBeforeSenderQuiesces)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = true;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.block_line_move = true;
+  }
+  auto value = command(1, 1);
+  value.follow_joint_mode = true;
+  ASSERT_TRUE(transport.submit(value, seed));
+  ASSERT_TRUE(aubo_v4_test_sdk::wait_for_line_move(500ms));
+  transport.cancel_and_stop(2);
+  EXPECT_TRUE(aubo_v4_test_sdk::wait_for_stop_count(1, 500ms));
+  aubo_v4_test_sdk::release_line_move();
+  const auto result = wait_for_stop_result(transport, 1s);
+  ASSERT_TRUE(result);
+  EXPECT_TRUE(result->success);
+  const auto order = calls();
+  EXPECT_LT(index_of(order, "follow_move_exit"), index_of(order, "stop_final"));
+  EXPECT_FALSE(transport.submit(value, seed));
+}
+
+TEST_F(StepwiseTransportTest, ConsumedFollowAckAlwaysMeansSenderSlotIsReleased)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = true;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  for (unsigned id = 1; id <= 100; ++id) {
+    auto value = command(id, 1);
+    value.follow_joint_mode = true;
+    ASSERT_TRUE(transport.submit(value, seed));
+    const auto result = wait_for_motion_result(transport, 1s);
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(result->success);
+  }
+}
+
 TEST_F(StepwiseTransportTest, RepeatedConnectIsRejected)
 {
   StepwiseTransport transport;

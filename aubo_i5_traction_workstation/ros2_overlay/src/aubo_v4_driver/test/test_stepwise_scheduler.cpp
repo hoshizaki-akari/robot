@@ -4,6 +4,7 @@
 #include <limits>
 
 #include "aubo_v4_driver/stepwise_scheduler.hpp"
+#include "aubo_v4_driver/stop_handoff.hpp"
 
 namespace
 {
@@ -79,6 +80,133 @@ TEST(StepwiseSchedulerResponse, CarriesClampedSpeedIndependentlyOfEndpointClippi
   StepwiseScheduler slower(config);
   arm(slower);
   EXPECT_NEAR(send(slower, {0.0012, 0.0, 0.0}).speed_mps, 0.0012, 1e-12);
+}
+
+TEST(StepwiseSchedulerResponse, PracticalDragMovesFiveMmButSlowForceStillMovesOneMm)
+{
+  StepwiseConfig config;
+  config.maximum_step_m = 0.005;
+  config.maximum_speed_mps = 0.020;
+  config.horizon_s = 0.5;
+  config.arrival_tolerance_m = 0.0002;
+  StepwiseScheduler fast(config);
+  arm(fast);
+  const auto drag = send(fast, {0, 0.012, 0.016});
+  EXPECT_NEAR(std::hypot(drag.target[1], drag.target[2]), 0.005, 1e-12);
+  EXPECT_DOUBLE_EQ(drag.speed_mps, 0.020);
+  StepwiseScheduler slow(config);
+  arm(slow);
+  EXPECT_NEAR(send(slow, {0.002, 0, 0}).target[0], 0.001, 1e-12);
+}
+
+TEST(StepwiseFollow, UpdatesFreshLatestEndpointWithoutWaitingForStandstill)
+{
+  StepwiseConfig config;
+  config.maximum_step_m = 0.005;
+  config.maximum_speed_mps = 0.020;
+  config.horizon_s = 0.5;
+  StepwiseScheduler scheduler(config);
+  arm(scheduler);
+  ASSERT_TRUE(scheduler.set_follow_mode(true, 0));
+  auto first = send(scheduler, {0.020, 0, 0});
+  EXPECT_TRUE(first.follow_joint_mode);
+  EXPECT_NEAR(first.target[0], 0.003, 1e-12);
+  EXPECT_FALSE(scheduler.take_command(0.015));
+  acknowledge(scheduler, first);
+  ASSERT_TRUE(scheduler.set_feedback(feedback(2, 0.11, false, 0.01, {0.0005, 0, 0}), 0.11));
+  ASSERT_TRUE(scheduler.set_velocity({0, 0.020, 0}, 0.11));
+  const auto replacement = scheduler.take_command(0.111);
+  ASSERT_TRUE(replacement);
+  EXPECT_EQ(replacement->start[0], 0.0005);
+  EXPECT_NEAR(replacement->target[1], 0.003, 1e-12);
+  EXPECT_FALSE(scheduler.set_follow_mode(false, 0.112));
+  scheduler.acknowledge(replacement->id, replacement->epoch, true, 0.12);
+  ASSERT_TRUE(scheduler.set_velocity({}, 0.13));
+  EXPECT_EQ(scheduler.state(), StepwiseState::STOPPING);
+  EXPECT_FALSE(scheduler.take_command(0.14));
+}
+
+TEST(StepwiseFollow, AckWithoutPhysicalProgressDoesNotAllowEndlessTargets)
+{
+  StepwiseConfig config;
+  config.maximum_step_m = 0.005;
+  config.maximum_speed_mps = 0.020;
+  config.horizon_s = 0.5;
+  StepwiseScheduler scheduler(config);
+  arm(scheduler);
+  ASSERT_TRUE(scheduler.set_follow_mode(true, 0));
+  auto current = send(scheduler, {0.020, 0, 0});
+  acknowledge(scheduler, current);
+  for (unsigned i = 1; i < 22 && !scheduler.fault_pending(); ++i) {
+    const double now = i * 0.1 + 0.03;
+    scheduler.set_feedback(feedback(i + 1, now, false), now);
+    scheduler.set_velocity({0.020, 0, 0}, now);
+    if (auto command = scheduler.take_command(now)) {
+      scheduler.acknowledge(command->id, command->epoch, true, now);
+    }
+  }
+  EXPECT_TRUE(scheduler.fault_pending());
+  EXPECT_NE(scheduler.fault_reason().find("no measured progress"), std::string::npos);
+}
+
+TEST(StepwiseFollow, ReleaseStillRequiresThreeDistinctPostStopFrames)
+{
+  StepwiseScheduler scheduler;
+  arm(scheduler);
+  ASSERT_TRUE(scheduler.set_follow_mode(true, 0));
+  const auto command = send(scheduler, {0.002, 0, 0});
+  acknowledge(scheduler, command);
+  ASSERT_TRUE(scheduler.set_velocity({}, 0.03));
+  const auto epoch = scheduler.take_stop_request();
+  ASSERT_TRUE(epoch);
+  scheduler.acknowledge_stop(*epoch, true, 0.04);
+  scheduler.set_feedback(feedback(2, 0.05), 0.05);
+  scheduler.set_feedback(feedback(2, 0.05), 0.06);
+  EXPECT_EQ(scheduler.state(), StepwiseState::STOPPING);
+  scheduler.set_feedback(feedback(3, 0.07), 0.07);
+  EXPECT_EQ(scheduler.state(), StepwiseState::STOPPING);
+  scheduler.set_feedback(feedback(4, 0.08), 0.08);
+  EXPECT_EQ(scheduler.state(), StepwiseState::DISABLED);
+}
+
+TEST(StepwiseFollow, IdleBeforeFirstForceDoesNotConsumeProgressTimeout)
+{
+  StepwiseScheduler scheduler;
+  arm(scheduler);
+  ASSERT_TRUE(scheduler.set_follow_mode(true, 0));
+  for (unsigned i = 1; i <= 30; ++i) {
+    const double now = i * 0.1;
+    ASSERT_TRUE(scheduler.set_feedback(feedback(i + 1, now), now));
+    ASSERT_TRUE(scheduler.set_velocity({}, now));
+    EXPECT_EQ(scheduler.state(), StepwiseState::READY);
+  }
+  ASSERT_TRUE(scheduler.set_velocity({0.002, 0, 0}, 3.01));
+  const auto first = scheduler.take_command(3.02);
+  ASSERT_TRUE(first);
+  scheduler.acknowledge(first->id, first->epoch, true, 3.03);
+  EXPECT_FALSE(scheduler.fault_pending());
+  for (unsigned i = 31; i <= 50; ++i) {
+    const double now = i * 0.1;
+    scheduler.set_feedback(feedback(i + 1, now, false), now);
+    scheduler.set_velocity({0.002, 0, 0}, now);
+    if (auto next = scheduler.take_command(now)) {
+      scheduler.acknowledge(next->id, next->epoch, true, now);
+    }
+    EXPECT_FALSE(scheduler.fault_pending());
+  }
+  scheduler.set_feedback(feedback(52, 5.1, false), 5.1);
+  EXPECT_TRUE(scheduler.fault_pending());
+}
+
+TEST(SessionStopHandoff, RejectedAndMissingRepliesCannotBecomeNormalCompletion)
+{
+  using aubo_v4_driver::StopHandoff;
+  using aubo_v4_driver::stop_handoff_status;
+  EXPECT_EQ(stop_handoff_status(false, false, 1, 2), StopHandoff::PENDING);
+  EXPECT_EQ(stop_handoff_status(true, false, 1, 2), StopHandoff::REJECTED);
+  EXPECT_EQ(stop_handoff_status(true, true, 1, 2), StopHandoff::ACCEPTED);
+  EXPECT_EQ(stop_handoff_status(false, false, 2, 2), StopHandoff::TIMED_OUT);
+  EXPECT_EQ(stop_handoff_status(true, true, 2.01, 2), StopHandoff::TIMED_OUT);
 }
 
 TEST(StepwiseSchedulerActivation, RequiresFreshHealthyQuietStoppedFeedback)

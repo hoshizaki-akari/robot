@@ -30,8 +30,9 @@ traction_controller:
     # Legacy LineMove drag response; independent of the FR5 streaming parameters.
     # Position/constant-force retain their 2 mm/s stepwise configuration.
     stepwise_drag_deadband_n: 0.5
-    stepwise_drag_gain_mps_per_n: 0.003
-    stepwise_drag_maximum_speed_mps: 0.005
+    stepwise_drag_gain_mps_per_n: 0.010
+    stepwise_drag_minimum_speed_mps: 0.005
+    stepwise_drag_maximum_speed_mps: 0.020
     # Never reuse the FR5 tool-Z inversion on the AUBO i5.
     traction_sign_x: 1.0
     traction_sign_y: 1.0

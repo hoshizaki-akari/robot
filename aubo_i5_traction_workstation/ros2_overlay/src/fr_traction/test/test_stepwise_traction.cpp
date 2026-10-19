@@ -54,10 +54,38 @@ TEST(StepwiseTraction, ResponsiveDragDoesNotAccelerateForceModes)
         ft::stepwise_traction_output(
           config, mode, {1, 0, 0}, 20, {}).linear_velocity), 0.002);
   }
-  config.drag_maximum_speed_mps = 0.006;
+  config.drag_maximum_speed_mps = 0.021;
   EXPECT_FALSE(
     ft::stepwise_traction_output(
       config, ft::ControlMode::DRAGGING, {}, 0, {2, 0, 0}).valid);
+}
+
+TEST(StepwiseTraction, PracticalDragHasResolvableFirstStepAndPreservesForceMode)
+{
+  auto config = verified();
+  config.drag_deadband_n = 0.5;
+  config.drag_gain_mps_per_n = 0.010;
+  config.drag_minimum_speed_mps = 0.005;
+  config.drag_maximum_speed_mps = 0.020;
+  for (const auto & force : {ft::Vec3{0.8, 0, 0}, ft::Vec3{0, -0.8, 0}, ft::Vec3{0, 0, 0.8}}) {
+    const auto output = ft::stepwise_traction_output(
+      config, ft::ControlMode::DRAGGING, {}, 0, force);
+    ASSERT_TRUE(output.valid);
+    EXPECT_NEAR(ft::norm(output.linear_velocity), 0.005, 1e-12);
+    EXPECT_GT(ft::dot(output.linear_velocity, force), 0);
+    EXPECT_GE(ft::norm(output.linear_velocity) * 0.5, 0.0025 - 1e-12);
+  }
+  const auto held = ft::stepwise_traction_output(
+    config, ft::ControlMode::DRAGGING, {}, 0, {0, 3, 4});
+  EXPECT_NEAR(ft::norm(held.linear_velocity), 0.020, 1e-12);
+  EXPECT_DOUBLE_EQ(
+    ft::norm(
+      ft::stepwise_traction_output(
+        config, ft::ControlMode::DRAGGING, {}, 0, {}).linear_velocity), 0);
+  EXPECT_LE(
+    ft::norm(
+      ft::stepwise_traction_output(
+        config, ft::ControlMode::TRACTION, {1, 0, 0}, 20, {}).linear_velocity), 0.002);
 }
 TEST(StepwiseTraction, UnverifiedDragCannotMove)
 {

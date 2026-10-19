@@ -125,6 +125,7 @@ public:
     position_reached_tolerance_n_ = declare_parameter("position_reached_tolerance_n", 1.0);
     position_reached_confirm_s_ = declare_parameter("position_reached_confirm_s", 1.0);
     hard_overforce_n_ = declare_parameter("hard_overforce_n", 150.0);
+    drag_hard_overforce_n_ = declare_parameter("drag_hard_overforce_n", hard_overforce_n_);
     hard_overforce_confirm_s_ = declare_parameter("hard_overforce_confirm_s", 0.20);
     wrench_timeout_s_ = declare_parameter("wrench_timeout_s", 0.10);
     ee_state_timeout_s_ = declare_parameter("ee_state_timeout_s", 0.20);
@@ -164,6 +165,7 @@ public:
     validate_parameters();
     force_filter_.set_cutoff(force_filter_cutoff_hz_);
     safety_monitor_.set_limits({hard_overforce_n_, hard_overforce_confirm_s_});
+    active_overforce_limit_n_ = hard_overforce_n_;
     std::filesystem::create_directories(data_directory_);
 
     command_publisher_ = create_publisher<msg::TractionCommand>(
@@ -280,6 +282,14 @@ public:
       const std_srvs::srv::Trigger::Response::SharedPtr response) {
         handle_reset_fault(response);
       });
+    session_limit_stop_service_ = create_service<std_srvs::srv::Trigger>(
+      "/traction/session_limit_stop",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        session_limit_stop_requested_ = true;
+        handle_stop(response);
+        if (!response->success) {session_limit_stop_requested_ = false;}
+      });
     target_force_service_ = create_service<srv::SetTargetForce>(
       "/traction/set_target_force",
       [this](const srv::SetTargetForce::Request::SharedPtr request,
@@ -352,6 +362,8 @@ private:
       std::isfinite(position_reached_tolerance_n_) && position_reached_tolerance_n_ > 0.0 &&
       std::isfinite(position_reached_confirm_s_) && position_reached_confirm_s_ > 0.0 &&
       std::isfinite(hard_overforce_n_) && hard_overforce_n_ > target_force_max_n_ &&
+      std::isfinite(drag_hard_overforce_n_) && drag_hard_overforce_n_ > 0.0 &&
+      drag_hard_overforce_n_ <= 150.0 &&
       std::isfinite(hard_overforce_confirm_s_) && hard_overforce_confirm_s_ > 0.0 &&
       std::isfinite(wrench_timeout_s_) && wrench_timeout_s_ > 0.0 &&
       std::isfinite(ee_state_timeout_s_) && ee_state_timeout_s_ > 0.0 &&
@@ -891,7 +903,7 @@ private:
     if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
       publish_disabled();
       request_controller_stop();
-      stop_reason_ = "DRAG_COMPLETED";
+      stop_reason_ = session_limit_stop_requested_ ? "SESSION_TRAVEL_BOUND" : "DRAG_COMPLETED";
       transition(TractionState::COMPLETED);
       finalize_session();
       transition(TractionState::READY);
@@ -1075,6 +1087,7 @@ private:
 
   void reset_session_state()
   {
+    session_limit_stop_requested_ = false;
     calibration_requested_ = false;
     direction_locked_ = false;
     temporary_direction_valid_ = false;
@@ -1394,6 +1407,14 @@ private:
     if (!needs_live_data) {
       safety_monitor_.reset();
       return;
+    }
+    const double requested_limit = state == TractionState::DRAGGING ?
+      drag_hard_overforce_n_ : hard_overforce_n_;
+    if (requested_limit != active_overforce_limit_n_) {
+      // set_limits resets the debounce: change only on actual mode changes.
+      safety_monitor_.set_limits({requested_limit, hard_overforce_confirm_s_});
+      active_overforce_limit_n_ = requested_limit;
+      RCLCPP_INFO(get_logger(), "Active hard-overforce limit = %.3f N", requested_limit);
     }
     SafetySample sample;
     sample.wrench_valid = wrench_frame_valid_ && wrench_valid_;
@@ -2127,6 +2148,8 @@ private:
   double position_reached_tolerance_n_ = 1.0;
   double position_reached_confirm_s_ = 1.0;
   double hard_overforce_n_ = 150.0;
+  bool session_limit_stop_requested_{false};
+  double drag_hard_overforce_n_{150.0}, active_overforce_limit_n_{150.0};
   double hard_overforce_confirm_s_ = 0.20;
   double wrench_timeout_s_ = 0.10;
   double ee_state_timeout_s_ = 0.20;
@@ -2258,6 +2281,7 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr emergency_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_fault_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr session_limit_stop_service_;
   rclcpp::Service<srv::SetTargetForce>::SharedPtr target_force_service_;
   rclcpp::Service<srv::SetOperationMode>::SharedPtr operation_mode_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr set_zero_pose_service_;

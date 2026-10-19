@@ -57,8 +57,9 @@ def _reliable_qos(depth=10, transient_local=False):
 class ManagerProcess:
     """Own one manager subprocess and remove only its temporary data."""
 
-    def __init__(self, require_idle=True):
+    def __init__(self, require_idle=True, extra_parameters=None):
         self.require_idle = require_idle
+        self.extra_parameters = extra_parameters or []
         self.process = None
         self.data_directory = tempfile.mkdtemp(prefix="fr_traction_manager_ros_")
 
@@ -104,6 +105,7 @@ class ManagerProcess:
             "-p",
             "calibration_min_samples:=40",
         ]
+        arguments.extend(self.extra_parameters)
         environment = os.environ.copy()
         environment.update(
             {
@@ -420,6 +422,50 @@ def manager(ros_runtime):
         yield harness
     finally:
         harness.close()
+
+
+def test_drag_limit_is_distinct_and_still_debounces_overforce(ros_runtime):
+    """Ordinary hand force is permitted in drag, but a sustained 20 N trip remains."""
+    child = ManagerProcess(extra_parameters=[
+        "-p", "target_force_max_n:=5.0", "-p", "validated_target_max_n:=5.0",
+        "-p", "target_force_n:=5.0", "-p", "hard_overforce_n:=8.0",
+        "-p", "drag_hard_overforce_n:=20.0", "-p", "hard_overforce_confirm_s:=0.1",
+    ]).start()
+    harness = ManagerHarness(ros_runtime, child)
+    try:
+        harness.wait_ready()
+        assert harness.set_operation_mode(2).success
+        assert harness.trigger('/traction/prepare').success
+        assert harness.trigger('/traction/start').success
+        harness.wait_status(TractionStatus.DRAGGING)
+        harness.wrench_force = (12.0, 0.0, 0.0)
+        harness.pump(duration_s=0.5)
+        assert harness.status_history[-1].state == TractionStatus.DRAGGING
+        harness.wrench_force = (21.0, 0.0, 0.0)
+        harness.wait_status(TractionStatus.FAULT)
+        assert harness.status_history[-1].fault_code == 'HARD_OVERFORCE'
+    finally:
+        harness.close()
+
+
+def test_session_bound_waits_for_actual_stop_and_allows_next_prepare(manager):
+    """Reaching an operational session boundary is not an unrecoverable device fault."""
+    manager.wait_ready()
+    assert manager.set_operation_mode(2).success
+    assert manager.trigger('/traction/prepare').success
+    assert manager.trigger('/traction/start').success
+    manager.wait_status(TractionStatus.DRAGGING)
+    manager.motion_idle = False
+    manager.wait_motion_idle(False)
+    assert manager.trigger('/traction/session_limit_stop').success
+    manager.pump(duration_s=0.15)
+    assert manager.status_history[-1].state == TractionStatus.DRAGGING
+    manager.motion_idle = True
+    manager.wait_motion_idle(True)
+    manager.wait_stable_state(READY)
+    assert manager.status_history[-1].stop_reason == 'SESSION_TRAVEL_BOUND'
+    assert manager.trigger('/traction/prepare').success
+    manager.wait_stable_state(TractionStatus.MANUAL_SETUP)
 
 
 @pytest.fixture

@@ -74,6 +74,7 @@ const REASON_LABELS = {
   NORMAL_RELEASE_COMPLETED: '已正常结束',
   CONSTANT_FORCE_STOPPED: '恒力牵引已结束',
   DRAG_COMPLETED: '拖拽已完成',
+  SESSION_TRAVEL_BOUND: '到达本轮调试范围，已停稳',
   POSITION_TRACTION_COMPLETED: '位置牵引已完成',
   POSITION_TRACTION_STOPPED: '位置牵引已结束'
 };
@@ -622,6 +623,12 @@ function handleState(state) {
       : 'AUBO i5 状态页：运动未开放，等待安装方向标定和连续控制验收。';
     $('hardwareNotice').textContent = diagnostic?.level >= 2 && diagnostic?.message
       ? `${modeNotice} 驱动故障：${diagnostic.message}` : modeNotice;
+    if (diagnostic?.values?.enable_follow_drag === '1') {
+      $('hardwareNotice').textContent += ' 省力拖拽后端：原生 TRACKING（动态手感待验收）。';
+    }
+    if (diagnostic?.values?.session_limit_reached === '1') {
+      $('hardwareNotice').textContent += ' 已到本次调试范围边界，停稳后可重新初始校准。';
+    }
     if (state.runtime_recording?.available === false) {
       $('hardwareNotice').textContent += ' 运行反馈记录尚未就绪或写入失败，请先不要开始测试。';
     }

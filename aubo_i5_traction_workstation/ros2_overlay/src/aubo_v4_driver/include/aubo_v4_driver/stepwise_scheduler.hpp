@@ -43,6 +43,7 @@ struct StepwiseCommand
   std::array<double, 3> target{};
   std::array<double, 4> orientation{};
   double speed_mps{0.002};
+  bool follow_joint_mode{false};
 };
 
 enum class StepwiseState
@@ -64,6 +65,7 @@ public:
   explicit StepwiseScheduler(const StepwiseConfig & config = {});
 
   bool set_enabled(bool enabled, double now);
+  bool set_follow_mode(bool enabled, double now);
   bool set_feedback(const StepwiseFeedback & feedback, double now);
   bool set_velocity(const std::array<double, 3> & velocity, double now);
   std::optional<StepwiseCommand> take_command(double now);
@@ -127,6 +129,10 @@ private:
   double stop_acknowledged_at_{0.0};
   std::uint64_t stop_acknowledged_sequence_{0};
   unsigned int stop_frames_{0};
+  bool follow_mode_{false};
+  double last_follow_dispatch_at_{0.0}, follow_progress_at_{0.0};
+  std::array<double, 3> follow_progress_position_{};
+  std::uint64_t last_follow_feedback_sequence_{0};
 };
 
 }  // namespace aubo_v4_driver

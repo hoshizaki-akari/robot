@@ -42,7 +42,11 @@ struct StepwiseTransport::Impl
   // These getters report this SDK session's profile, not measured physical speed.
   bool apply_profile(double speed)
   {
-    if (send->robotServiceSetGlobalMoveEndMaxLineVelc(speed) != vendor::ErrnoSucc) {
+    const double requested_acceleration = speed <= 0.002 ?
+      options.acceleration_mps2 : options.fast_acceleration_mps2;
+    if (send->robotServiceSetGlobalMoveEndMaxLineAcc(requested_acceleration) != vendor::ErrnoSucc ||
+      send->robotServiceSetGlobalMoveEndMaxLineVelc(speed) != vendor::ErrnoSucc)
+    {
       return false;
     }
     double velocity = NAN, acceleration = NAN;
@@ -50,10 +54,41 @@ struct StepwiseTransport::Impl
     send->robotServiceGetGlobalMoveEndMaxLineAcc(acceleration);
     if (!std::isfinite(velocity) || !std::isfinite(acceleration) ||
       std::abs(velocity - speed) > 1e-9 ||
-      std::abs(acceleration - options.acceleration_mps2) > 1e-9) {return false;}
+      std::abs(acceleration - requested_acceleration) > 1e-9) {return false;}
     std::lock_guard<std::mutex> lock(mutex);
     latest.sdk_speed_mps = velocity;
     latest.sdk_acceleration_mps2 = acceleration;
+    return true;
+  }
+
+  bool apply_follow_profile(const Job & current, const vendor::wayPoint_S & target)
+  {
+    if (!current.command.follow_joint_mode) {return send->robotServiceSetNoArrivalAhead() == 0;}
+    if (!options.allow_follow_mode) {return false;}
+    double squared = 0.0;
+    for (unsigned i = 0; i < 3; ++i) {
+      const double delta = current.command.target[i] - current.command.start[i];
+      squared += delta * delta;
+    }
+    const double length = std::sqrt(squared);
+    if (!std::isfinite(length) || length <= 0.0) {return false;}
+    vendor::JointVelcAccParam velocity{}, acceleration{}, got_velocity{}, got_acceleration{};
+    for (unsigned i = 0; i < 6; ++i) {
+      const double ratio = std::abs(target.jointpos[i] - current.seed[i]) / length;
+      velocity.jointPara[i] = std::clamp(ratio * current.command.speed_mps, 0.0001, 0.2);
+      acceleration.jointPara[i] = std::clamp(ratio * options.fast_acceleration_mps2, 0.001, 0.5);
+    }
+    if (send->robotServiceSetGlobalMoveJointMaxVelc(velocity) != 0 ||
+      send->robotServiceSetGlobalMoveJointMaxAcc(acceleration) != 0 ||
+      send->robotServiceSetArrivalAheadTimeMode(0.05) != 0) {return false;}
+    send->robotServiceGetGlobalMoveJointMaxVelc(got_velocity);
+    send->robotServiceGetGlobalMoveJointMaxAcc(got_acceleration);
+    for (unsigned i = 0; i < 6; ++i) {
+      if (!std::isfinite(got_velocity.jointPara[i]) ||
+        !std::isfinite(got_acceleration.jointPara[i]) ||
+        std::abs(got_velocity.jointPara[i] - velocity.jointPara[i]) > 1e-9 ||
+        std::abs(got_acceleration.jointPara[i] - acceleration.jointPara[i]) > 1e-9) {return false;}
+    }
     return true;
   }
 
@@ -137,9 +172,12 @@ struct StepwiseTransport::Impl
     self.latest.joints = pose.joints;
   }
 
-  void result(TransportResult value)
+  void result(TransportResult value, bool sender_finished = false)
   {
     std::lock_guard<std::mutex> lock(mutex);
+    // Publishing an ACK also releases the only sender slot atomically. A
+    // tracking replacement may arrive immediately after the consumer sees it.
+    if (sender_finished) {busy = false;}
     // At most one motion and one stop can be in flight. Bound even unexpected
     // repeated stop results; overflow is itself a diagnostic fault.
     if (results.size() >= 8) {
@@ -191,6 +229,8 @@ struct StepwiseTransport::Impl
           reply.detail = "stepwise command cancelled before dispatch";
         } else if (!apply_profile(current.command.speed_mps)) {
           reply.detail = "stepwise SDK speed profile readback failed";
+        } else if (!apply_follow_profile(current, target)) {
+          reply.detail = "motion mode/joint profile rejected";
         } else if (!allowed || current.command.epoch != allowed_epoch || shutdown) {
           reply.detail = "stepwise command cancelled during profile update";
         } else {
@@ -200,26 +240,28 @@ struct StepwiseTransport::Impl
             std::lock_guard<std::mutex> lock(mutex);
             ever_dispatched = true;
           }
-          const int code = send->robotServiceLineMove(target, false);
+          const int code = current.command.follow_joint_mode ?
+            send->robotServiceFollowModeJointMove(target.jointpos) :
+            send->robotServiceLineMove(target, false);
           reply.success = code == vendor::ErrnoSucc;
           {
             std::lock_guard<std::mutex> lock(mutex);
             ++latest.motion_ack_count;
             latest.last_command_id = current.command.id;
             latest.requested_speed_mps = current.command.speed_mps;
+            latest.follow_joint_mode = current.command.follow_joint_mode;
           }
-          reply.detail = "ordinary LineMove SDK result " + std::to_string(code);
+          reply.detail = std::string(
+            current.command.follow_joint_mode ?
+            "FollowModeJointMove SDK result " : "ordinary LineMove SDK result ") + std::to_string(
+            code);
         }
       } catch (const std::exception & exception) {
         reply.detail = std::string("motion SDK exception: ") + exception.what();
       } catch (...) {
         reply.detail = "unknown motion SDK exception";
       }
-      result(std::move(reply));
-      {
-        std::lock_guard<std::mutex> lock(mutex);
-        busy = false;
-      }
+      result(std::move(reply), true);
       changed.notify_all();
     }
   }
@@ -279,6 +321,7 @@ struct StepwiseTransport::Impl
   {
     while (!shutdown) {
       vendor::RobotDiagnosis raw{};
+      const double query_started_at = steady_seconds();
       vendor::RobotState state = vendor::RobotStopped;
       int diagnosis_rc = -1, state_rc = -1;
       double diagnosis_time = 0.0, state_time = 0.0;
@@ -309,11 +352,18 @@ struct StepwiseTransport::Impl
       {
         std::lock_guard<std::mutex> lock(mutex);
         latest.diagnosis_ok = good;
+        latest.diagnosis_result = diagnosis_rc;
+        latest.state_result = state_rc;
+        latest.query_duration_s = steady_seconds() - query_started_at;
         latest.feedback.healthy = good;
         latest.feedback.stopped = state_rc == vendor::ErrnoSucc && state == vendor::RobotStopped;
         if (diagnosis_rc == vendor::ErrnoSucc) {latest.diagnosis_at = diagnosis_time;}
         if (state_rc == vendor::ErrnoSucc) {latest.robot_state_at = state_time;}
         latest.error = good ? std::string{} : "telemetry unavailable or unhealthy: " + reason;
+        if (!good) {
+          latest.last_telemetry_failure = latest.error + " diagnosis_rc=" +
+            std::to_string(diagnosis_rc) + " state_rc=" + std::to_string(state_rc);
+        }
       }
       std::unique_lock<std::mutex> lock(mutex);
       changed.wait_for(
@@ -331,12 +381,14 @@ bool StepwiseTransport::connect(const TransportOptions & options, std::string & 
 {
   if (impl_->send || options.host.empty() || options.username.empty() || options.password.empty() ||
     options.port < 1 || options.port > 65535 || !std::isfinite(options.speed_mps) ||
-    options.speed_mps <= 0.0 || options.speed_mps > 0.005 ||
+    options.speed_mps <= 0.0 || options.speed_mps > 0.020 ||
     !std::isfinite(options.acceleration_mps2) || options.acceleration_mps2 <= 0.0 ||
     options.acceleration_mps2 > 0.02 || !std::isfinite(options.maximum_joint_step_rad) ||
+    !std::isfinite(options.fast_acceleration_mps2) || options.fast_acceleration_mps2 <= 0.0 ||
+    options.fast_acceleration_mps2 > 0.05 ||
     options.maximum_joint_step_rad <= 0.0 || options.maximum_joint_step_rad > 0.1 ||
     !std::isfinite(options.maximum_step_m) || options.maximum_step_m <= 0.0 ||
-    options.maximum_step_m > 0.001 || !std::isfinite(options.state_poll_interval_s) ||
+    options.maximum_step_m > 0.005 || !std::isfinite(options.state_poll_interval_s) ||
     options.state_poll_interval_s < 0.02 || options.state_poll_interval_s > 1.0)
   {
     error = "invalid stepwise transport configuration or repeated connect";
@@ -406,6 +458,7 @@ bool StepwiseTransport::submit(const StepwiseCommand & command, const std::array
 {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   if (impl_->shutdown || impl_->busy || impl_->job || impl_->stop_job ||
+    (command.follow_joint_mode && !impl_->options.allow_follow_mode) ||
     !std::isfinite(command.speed_mps) || command.speed_mps <= 0.0 ||
     command.speed_mps > impl_->options.speed_mps ||
     impl_->stop_in_progress || !impl_->sender.joinable() ||

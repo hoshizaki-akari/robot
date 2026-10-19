@@ -1,48 +1,51 @@
-===== AUBO I5 TRACTION / LOG RESPONSE FIX =====
+===== AUBO I5 TRACTION / NATIVE TRACKING CHECKPOINT =====
 date = 2026-10-19
 source = traction workstation at 881117c; original FR5 files not edited
 scope = assisted XYZ drag, position traction, constant-force traction
 
 changes:
-input = session_1792380700019_full_log.zip
-exposed stepwise drag deadband/gain/speed parameters and verified ROS wiring
-drag = 0.5 N deadband, 0.003 m/s/N gain, 5 mm/s command ceiling
+inputs = session_1792393784294, session_1792393789427, session_1792394528900
+ordinary drag reached 49.810 mm but operator rejected its stutter/heaviness
+implemented optional native TRACKING drag; single latest target, not stop per step
+drag = 0.5 N deadband, 0.010 m/s/N gain, nonzero command 5-20 mm/s
 position/constant-force = unchanged 2 mm/s stepwise command ceiling
-each endpoint carries requested SDK speed with profile readback and cancel recheck
-RobotState query wait = 20 ms (not guaranteed telemetry frequency)
-exported actual ACK count, command ID, profile and waypoint interval
-fixed supervisor SIGTERM leaving a stale PTY link
+native joint profile checked; retained epoch cancellation and measured stop
+fixed session-bound arrival causing unrecoverable device fault
+fixed idle-before-first-force watchdog and ACK/sender-slot atomicity
+checked/reported session-stop rejection and timeout; blocked reactivation while pending
 
 verification:
-offline ROS fr_traction = 193 reported tests, 0 errors/failures, 22 skipped
-offline ROS aubo_v4_driver = 114 reported tests, 0 errors/failures, 13 skipped
+offline ROS fr_traction = 197 reported tests, 0 errors/failures, 22 skipped
+offline ROS aubo_v4_driver = 127 reported tests, 0 errors/failures, 14 skipped
 scheduler and transport CTest = each repeated 20 times, PASS
 web/Python = 53 passed; Ruff = PASS
 ROS counts include test/lint aggregation, not unique live trials
 
 real_hardware_evidence:
-previous tool X = 49.740 mm; lateral deviation = 0.030 mm; measured stop PASS
-previous loaded drag = NOT ACCEPTED; 0.706 mm then HARD_OVERFORCE
-new unloaded tare = 1107 actual samples; position range zero; operator confirmed slack
-new runtime = READY, actual identity verified, sensor/pose fresh, measured idle true
-motion ACK count = 0; no new movement issued in this repair
-new loaded drag response = NOT YET ACCEPTED
+ordinary LineMove loaded trial = 30 ACKs, max displacement 49.810 mm, peak 17.912 N
+ordinary LineMove hand-feel = FAILED per operator (stutter/heavy), then 50 mm boundary
+native zero-current-pose compatibility call = SDK result 0, 0.030325 s
+strict target-delta acceptance = FAILED (0.000337 rad), not claimed zero motion
+subsequent read-only RobotStopped and 3 distinct quiet frames = PASS
+native loaded drag = NOT YET ACCEPTED
+new runtime = READY, connected/identity/idle true, enable_follow_drag=1, no session started
 loaded position/constant-force traction = NOT YET ACCEPTED
 independent physical Z load validation = pending (operator-approved derived basis)
 
 runtime:
 Windows COM4 -> TCP -> WSL PTY; AUBO legacy V4 SDK single owner
 web = http://127.0.0.1:8082/
-8 N / 0.1 s overforce, 1 mm step, 50 mm envelope, physical stop checks retained
+drag 20 N; force modes 8 N; 0.1 s confirmation retained
+maximum lead target 5 mm; session envelope 50 mm (not expanded without confirmation)
 
 debug:
-debug/session_20261019_hardware/response_fix_offline_acceptance.log
-debug/session_20261019_hardware/response_fix_python_checks.log
-debug/session_20261019_hardware/response_fix_unloaded.json
-debug/session_20261019_hardware/response_fix_runtime.json
-debug/session_20261019_150646_workstation/ per-component logs
-instructions = RESPONSE_FIX_20261019.md and WEB_HANDOFF_20261019.md
+debug/session_20261019_hardware/follow_drag_reviewed_offline.log
+debug/session_20261019_hardware/follow_current_pose_probe.log
+debug/session_20261019_hardware/follow_probe_readonly_stop.log
+debug/session_20261019_hardware/follow_drag_runtime.json
+debug/session_20261019_154818_workstation/ per-component logs
+instructions = FOLLOW_DRAG_20261019.md and WEB_HANDOFF_20261019.md
 
-status = WAITING_CHECKPOINT_OPERATOR_XYZ_WEB_LOADED_ACCEPTANCE
-operator_action = operate each mode on webpage; export each row's full ZIP log
+status = WAITING_CHECKPOINT_OPERATOR_NATIVE_FOLLOW_LOADED_ACCEPTANCE
+operator_action = refresh page (native TRACKING label), actual drag/release test, export full ZIP
 do_not_claim = all three loaded physical functions have already passed
