@@ -427,7 +427,10 @@ private:
     }
     idle_pub_->publish(idle);
     std_msgs::msg::String identity;
-    identity.data = connected_ && healthy ? "AUBO_I5_V4" : "";
+    // Identity and health are separate facts. Keep identifying the connected
+    // robot during a latched motion/diagnostic fault so the workstation can
+    // show the fault while still reporting live communications accurately.
+    identity.data = connected_ ? "AUBO_I5_V4" : "";
     identity_pub_->publish(identity);
     std_msgs::msg::String phase;
     phase.data = state_name(scheduler_->state());

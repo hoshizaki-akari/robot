@@ -99,6 +99,32 @@ class BridgeTest(unittest.TestCase):
         bridge._on_driver_identity(type("Identity", (), {"data": "AUBO_I5_V4"})())
         self.assertTrue(bridge.snapshot()["robot"]["identity_verified"])
 
+    def test_motion_fault_does_not_masquerade_as_lost_robot_communication(self):
+        from types import SimpleNamespace
+
+        bridge = RosBridge()
+        bridge._on_joint_state(FakeJoint())
+        bridge._on_traction(FakeTraction())
+        bridge._on_driver_identity(type("Identity", (), {"data": "AUBO_I5_V4"})())
+        fault = SimpleNamespace(
+            name="aubo_v4_driver/state",
+            level=b"\x02",
+            message="fixed-pose session orientation changed; re-calibration required",
+            values=[
+                SimpleNamespace(
+                    key="fault_reason", value="fixed-pose session orientation changed"
+                )
+            ],
+        )
+        bridge._on_diagnostics(SimpleNamespace(status=[fault]))
+
+        snapshot = bridge.snapshot()
+        self.assertTrue(snapshot["robot"]["connected"])
+        self.assertTrue(snapshot["robot"]["identity_verified"])
+        self.assertTrue(snapshot["connected"])
+        self.assertEqual(2, snapshot["robot"]["diagnostic"]["level"])
+        self.assertEqual(fault.message, snapshot["robot"]["diagnostic"]["message"])
+
 
 if __name__ == "__main__":
     unittest.main()
