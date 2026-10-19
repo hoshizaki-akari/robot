@@ -65,6 +65,21 @@ TEST(StepwiseSchedulerConfig, RejectsNonFiniteAndUnsafeValues)
   EXPECT_THROW(static_cast<void>(StepwiseScheduler{config}), std::invalid_argument);
 }
 
+TEST(StepwiseOrientation, UsesShortestQuaternionDistanceAndRejectsInvalidSamples)
+{
+  const auto rotated = [](double angle) {
+      return std::array<double, 4>{0.0, 0.0, std::sin(angle / 2.0), std::cos(angle / 2.0)};
+    };
+  const std::array<double, 4> identity{0.0, 0.0, 0.0, 1.0};
+  EXPECT_NEAR(aubo_v4_driver::quaternion_distance_rad(identity, rotated(0.02)), 0.02, 1e-12);
+  EXPECT_LT(aubo_v4_driver::quaternion_distance_rad(identity, rotated(0.02)), 0.03);
+  EXPECT_GT(aubo_v4_driver::quaternion_distance_rad(identity, rotated(0.04)), 0.03);
+  const std::array<double, 4> opposite_sign{0.0, 0.0, 0.0, -1.0};
+  EXPECT_NEAR(aubo_v4_driver::quaternion_distance_rad(identity, opposite_sign), 0.0, 1e-12);
+  const std::array<double, 4> invalid{0.0, 0.0, 0.0, 0.0};
+  EXPECT_FALSE(std::isfinite(aubo_v4_driver::quaternion_distance_rad(identity, invalid)));
+}
+
 TEST(StepwiseSchedulerResponse, CarriesClampedSpeedIndependentlyOfEndpointClipping)
 {
   StepwiseConfig config;

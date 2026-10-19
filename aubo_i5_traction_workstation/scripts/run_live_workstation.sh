@@ -68,7 +68,8 @@ BIN="$PROJECT_DIR/ros2_overlay/install"
 launch robot "$BIN/aubo_v4_driver/lib/aubo_v4_driver/aubo_v4_stepwise_node" \
   --ros-args -p connect_hardware:=true -p enable_motion_interface:=true \
   -p maximum_step_m:=0.005 -p planning_horizon_s:=0.5 -p arrival_tolerance_m:=0.0002 \
-  -p maximum_speed_mps:=0.020 -p fast_line_acceleration_mps2:=0.05 \
+  -p maximum_speed_mps:=0.030 -p maximum_session_travel_m:=0.5 \
+  -p session_orientation_tolerance_rad:=0.03 -p fast_line_acceleration_mps2:=0.05 \
   -p state_poll_interval_s:=0.1 -p enable_follow_drag:=true
 launch sensor "$BIN/aubo_kwr75_sensor/lib/aubo_kwr75_sensor/kwr75_sensor_node" \
   --ros-args -p serial_path:=/tmp/kwr75d-bridge-tty

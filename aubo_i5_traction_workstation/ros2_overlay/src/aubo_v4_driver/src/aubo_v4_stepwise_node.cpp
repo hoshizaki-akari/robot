@@ -57,7 +57,7 @@ public:
     enable_follow_drag_ = declare_parameter<bool>("enable_follow_drag", false);
     av::StepwiseConfig config;
     config.maximum_step_m = declare_parameter("maximum_step_m", 0.0005);
-    config.maximum_speed_mps = declare_parameter("maximum_speed_mps", 0.002);
+    config.maximum_speed_mps = declare_parameter("maximum_speed_mps", 0.030);
     config.horizon_s = declare_parameter("planning_horizon_s", 0.1);
     config.feedback_timeout_s = declare_parameter("feedback_timeout_s", 0.5);
     config.command_timeout_s = declare_parameter("command_timeout_s", 0.25);
@@ -66,7 +66,7 @@ public:
     config.settling_time_s = declare_parameter("settling_time_s", 0.1);
     config.arrival_tolerance_m = declare_parameter("arrival_tolerance_m", 0.00005);
     config.quiet_speed_mps = declare_parameter("quiet_speed_mps", 0.0002);
-    if (config.maximum_step_m > 0.005 || config.maximum_speed_mps > 0.020 ||
+    if (config.maximum_step_m > 0.005 || config.maximum_speed_mps > 0.030 ||
       config.horizon_s > 0.5 || config.feedback_timeout_s > 1.0)
     {
       throw std::invalid_argument("stepwise prototype step/speed/timing limits exceeded");
@@ -74,11 +74,18 @@ public:
     config_ = config;
     scheduler_ = std::make_unique<av::StepwiseScheduler>(config_);
     pose_frame_ = declare_parameter<std::string>("pose_frame_id", "base_link");
-    maximum_session_travel_ = declare_parameter("maximum_session_travel_m", 0.05);
+    maximum_session_travel_ = declare_parameter("maximum_session_travel_m", 0.5);
     if (!std::isfinite(maximum_session_travel_) || maximum_session_travel_ <= 0.0 ||
       maximum_session_travel_ > 0.5)
     {
       throw std::invalid_argument("maximum_session_travel_m must be in (0,0.5]");
+    }
+    session_orientation_tolerance_rad_ = declare_parameter(
+      "session_orientation_tolerance_rad", 0.03);
+    if (!std::isfinite(session_orientation_tolerance_rad_) ||
+      session_orientation_tolerance_rad_ <= 0.0 || session_orientation_tolerance_rad_ > 0.15)
+    {
+      throw std::invalid_argument("session_orientation_tolerance_rad must be in (0,0.15]");
     }
     names_ = declare_parameter<std::vector<std::string>>(
       "joint_names",
@@ -289,18 +296,9 @@ private:
         scheduler_->request_stop(time, "unhealthy or stale SDK diagnosis/state", true);
       }
       if (session_enabled_) {
-        double quaternion_dot = 0.0;
-        double measured_norm_squared = 0.0, reference_norm_squared = 0.0;
-        for (std::size_t index = 0; index < 4; ++index) {
-          quaternion_dot += feedback.orientation[index] * session_orientation_[index];
-          measured_norm_squared += feedback.orientation[index] * feedback.orientation[index];
-          reference_norm_squared += session_orientation_[index] * session_orientation_[index];
-        }
-        const double denominator = std::sqrt(measured_norm_squared * reference_norm_squared);
-        const double angle = denominator > 0.0 ?
-          2.0 * std::acos(std::min(1.0, std::abs(quaternion_dot) / denominator)) :
-          std::numeric_limits<double>::infinity();
-        if (!std::isfinite(angle) || angle > 0.01) {
+        const double angle = av::quaternion_distance_rad(
+          feedback.orientation, session_orientation_);
+        if (!std::isfinite(angle) || angle > session_orientation_tolerance_rad_) {
           scheduler_->request_stop(
             time,
             "fixed-pose session orientation changed; re-calibration required",
@@ -468,6 +466,7 @@ private:
     add("session_limit_reached", session_limit_reached_ ? "1" : "0");
     add("session_limit_handoff_error", session_limit_handoff_error_);
     add("maximum_session_travel_m", std::to_string(maximum_session_travel_));
+    add("session_orientation_tolerance_rad", std::to_string(session_orientation_tolerance_rad_));
     if (transport_) {
       const auto sample = transport_->sample();
       add("sdk_profile_speed_mps", std::to_string(sample.sdk_speed_mps));
@@ -512,7 +511,8 @@ private:
   std::uint64_t intent_sequence_{0}, resume_after_intent_{0}, published_sequence_{0};
   double intent_at_{0.0}, state_fence_at_{0.0};
   double last_tick_at_{0.0}, maximum_tick_gap_s_{0.0};
-  double maximum_session_travel_{0.05};
+  double maximum_session_travel_{0.5};
+  double session_orientation_tolerance_rad_{0.03};
   std::array<double, 3> session_origin_{};
   std::array<double, 4> session_orientation_{0, 0, 0, 1};
   av::StepwiseState previous_phase_{av::StepwiseState::DISABLED};

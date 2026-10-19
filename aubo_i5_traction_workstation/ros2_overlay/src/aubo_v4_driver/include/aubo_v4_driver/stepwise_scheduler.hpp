@@ -1,12 +1,37 @@
 #pragma once
 
 #include <array>
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 
 namespace aubo_v4_driver
 {
+
+inline double quaternion_distance_rad(
+  const std::array<double, 4> & lhs, const std::array<double, 4> & rhs)
+{
+  double dot = 0.0;
+  double lhs_norm_squared = 0.0;
+  double rhs_norm_squared = 0.0;
+  for (std::size_t index = 0; index < lhs.size(); ++index) {
+    if (!std::isfinite(lhs[index]) || !std::isfinite(rhs[index])) {
+      return std::numeric_limits<double>::infinity();
+    }
+    dot += lhs[index] * rhs[index];
+    lhs_norm_squared += lhs[index] * lhs[index];
+    rhs_norm_squared += rhs[index] * rhs[index];
+  }
+  const double denominator = std::sqrt(lhs_norm_squared * rhs_norm_squared);
+  if (!std::isfinite(denominator) || denominator <= 0.0) {
+    return std::numeric_limits<double>::infinity();
+  }
+  return 2.0 * std::acos(std::clamp(std::abs(dot) / denominator, 0.0, 1.0));
+}
 
 struct StepwiseConfig
 {

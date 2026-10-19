@@ -72,7 +72,7 @@ public:
       !std::isfinite(stepwise_config_.drag_gain_mps_per_n) ||
       stepwise_config_.drag_gain_mps_per_n <= 0.0 ||
       !std::isfinite(stepwise_config_.drag_maximum_speed_mps) ||
-      stepwise_config_.drag_maximum_speed_mps > 0.020 ||
+      stepwise_config_.drag_maximum_speed_mps > 0.030 ||
       !std::isfinite(stepwise_config_.drag_minimum_speed_mps) ||
       stepwise_config_.drag_minimum_speed_mps <= 0.0 ||
       stepwise_config_.drag_maximum_speed_mps < stepwise_config_.drag_minimum_speed_mps))

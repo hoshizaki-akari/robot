@@ -215,10 +215,20 @@ def test_fixed_pose_tare_treats_opposite_quaternion_sign_as_same_pose():
     assert core.output_if_fresh(10.01) is not None
 
 
-def test_fixed_pose_tare_rejects_orientation_drift():
-    """A flange orientation beyond the configured tare tolerance fails closed."""
+def test_fixed_pose_tare_accepts_small_orientation_drift_with_wider_tolerance():
+    """Small controller pose variation stays within the widened tare gate."""
     angle = 0.02
-    core = _core(fixed_pose_tare_enabled=True, tare_pose_tolerance_rad=0.01)
+    core = _core(fixed_pose_tare_enabled=True, tare_pose_tolerance_rad=0.03)
+    _accept_both(
+        core, pose=_pose(quaternion=(0.0, 0.0, math.sin(angle / 2.0), math.cos(angle / 2.0))))
+
+    assert core.output_if_fresh(10.01) is not None
+
+
+def test_fixed_pose_tare_rejects_orientation_drift_beyond_wider_tolerance():
+    """Large orientation drift still invalidates a fixed-pose tare."""
+    angle = 0.04
+    core = _core(fixed_pose_tare_enabled=True, tare_pose_tolerance_rad=0.03)
     _accept_both(
         core, pose=_pose(quaternion=(0.0, 0.0, math.sin(angle / 2.0), math.cos(angle / 2.0))))
 

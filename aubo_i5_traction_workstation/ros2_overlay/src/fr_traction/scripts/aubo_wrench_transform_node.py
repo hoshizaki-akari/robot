@@ -60,7 +60,7 @@ class TransformConfiguration:
     force_sensor_sign: Vector3 = (1.0, 1.0, 1.0)
     torque_bias_sensor_nm: Vector3 = (0.0, 0.0, 0.0)
     tare_q_base_flange: Quaternion = (0.0, 0.0, 0.0, 1.0)
-    tare_pose_tolerance_rad: float = 0.01
+    tare_pose_tolerance_rad: float = 0.03
 
 
 @dataclass(frozen=True)
@@ -407,7 +407,7 @@ class AuboWrenchTransformNode(Node):
                 self.declare_parameter("tare_q_base_flange", [0.0, 0.0, 0.0, 1.0]).value
             ),  # type: ignore[arg-type]
             tare_pose_tolerance_rad=float(
-                self.declare_parameter("tare_pose_tolerance_rad", 0.01).value
+                self.declare_parameter("tare_pose_tolerance_rad", 0.03).value
             ),
         )
         self._core = WrenchTransformCore(configuration)

@@ -54,7 +54,7 @@ TEST(StepwiseTraction, ResponsiveDragDoesNotAccelerateForceModes)
         ft::stepwise_traction_output(
           config, mode, {1, 0, 0}, 20, {}).linear_velocity), 0.002);
   }
-  config.drag_maximum_speed_mps = 0.021;
+  config.drag_maximum_speed_mps = 0.031;
   EXPECT_FALSE(
     ft::stepwise_traction_output(
       config, ft::ControlMode::DRAGGING, {}, 0, {2, 0, 0}).valid);
@@ -87,23 +87,23 @@ TEST(StepwiseTraction, PracticalDragHasResolvableFirstStepAndPreservesForceMode)
       ft::stepwise_traction_output(
         config, ft::ControlMode::TRACTION, {1, 0, 0}, 20, {}).linear_velocity), 0.002);
 }
-TEST(StepwiseTraction, LightDragImprovesLowForceOnAllAxesWithoutRaisingCeiling)
+TEST(StepwiseTraction, LightDragImprovesLowForceOnAllAxesWithinRaisedCeiling)
 {
   auto config = verified();
-  config.drag_deadband_n = 0.5;
-  config.drag_gain_mps_per_n = 0.020;
+  config.drag_deadband_n = 0.25;
+  config.drag_gain_mps_per_n = 0.040;
   config.drag_minimum_speed_mps = 0.005;
-  config.drag_maximum_speed_mps = 0.020;
+  config.drag_maximum_speed_mps = 0.030;
   for (const auto & axis : {
     ft::Vec3{1, 0, 0}, ft::Vec3{-1, 0, 0}, ft::Vec3{0, 1, 0},
     ft::Vec3{0, -1, 0}, ft::Vec3{0, 0, 1}, ft::Vec3{0, 0, -1}})
   {
-    for (const double force : {0.0, 0.5, 0.8, 1.0, 1.5, 10.0}) {
+    for (const double force : {0.0, 0.25, 0.4, 0.5, 1.0, 10.0}) {
       const auto output = ft::stepwise_traction_output(
         config, ft::ControlMode::DRAGGING, {}, 0, axis * force);
       ASSERT_TRUE(output.valid);
-      const double expected = force <= 0.5 ? 0.0 :
-        std::clamp(0.020 * (force - 0.5), 0.005, 0.020);
+      const double expected = force <= 0.25 ? 0.0 :
+        std::clamp(0.040 * (force - 0.25), 0.005, 0.030);
       EXPECT_NEAR(ft::norm(output.linear_velocity), expected, 1e-12);
       if (expected > 0.0) {EXPECT_GT(ft::dot(output.linear_velocity, axis), 0.0);}
     }

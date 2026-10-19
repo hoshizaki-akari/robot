@@ -40,12 +40,14 @@ def generate_launch_description():
                 "connect_hardware": boolean("connect_hardware"),
                 "enable_motion_interface": boolean("enable_motion"),
                 "pose_frame_id": "base_link",
-                # Real V4 first-step feedback differed from the IK endpoint by
-                # ~0.10 mm. Use 1 mm steps and 0.2 mm arrival tolerance rather
-                # than claiming 0.05 mm repeatability on this controller.
-                "maximum_step_m": 0.001,
+                # Use short 5 mm Cartesian endpoints and a 0.2 mm arrival
+                # tolerance while refreshing follow targets from live feedback.
+                "maximum_step_m": 0.005,
                 "planning_horizon_s": 0.5,
                 "arrival_tolerance_m": 0.0002,
+                "maximum_speed_mps": 0.030,
+                "maximum_session_travel_m": 0.5,
+                "session_orientation_tolerance_rad": 0.03,
             }],
         ),
         Node(
