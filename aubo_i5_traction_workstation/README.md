@@ -81,7 +81,11 @@ ros2 launch fr_traction aubo_i5_readonly.launch.py --show-args
 在完成 SDK 运行时、串口桥接和现场 CHECKPOINT 之前，不要把
 `start_robot:=true` 或 `start_sensor:=true` 作为牵引启动方式。现在它们仅
 用于只读数据检查，启动文件不会启动牵引控制器。独立网页可用
-`bash run_workstation.sh` 在本机 8082 端口查看，只读且不会自行连接机械臂。
+`bash run_workstation.sh` 在本机 8082 端口查看，只读且不会自行连接机械臂；
+它启动后显示“设备未连接”是预期结果。设置 `AUBO_TRACTION_ENABLED=true`
+也不会启动 SDK 或 COM4 桥。真实硬件连接必须在现场 CHECKPOINT 完成后，
+通过 Windows `scripts/start_live_workstation.ps1` 一次性启动串口桥和 WSL
+硬件监督进程；不要在另一个窗口单独启动第二份 `run_workstation.sh`。
 
 当前 V4 SDK 运行库依赖 `libprotobuf.so.9`。已从 Ubuntu 官方
 `libprotobuf9v5_2.6.1-1.3_amd64.deb` 单独提取到本机临时目录，并通过

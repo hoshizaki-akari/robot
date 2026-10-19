@@ -66,3 +66,22 @@ READY、传感器和机械臂在线、motion_idle=true、motion_ack_count=0。
 证据：`debug/session_20261019_hardware/continuous_drag_offline.log`、
 `continuous_drag_runtime.json`、`continuous_drag_parameter_check.txt`；现场标定文件
 保存在忽略的 debug 目录，不提交其偏置到公共仓库。
+
+## Follow-up 2026-10-19: web-only launch and light-force response
+
+- `bash run_workstation.sh` starts only the web UI. It does not start the AUBO
+  SDK owner or the Windows COM4 bridge; “device disconnected” is expected in
+  this standalone mode. `AUBO_TRACTION_ENABLED=true` does not change that.
+- The configured low-force response is now 0.15 N deadband and
+  0.060 m/s/N gain: 0.25 N requests 6 mm/s and 0.5 N requests 21 mm/s,
+  saturating at the existing AUBO-specific 30 mm/s drag ceiling.
+- The loaded profile still overrides force-target limits to 5 N, the
+  non-drag overforce trip to 8 N, and drag overforce to 20 N. These values
+  remain different from the FR5 profile; they were not silently changed to
+  100/150 N because AUBO i5 force-mode limits have not been validated for this
+  arm/tool setup. The AUBO 0.5 m session travel bound also remains in place.
+- Offline build and tests passed: `fr_traction` 207 tests (0 failures, 24
+  skipped), `aubo_v4_driver` 128 (0 failures, 14 skipped), both scheduler and
+  transport stress repetitions, and 54 Python/web checks. No robot motion was
+  issued; loaded feel and the intermittent `ROS2_CONTROL_ERROR` are not yet
+  accepted as resolved.
