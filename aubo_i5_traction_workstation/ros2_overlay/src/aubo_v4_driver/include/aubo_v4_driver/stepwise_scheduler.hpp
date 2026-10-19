@@ -97,6 +97,7 @@ private:
   StepwiseState state_{StepwiseState::DISABLED};
   std::string reason_{"disabled"};
   std::string fault_reason_;
+  std::array<double, 4> activation_orientation_{0.0, 0.0, 0.0, 1.0};
   std::optional<StepwiseFeedback> feedback_;
   std::optional<std::array<double, 3>> velocity_;
   std::optional<StepwiseCommand> pending_;

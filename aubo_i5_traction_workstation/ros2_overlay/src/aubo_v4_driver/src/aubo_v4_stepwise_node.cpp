@@ -237,10 +237,16 @@ private:
       }
       if (session_enabled_) {
         double quaternion_dot = 0.0;
+        double measured_norm_squared = 0.0, reference_norm_squared = 0.0;
         for (std::size_t index = 0; index < 4; ++index) {
           quaternion_dot += feedback.orientation[index] * session_orientation_[index];
+          measured_norm_squared += feedback.orientation[index] * feedback.orientation[index];
+          reference_norm_squared += session_orientation_[index] * session_orientation_[index];
         }
-        const double angle = 2.0 * std::acos(std::min(1.0, std::abs(quaternion_dot)));
+        const double denominator = std::sqrt(measured_norm_squared * reference_norm_squared);
+        const double angle = denominator > 0.0 ?
+          2.0 * std::acos(std::min(1.0, std::abs(quaternion_dot) / denominator)) :
+          std::numeric_limits<double>::infinity();
         if (!std::isfinite(angle) || angle > 0.01) {
           scheduler_->request_stop(
             time,
@@ -273,7 +279,10 @@ private:
       scheduler_->set_enabled(true, av::steady_seconds());
     }
     if (session_enabled_ && enable_motion_) {
-      if (const auto command = scheduler_->take_command(av::steady_seconds())) {
+      if (auto command = scheduler_->take_command(av::steady_seconds())) {
+        // Keep the original session orientation even across internal zero/
+        // watchdog pauses; measured IK error must not become the next target.
+        command->orientation = session_orientation_;
         double squared_travel = 0.0;
         for (std::size_t index = 0; index < 3; ++index) {
           const double delta = command->target[index] - session_origin_[index];

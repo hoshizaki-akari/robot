@@ -175,12 +175,23 @@ bool StepwiseScheduler::set_enabled(bool enabled, double now)
       return false;
     }
     state_ = StepwiseState::READY;
+    activation_orientation_ = feedback_->orientation;
     reason_ = "enabled; waiting for a new velocity";
     activation_velocity_generation_ = velocity_generation_;
     return true;
   }
   if (state_ == StepwiseState::FAULT) {
     return false;
+  }
+  // READY means any previous endpoint has already passed fresh arrival and
+  // settling confirmation. No dispatch is in flight. Revoke intent locally
+  // rather than issuing redundant vendor FastStop calls on an idle robot.
+  if (state_ == StepwiseState::READY && !pending_ && feedback_is_healthy_and_quiet(now)) {
+    ++epoch_;
+    clear_motion_cache();
+    state_ = StepwiseState::DISABLED;
+    reason_ = "disabled after measured idle; no pending dispatch";
+    return true;
   }
   begin_stop(now, "disabled by caller", false);
   return true;
@@ -309,7 +320,7 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
   command.id = next_command_id_++;
   command.epoch = epoch_;
   command.start = feedback_->position;
-  command.orientation = feedback_->orientation;
+  command.orientation = activation_orientation_;
   for (std::size_t index = 0; index < command.target.size(); ++index) {
     command.target[index] = command.start[index] + displacement[index];
   }

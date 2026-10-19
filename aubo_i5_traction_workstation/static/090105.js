@@ -63,6 +63,7 @@ const ACTION_SUCCESS_MESSAGES = {
   '/api/traction/return-zero': '正在回零'
 };
 const REASON_LABELS = {
+  HARD_OVERFORCE: '超力停止',
   WRENCH_TIMEOUT: '力数据超时',
   EE_STATE_TIMEOUT: '位置数据超时',
   ROS2_CONTROL_ERROR: '运动控制异常',
@@ -172,7 +173,7 @@ function applyPermissions() {
   if ($('emergencyBtn')) {
     const recovering = tractionState === 10;
     $('emergencyBtn').disabled = !permission.operate || !dataOnline || emergencyPending;
-    $('emergencyLabel').textContent = recovering ? '急停恢复' : '急停';
+    $('emergencyLabel').textContent = recovering ? '恢复说明' : '急停';
     $('emergencyBtn').classList.toggle('recover', recovering);
   }
   if ($('returnZeroBtn')) $('returnZeroBtn').disabled = !AUBO_MOTION_PORT_VERIFIED || !permission.operate || !dataOnline || motionActive || ![1, 2, 5, 8].includes(tractionState);
@@ -189,6 +190,9 @@ function applyPermissions() {
 }
 
 function logout() {
+  if (!Object.keys(users).length) {
+    return toast('当前是本地单用户工作台，无需登录；结束测试请先点击结束牵引');
+  }
   if (activeRecord && !confirm('牵引记录尚未结束，确定退出并将本次标记为紧急终止吗？')) return;
   if (activeRecord) emergencyStop();
   sessionUser = null;
@@ -406,6 +410,10 @@ async function finishTraction(status = '已完成') {
 
 async function emergencyStop() {
   const recovering = tractionState === 10;
+  if (recovering) {
+    alert('软件急停已锁定，不会自动恢复运动。\n请先按控制柜／示教器流程处理实体急停并确认停稳，再重新启动工作台、重新初始校准。不要把本按钮当作机械臂解锁操作。');
+    return;
+  }
   emergencyPending = true;
   applyPermissions();
   try {
@@ -614,6 +622,9 @@ function handleState(state) {
       : 'AUBO i5 状态页：运动未开放，等待安装方向标定和连续控制验收。';
     $('hardwareNotice').textContent = diagnostic?.level >= 2 && diagnostic?.message
       ? `${modeNotice} 驱动故障：${diagnostic.message}` : modeNotice;
+    if (state.runtime_recording?.available === false) {
+      $('hardwareNotice').textContent += ' 运行反馈记录尚未就绪或写入失败，请先不要开始测试。';
+    }
   }
   const traction = state.traction || {};
   tractionState = Number(traction.state || 0);

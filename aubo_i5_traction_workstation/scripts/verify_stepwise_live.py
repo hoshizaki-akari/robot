@@ -29,6 +29,8 @@ def main():
     parser.add_argument('--distance-m', type=float, required=True)
     parser.add_argument('--baseline', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--continue-result', type=Path,
+                        help='Finish only the remaining distance inside a previous real envelope')
     args = parser.parse_args()
     if not math.isfinite(args.distance_m) or not 0.0005 <= args.distance_m <= 0.05:
         parser.error('distance must be between 0.5 mm and 50 mm')
@@ -135,6 +137,16 @@ def main():
         x, y, z, w = q
         direction = (1 - 2 * (y * y + z * z), 2 * (x * y + w * z),
                      2 * (x * z - w * y))
+        if args.continue_result:
+            previous = json.loads(args.continue_result.read_text(encoding='utf-8'))
+            if (previous.get('requested_distance_m') != args.distance_m or
+                    previous.get('status') != 'STOPPED_NOT_ACCEPTED' or
+                    math.dist(origin, previous['final_position_m']) > 0.001):
+                raise RuntimeError('Continuation does not match the current measured stopped pose')
+            origin = tuple(previous['origin_m'])
+            direction = tuple(previous['commanded_direction_base'])
+            require_within_envelope(data['pose'][:3], origin, direction, args.distance_m)
+            summary['continued_original_result'] = str(args.continue_result)
         if not client.wait_for_service(timeout_sec=2):
             raise RuntimeError('Controller switch unavailable')
         activated = True

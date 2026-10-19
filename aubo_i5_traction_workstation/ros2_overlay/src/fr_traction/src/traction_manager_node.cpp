@@ -824,6 +824,9 @@ private:
       response->message = "Start is already waiting for the Cartesian controller handoff.";
       return;
     }
+    // A normal stop keeps the calibrated direction but closes its record.
+    // A second accepted start must not run without a new detailed session.
+    if (!session_active_) {begin_session();}
     if (!request_controller_start()) {
       response->success = false;
       response->message = "Start rejected: Cartesian controller could not be activated.";
@@ -1136,7 +1139,10 @@ private:
       "position_stiffness_n_per_m,position_raw_velocity_mps,"
       "position_limited_velocity_mps,position_speed_limited,"
       "position_acceleration_limited,"
-      "stop_reason\n";
+      "stop_reason,fault_code,measured_motion_idle,measured_idle_fresh,"
+      "hardware_feedback_live,controller_feedback_live,ee_feedback_live,"
+      "ee_vx_mps,ee_vy_mps,ee_vz_mps,ee_wx_radps,ee_wy_radps,ee_wz_radps,"
+      "joint_speed_norm_radps,wrench_age_s,ee_age_s,motion_idle_age_s\n";
     record_stream_ << std::setprecision(10);
     session_active_ = true;
     last_record_flush_at_ = session_start_at_;
@@ -1850,7 +1856,18 @@ private:
                    << position_diagnostics_.limited_velocity_mps << ','
                    << (position_diagnostics_.speed_limited ? 1 : 0) << ','
                    << (position_diagnostics_.acceleration_limited ? 1 : 0) << ','
-                   << stop_reason_ << '\n';
+                   << stop_reason_ << ',' << fault_code_ << ','
+                   << (measured_motion_idle_ ? 1 : 0) << ','
+                   << (fresh(last_motion_idle_at_, motion_pause_timeout_s_) ? 1 : 0) << ','
+                   << (live_hardware() ? 1 : 0) << ',' << (live_controller() ? 1 : 0) << ','
+                   << (live_ee() ? 1 : 0) << ','
+                   << latest_ee_linear_velocity_.x << ',' << latest_ee_linear_velocity_.y << ','
+                   << latest_ee_linear_velocity_.z << ','
+                   << latest_ee_angular_velocity_.x << ',' << latest_ee_angular_velocity_.y << ','
+                   << latest_ee_angular_velocity_.z << ',' << latest_joint_speed_norm_ << ','
+                   << age_seconds(last_wrench_steady_at_) << ','
+                   << age_seconds(last_ee_steady_at_) << ','
+                   << age_seconds(last_motion_idle_at_) << '\n';
     session_force_sum_ += metrics.actual_force_n;
     session_force_max_ = std::max(session_force_max_, metrics.actual_force_n);
     ++session_sample_count_;
@@ -1879,6 +1896,9 @@ private:
   {
     if (!session_active_) {return;}
     const auto end_time = now();
+    // Persist the terminal state/fault even when finalization is called
+    // directly from a service callback before the next recording tick.
+    write_record_sample(end_time);
     if (record_stream_) {record_stream_.flush(); record_stream_.close();}
     msg::TractionRecordSummary summary;
     summary.header.stamp = end_time;
@@ -1909,7 +1929,8 @@ private:
         static_cast<double>(summary.start_time.nanosec) * 1e-9;
       const double end_seconds = static_cast<double>(summary.end_time.sec) +
         static_cast<double>(summary.end_time.nanosec) * 1e-9;
-      sessions << summary.session_id << ',' << static_cast<int>(summary.operation_mode) << ','
+      sessions << std::fixed << std::setprecision(9)
+               << summary.session_id << ',' << static_cast<int>(summary.operation_mode) << ','
                << start_seconds << ',' << end_seconds << ','
                << summary.target_force_n << ','
                << summary.average_force_n << ',' << summary.max_force_n << ','
@@ -2035,17 +2056,23 @@ private:
     switch (state_machine_.state()) {
       case TractionState::INITIALIZING: status.message = "正在连接 AUBO i5、力传感器和牵引控制器"; break;
       case TractionState::READY: status.message = "设备已就绪；牵引带松弛时点击初始校准"; break;
-      case TractionState::MANUAL_SETUP: status.message = "请用 AUBO 示教器移动，张紧后保持法兰静止"; break;
+      case TractionState::MANUAL_SETUP:
+        status.message = operation_mode_ == OperationMode::ASSISTED_DRAG ?
+          "初始校准完成；点击开始拖拽后，沿工具 X/Y 方向轻推末端" :
+          "请用 AUBO 示教器移动，张紧后保持法兰静止";
+        break;
       case TractionState::CALIBRATING: status.message = "正在采集张紧方向，请保持法兰静止"; break;
       case TractionState::DIRECTION_LOCKED: status.message = "方向已锁定；可以设置目标力并开始牵引"; break;
       case TractionState::TRACTION:
         status.message = operation_mode_ == OperationMode::POSITION_TRACTION ?
-          "位置牵引中，正在接近目标力" : "恒力牵引中，正在自适应跟随受力方向";
+          "位置牵引中，正在接近目标力" :
+          (direction_correction_mode_name_ == "off" ?
+          "恒力牵引中，正在沿已标定方向调节牵引力" : "恒力牵引中，正在自适应跟随受力方向");
         break;
       case TractionState::RELEASING: status.message = "已停止力控，正在返回牵引起始位置"; break;
       case TractionState::COMPLETED: status.message = "牵引完成"; break;
       case TractionState::FAULT: status.message = "设备故障；确认安全后重新初始校准"; break;
-      case TractionState::EMERGENCY_STOP: status.message = "已急停并下使能；确认后点击急停恢复"; break;
+      case TractionState::EMERGENCY_STOP: status.message = "软件急停已锁定；查看恢复说明，软件不会自动解锁"; break;
       case TractionState::PRETENSION: status.message = "正在自动预张紧"; break;
       case TractionState::DRAGGING:
         status.message = "省力拖拽中；施力即动，松手即停";

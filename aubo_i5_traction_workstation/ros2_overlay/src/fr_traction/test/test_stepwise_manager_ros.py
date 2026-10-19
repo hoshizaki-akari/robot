@@ -1,6 +1,7 @@
 """Offline ROS tests for the traction manager's stepwise zero-pose contract."""
 
 from collections import deque
+import csv
 import math
 import os
 from pathlib import Path
@@ -95,6 +96,13 @@ class ManagerProcess:
             "control_rate_hz:=100.0",
             "-p",
             "status_rate_hz:=20.0",
+            # This harness publishes at approximately 50 Hz, not the 100 Hz
+            # hardware stream. Test stop/activation ordering with a realistic
+            # sample window instead of racing the default 80-sample threshold.
+            "-p",
+            "calibration_window_s:=2.0",
+            "-p",
+            "calibration_min_samples:=40",
         ]
         environment = os.environ.copy()
         environment.update(
@@ -460,6 +468,8 @@ def test_stepwise_set_zero_requires_fresh_idle_inputs(manager, missing):
         manager.pump(duration_s=0.35)
     else:
         manager.motion_idle = False
+        manager.wait_motion_idle(False)
+        manager.pump(duration_s=0.15)
     response = manager.trigger("/traction/set_zero_pose")
     assert not response.success
     assert "rejected" in response.message.lower()
@@ -619,3 +629,43 @@ def test_stop_invalidates_delayed_start_before_active_mode(
         message.state != active_state
         for message in list(delayed_manager.status_history)[start_mark:stop_mark]
     )
+
+
+@pytest.mark.parametrize('mode', [0, 1])
+def test_repeated_traction_start_records_each_run(manager, mode):
+    """Two starts with one direction calibration retain two real manager records."""
+    manager.wait_ready()
+    assert manager.set_operation_mode(mode).success
+    assert manager.trigger('/traction/prepare').success
+    manager.wrench_force = (3.0, 0.0, 0.0)
+    manager.pump(duration_s=0.20)
+    assert manager.trigger('/traction/calibrate_direction').success
+    manager.wait_status(TractionStatus.DIRECTION_LOCKED, timeout_s=4.0)
+    for _ in range(2):
+        assert manager.set_target_force(5.0).success
+        mark = manager.mark()
+        assert manager.trigger('/traction/start').success
+        manager.wait_status(TractionStatus.TRACTION, after=mark)
+        manager.pump(duration_s=0.15)
+        mark = manager.mark()
+        assert manager.trigger('/traction/stop').success
+        manager.wait_status(TractionStatus.DIRECTION_LOCKED, after=mark)
+    records = sorted(Path(manager.child.data_directory).glob('session_*/traction.csv'))
+    assert len(records) == 2
+    with (Path(manager.child.data_directory) / 'sessions_multimode.csv').open(
+        newline='', encoding='utf-8'
+    ) as stream:
+        summaries = {row['session_id']: row for row in csv.DictReader(stream)}
+    for record in records:
+        with record.open(newline='', encoding='utf-8') as stream:
+            rows = list(csv.DictReader(stream))
+        assert any(row['state'] == 'TRACTION' for row in rows)
+        assert rows[-1]['state'] == 'COMPLETED'
+        assert rows[-1]['measured_motion_idle'] == '1'
+        assert rows[-1]['measured_idle_fresh'] == '1'
+        assert 'fault_code' in rows[-1]
+        assert 'ee_vx_mps' in rows[-1]
+        summary = summaries[record.parent.name]
+        session_start_ms = int(record.parent.name.removeprefix('session_'))
+        assert abs(float(summary['start_time']) - session_start_ms / 1000.0) < 0.002
+        assert abs(float(summary['end_time']) - float(rows[-1]['timestamp'])) < 0.000001

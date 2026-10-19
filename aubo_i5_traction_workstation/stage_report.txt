@@ -1,46 +1,46 @@
-===== AUBO I5 TRACTION WORKSTATION / READ-ONLY HARDWARE CHECK =====
+===== AUBO I5 TRACTION WORKSTATION / WEB HANDOFF =====
+date = 2026-10-19
+source = traction workstation at 881117c; original FR5 files not edited
+scope = assisted XY drag, position traction, constant-force traction
 
-source:
-fr5_traction_workstation at 881117c; source tree untouched
-date: 2026-10-15
+changes:
+fixed session orientation and idle deactivation SDK-stop regression
+fixed repeated constant/position start missing detailed records
+persisted terminal fault/state, measured velocity and idle freshness
+fixed summary Unix timestamp precision across restarts
+added real periodic feedback and export coverage metadata
+added persistent single-owner Windows/WSL/web supervisor; no automatic start
+clarified local login and unsupported automatic emergency recovery UI
 
-isolated_target:
-/home/zhj/projects/aubo_i5_traction_ws/aubo_i5_traction_workstation
+verification:
+offline ROS fr_traction = 185 reported tests, 0 errors/failures, 22 skipped
+offline ROS aubo_v4_driver = 109 reported tests, 0 errors/failures, 13 skipped
+scheduler and transport CTest = each repeated 20 times, PASS
+web/Python = 51 passed; Ruff and shell/PowerShell parse = PASS
+ROS counts include test/lint aggregation, not unique live trials
 
-implemented:
-AUBO-only web identity guard and real-joint readout
-FR5-only launch and runtime packages excluded
-KWR75D COM4 frame protocol decoded and converted to SI
-uncalibrated sensor-to-base wrench bridge fails closed
-AUBO V4 read-only waypoint/diagnosis adapter and fast-stop request
-official AUBO i5 visualization-only URDF and fourteen meshes
-read-only opt-in launch; no motion controller starts
+real_hardware_evidence:
+tool X cumulative distance = 49.740 mm; lateral deviation = 0.030 mm
+measured stop after bounded tool X movement = PASS
+zero-input drag web lifecycle and measured idle = PASS
+loaded drag trial = NOT ACCEPTED; hard-overforce fault observed
+loaded position/constant-force traction = NOT YET ACCEPTED
+no additional motion trial performed in this web-handoff turn
 
-automatic_verification:
-4 ROS packages build = PASS
-ROS tests = 145 tests, 0 errors, 0 failures, 26 skipped
-web/Python tests = 19 passed
-check_urdf = PASS
-launch arguments parse = PASS
-local web smoke test = /api/health ok:false, POST /api/traction/start 409,
-  POST /api/traction/mode 409
+runtime:
+Windows COM4 -> TCP -> WSL PTY; AUBO legacy V4 SDK single owner
+web = http://127.0.0.1:8082/
+verified commissioning limits retained, not removed/increased
+manual webpage test does not use short timed verification helper
 
-live_hardware:
-V4 SDK login 192.168.1.40:8899 and waypoint/diagnosis read = PASS
-real_robot=1, work_mode=real, arm_power=1, remote_halt=1 (remote shutdown signal)
-ROS robot_pose_m=0.083122,-0.352475,0.590270
-ROS robot_health=false; no motion commands sent
-Windows COM4 -> localhost TCP -> WSL PTY KWR75D frame = PASS
-ROS raw_wrench_valid=true
-ROS wrench_N_Nm=-2.057934,7.589141,1.205015,0.211428,-0.094142,0.023111
-Cyclone DDS interprocess communication = PASS
+debug:
+debug/session_20261019_hardware/offline_acceptance_latest.log
+debug/session_20261019_hardware/*result.json and matching motion CSV
+debug/session_*_workstation/ per-component logs
+debug/traction_sessions/ per-task detailed CSV and summaries
+debug/runtime_feedback/ real feedback JSONL
+instructions = WEB_HANDOFF_20261019.md
 
-not_verified:
-V4 libprotobuf.so.9 now extracted outside repo from official Ubuntu package
-V4 high-rate Cartesian servo suitable for traction is unproven
-sensor mount transform, flange/TCP semantics, force direction uncalibrated
-return-zero, automatic emergency recovery, and assisted drag unsupported
-position and constant-force traction cannot be released for hardware
-
-status:
-WAITING_CHECKPOINT_EXTERNAL_REMOTE_HALT_SIGNAL_AND_CALIBRATION
+status = WAITING_CHECKPOINT_OPERATOR_WEB_LOADED_ACCEPTANCE
+operator_action = operate each mode on webpage; export each row's full ZIP log
+do_not_claim = all three loaded physical functions have already passed

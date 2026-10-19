@@ -545,3 +545,49 @@ TEST(StepwiseSchedulerStop, PreservesOriginalFaultReasonAfterStopConfirmation)
   EXPECT_EQ(scheduler.state(), StepwiseState::FAULT);
   EXPECT_EQ(scheduler.fault_reason(), "original completion failure");
 }
+
+TEST(StepwiseSchedulerCompletion, MeasuredOrientationErrorDoesNotAccumulateIntoTargets)
+{
+  StepwiseScheduler scheduler;
+  arm(scheduler);
+  const auto first = send(scheduler, {0.002, 0.0, 0.0});
+  acknowledge(scheduler, first);
+  for (std::uint64_t sequence = 2; sequence <= 4; ++sequence) {
+    const double time = 0.01 + 0.02 * static_cast<double>(sequence);
+    auto measured = feedback(sequence, time, true, 0.0, first.target);
+    measured.orientation = {0.0, 0.0, std::sin(0.0005), std::cos(0.0005)};
+    ASSERT_TRUE(scheduler.set_feedback(measured, time));
+  }
+  scheduler.poll(0.20);
+  ASSERT_EQ(scheduler.state(), StepwiseState::READY);
+  ASSERT_TRUE(scheduler.set_velocity({0.002, 0.0, 0.0}, 0.21));
+  const auto second = scheduler.take_command(0.21);
+  ASSERT_TRUE(second.has_value());
+  EXPECT_EQ(second->orientation, first.orientation);
+}
+
+TEST(StepwiseSchedulerStop, IdleDisableRevokesIntentWithoutRedundantSdkStop)
+{
+  StepwiseScheduler scheduler;
+  arm(scheduler);
+  ASSERT_TRUE(scheduler.set_velocity({0.002, 0.0, 0.0}, 0.01));
+  const auto before_epoch = scheduler.epoch();
+  ASSERT_TRUE(scheduler.set_enabled(false, 0.02));
+  EXPECT_GT(scheduler.epoch(), before_epoch);
+  EXPECT_EQ(scheduler.state(), StepwiseState::DISABLED);
+  EXPECT_TRUE(scheduler.motion_idle(0.02));
+  EXPECT_FALSE(scheduler.take_command(0.02).has_value());
+  EXPECT_FALSE(scheduler.take_stop_request().has_value());
+}
+
+TEST(StepwiseSchedulerStop, DisablingAnInflightMotionStillRequiresSdkStop)
+{
+  StepwiseScheduler scheduler;
+  arm(scheduler);
+  const auto command = send(scheduler, {0.002, 0.0, 0.0});
+  acknowledge(scheduler, command);
+  ASSERT_TRUE(scheduler.set_enabled(false, 0.03));
+  EXPECT_EQ(scheduler.state(), StepwiseState::STOPPING);
+  EXPECT_TRUE(scheduler.take_stop_request().has_value());
+  EXPECT_FALSE(scheduler.motion_idle(0.03));
+}

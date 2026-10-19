@@ -12,5 +12,7 @@ python -m ruff check app.py backend \
   tests/test_control_config_contract.py tests/test_emergency_recover.py \
   scripts/capture_force_checkpoint.py scripts/fit_force_axes.py \
   scripts/live_motion_bounds.py scripts/verify_stepwise_live.py \
+  scripts/verify_drag_web_live.py tests/test_live_launcher.py \
+  tests/test_runtime_recorder.py tests/test_export_runtime.py \
   tests/test_force_axis_fit.py tests/test_live_motion_bounds.py
 echo "AUBO i5 workstation offline Python checks passed"

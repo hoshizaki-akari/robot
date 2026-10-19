@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 import zipfile
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -25,8 +25,10 @@ from starlette.background import BackgroundTask
 
 try:
     from .backend.ros_bridge import RosBridge, RosBridgeError
+    from .backend.runtime_recorder import RuntimeRecorder
 except ImportError:
     from backend.ros_bridge import RosBridge, RosBridgeError
+    from backend.runtime_recorder import RuntimeRecorder
 
 
 ROOT = Path(__file__).resolve().parent
@@ -43,6 +45,8 @@ SETTINGS_PATH = Path(
 SETTINGS_LOCK = threading.Lock()
 DEFAULT_SETTINGS = {"traction_force_limit_n": 100.0}
 bridge = RosBridge()
+runtime_recorder = RuntimeRecorder(ROOT / "debug" / "runtime_feedback")
+runtime_recording_status = {"available": False, "error": "not started"}
 MOTION_ENABLED = os.environ.get("AUBO_TRACTION_ENABLED", "false").lower() in {
     "1", "true", "yes", "on"
 }
@@ -172,10 +176,27 @@ async def lifespan(_: FastAPI):
             "start it with run_workstation.sh"
         )
     bridge.start()
+    recording_task = asyncio.create_task(_record_runtime_feedback())
     try:
         yield
     finally:
+        recording_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await recording_task
         bridge.stop()
+
+
+async def _record_runtime_feedback() -> None:
+    """Persist real feedback independently of browser clicks or open sockets."""
+    while True:
+        try:
+            snapshot = bridge.snapshot()
+            snapshot["motion_enabled"] = MOTION_ENABLED
+            await asyncio.to_thread(runtime_recorder.append, snapshot)
+            runtime_recording_status.update(available=True, error="")
+        except (OSError, ValueError, TypeError) as error:
+            runtime_recording_status.update(available=False, error=str(error))
+        await asyncio.sleep(0.1)
 
 
 app = FastAPI(title="AUBO i5 Traction Workstation", lifespan=lifespan)
@@ -234,6 +255,7 @@ def health() -> dict:
 def state() -> dict:
     snapshot = bridge.snapshot()
     snapshot["motion_enabled"] = MOTION_ENABLED
+    snapshot["runtime_recording"] = dict(runtime_recording_status)
     return snapshot
 
 
@@ -462,6 +484,26 @@ def export_session(session_id: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="详细牵引数据不存在")
 
     operations = _operations_in_session(summary, _read_operations())
+    started = _stamp_value(summary.get("start_time"))
+    ended = _stamp_value(summary.get("end_time"))
+    runtime_rows = runtime_recorder.rows_between(started, ended + 10.0)
+    evidence = {
+        "format_version": 1,
+        "source": "periodic real ROS bridge snapshots, not reconstructed commands",
+        "nominal_sample_period_s": 0.1,
+        "session_start_unix_s": started,
+        "session_end_unix_s": ended,
+        "post_session_context_s": 10.0,
+        "sample_count": len(runtime_rows),
+        "first_capture_unix_s": runtime_rows[0]["timestamp_wall"] if runtime_rows else None,
+        "last_capture_unix_s": runtime_rows[-1]["timestamp_wall"] if runtime_rows else None,
+        "recording_status_at_export": dict(runtime_recording_status),
+        "interpretation": (
+            "Empty/missing feedback is NOT proof of standstill or successful traction. "
+            "Inspect robot identity, validity/data ages, diagnostic motion_idle and phase, "
+            "joint velocities, force and positions. Post-session context may overlap a later run."
+        ),
+    }
     operation_output = io.StringIO()
     operation_fields = [
         "timestamp",
@@ -497,11 +539,21 @@ def export_session(session_id: str) -> FileResponse:
         )
         archive.writestr("operations.csv", "\ufeff" + operation_output.getvalue())
         archive.writestr(
+            "runtime_feedback.jsonl",
+            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in runtime_rows),
+        )
+        archive.writestr("runtime_evidence.json", json.dumps(evidence, ensure_ascii=False, indent=2))
+        archive.writestr(
             "README.txt",
             "traction.csv：从初始校准到结束的完整时序数据，包含目标力、总张力、"
             "Fx/Fy/Fz、原始/滤波/锁定方向、方向状态、末端位置、速度和停止原因。\n"
             "operations.csv：该次记录时间范围内的页面操作、操作者、角色和执行结果。\n"
-            "summary.json：本次牵引的开始/结束时间、目标力、平均力、最大力和最终状态。\n",
+            "summary.json：本次牵引的开始/结束时间、目标力、平均力、最大力和最终状态。\n"
+            "runtime_feedback.jsonl：约10Hz真实运行快照，包括身份验证标志、关节实测值、"
+            "数据年龄、驱动阶段、motion_idle、力和末端位置；包含结束后最多10秒上下文。\n"
+            "runtime_evidence.json：记录覆盖范围及导出时记录器状态；空记录不是停稳证明。\n"
+            "traction.csv中的command/velocity_cmd为命令；ee_v*_mps、ee_w*_radps为实测。\n"
+            "历史旧记录可能没有新增反馈文件或列；请勿据此推断其已经验收通过。\n",
         )
     return FileResponse(
         temporary_path,
@@ -518,6 +570,7 @@ async def websocket_state(websocket: WebSocket) -> None:
         while True:
             snapshot = bridge.snapshot()
             snapshot["motion_enabled"] = MOTION_ENABLED
+            snapshot["runtime_recording"] = dict(runtime_recording_status)
             await websocket.send_json(snapshot)
             await asyncio.sleep(0.1)
     except WebSocketDisconnect:
