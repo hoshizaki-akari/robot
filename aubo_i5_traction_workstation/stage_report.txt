@@ -1,9 +1,11 @@
 ===== AUBO I5 TRACTION WORKSTATION / WEB HANDOFF =====
 date = 2026-10-19
 source = traction workstation at 881117c; original FR5 files not edited
-scope = assisted XY drag, position traction, constant-force traction
+scope = assisted XYZ drag, position traction, constant-force traction
 
 changes:
+unified full XYZ drag mask in source defaults, launch and local commissioning profile
+confirmed running controller mask=[1,1,1] via read-only GetParameters
 fixed session orientation and idle deactivation SDK-stop regression
 fixed repeated constant/position start missing detailed records
 persisted terminal fault/state, measured velocity and idle freshness
@@ -13,16 +15,18 @@ added persistent single-owner Windows/WSL/web supervisor; no automatic start
 clarified local login and unsupported automatic emergency recovery UI
 
 verification:
-offline ROS fr_traction = 185 reported tests, 0 errors/failures, 22 skipped
+offline ROS fr_traction = 191 reported tests, 0 errors/failures, 22 skipped
 offline ROS aubo_v4_driver = 109 reported tests, 0 errors/failures, 13 skipped
 scheduler and transport CTest = each repeated 20 times, PASS
-web/Python = 51 passed; Ruff and shell/PowerShell parse = PASS
+web/Python = 52 passed; Ruff and shell/PowerShell parse = PASS
 ROS counts include test/lint aggregation, not unique live trials
 
 real_hardware_evidence:
 tool X cumulative distance = 49.740 mm; lateral deviation = 0.030 mm
 measured stop after bounded tool X movement = PASS
-zero-input drag web lifecycle and measured idle = PASS
+previous XY zero-input drag web lifecycle and measured idle = PASS
+XYZ software directions, rotated tool poses and release-to-zero = PASS offline
+Z basis = operator-approved right-handed derivation from labelled XY; independent Z load not verified
 loaded drag trial = NOT ACCEPTED; hard-overforce fault observed
 loaded position/constant-force traction = NOT YET ACCEPTED
 no additional motion trial performed in this web-handoff turn
@@ -35,12 +39,14 @@ manual webpage test does not use short timed verification helper
 
 debug:
 debug/session_20261019_hardware/offline_acceptance_latest.log
+debug/session_20261019_hardware/xyz_offline_acceptance.log
+debug/session_20261019_xyz/stage_report.txt
 debug/session_20261019_hardware/*result.json and matching motion CSV
 debug/session_*_workstation/ per-component logs
 debug/traction_sessions/ per-task detailed CSV and summaries
 debug/runtime_feedback/ real feedback JSONL
 instructions = WEB_HANDOFF_20261019.md
 
-status = WAITING_CHECKPOINT_OPERATOR_WEB_LOADED_ACCEPTANCE
+status = WAITING_CHECKPOINT_OPERATOR_XYZ_WEB_LOADED_ACCEPTANCE
 operator_action = operate each mode on webpage; export each row's full ZIP log
 do_not_claim = all three loaded physical functions have already passed

@@ -2058,7 +2058,7 @@ private:
       case TractionState::READY: status.message = "设备已就绪；牵引带松弛时点击初始校准"; break;
       case TractionState::MANUAL_SETUP:
         status.message = operation_mode_ == OperationMode::ASSISTED_DRAG ?
-          "初始校准完成；点击开始拖拽后，沿工具 X/Y 方向轻推末端" :
+          "初始校准完成；点击开始拖拽后，可沿工具 X/Y/Z 三轴推拉末端" :
           "请用 AUBO 示教器移动，张紧后保持法兰静止";
         break;
       case TractionState::CALIBRATING: status.message = "正在采集张紧方向，请保持法兰静止"; break;

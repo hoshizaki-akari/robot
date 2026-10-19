@@ -101,6 +101,65 @@ TEST(StepwiseTraction, DefaultDragMaskRetainsAllAxes)
   EXPECT_TRUE(out.valid);
   EXPECT_GT(out.linear_velocity.z, 0);
 }
+TEST(StepwiseTraction, AllSixDirectionsAndDiagonalPreserveFullForceDirection)
+{
+  auto config = verified();
+  config.drag_axis_mask = {1, 1, 1};
+  for (const auto force : {
+    ft::Vec3{3, 0, 0}, ft::Vec3{-3, 0, 0}, ft::Vec3{0, 3, 0},
+    ft::Vec3{0, -3, 0}, ft::Vec3{0, 0, 3}, ft::Vec3{0, 0, -3},
+    ft::Vec3{2, -3, 4}, ft::Vec3{-2, 3, -4}})
+  {
+    const auto output = ft::stepwise_traction_output(
+      config, ft::ControlMode::DRAGGING, {}, 0, force);
+    ASSERT_TRUE(output.valid);
+    const double speed = ft::norm(output.linear_velocity);
+    ASSERT_GT(speed, 0);
+    EXPECT_LE(speed, config.maximum_speed_mps + 1e-12);
+    const auto expected = force * (speed / ft::norm(force));
+    EXPECT_NEAR(output.linear_velocity.x, expected.x, 1e-12);
+    EXPECT_NEAR(output.linear_velocity.y, expected.y, 1e-12);
+    EXPECT_NEAR(output.linear_velocity.z, expected.z, 1e-12);
+    const auto released = ft::stepwise_traction_output(
+      config, ft::ControlMode::DRAGGING, {}, 0, {});
+    EXPECT_DOUBLE_EQ(ft::norm(released.linear_velocity), 0);
+  }
+}
+TEST(StepwiseTraction, ZDominantRecordedForceIsNotProjectedIntoXY)
+{
+  // Offline numerical regression from the reviewed session's approximate
+  // tool-frame decomposition, NOT replay data in an operational controller.
+  const ft::Vec3 force{-2.73147, -1.28915, -8.92812};
+  const auto output = ft::stepwise_traction_output(
+    verified(), ft::ControlMode::DRAGGING, {}, 0, force);
+  ASSERT_TRUE(output.valid);
+  EXPECT_LT(output.linear_velocity.z, 0);
+  EXPECT_GT(std::abs(output.linear_velocity.z) / ft::norm(output.linear_velocity), 0.94);
+}
+TEST(StepwiseTraction, TractionAndPositionRetainArbitraryThreeDimensionalDirections)
+{
+  auto config = verified();
+  for (const auto mode : {ft::ControlMode::TRACTION, ft::ControlMode::POSITIONING}) {
+    for (const auto direction : {
+      ft::Vec3{1, 0, 0}, ft::Vec3{-1, 0, 0}, ft::Vec3{0, 1, 0},
+      ft::Vec3{0, -1, 0}, ft::Vec3{0, 0, 1}, ft::Vec3{0, 0, -1},
+      ft::Vec3{1, -2, 3}})
+    {
+      const auto unit = direction * (1.0 / ft::norm(direction));
+      for (const double sign : {-1.0, 1.0}) {
+        config.axis_sign = sign;
+        const auto output = ft::stepwise_traction_output(config, mode, direction, 2, unit);
+        ASSERT_TRUE(output.valid);
+        const double speed = ft::norm(output.linear_velocity);
+        ASSERT_GT(speed, 0);
+        const auto expected = unit * (sign * speed);
+        EXPECT_NEAR(output.linear_velocity.x, expected.x, 1e-12);
+        EXPECT_NEAR(output.linear_velocity.y, expected.y, 1e-12);
+        EXPECT_NEAR(output.linear_velocity.z, expected.z, 1e-12);
+      }
+    }
+  }
+}
 TEST(StepwiseTraction, DragRejectsAllAxesMasked)
 {
   auto config = verified();

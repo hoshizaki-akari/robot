@@ -13,6 +13,14 @@ ROS = ROOT / "ros2_overlay" / "src" / "fr_traction"
 
 
 class AuboWorkstationContractTest(unittest.TestCase):
+    def test_production_drag_defaults_include_xyz(self):
+        """Both supported launch paths keep tool-Z instead of silently masking it."""
+        params = (ROS / 'config' / 'traction_params.yaml').read_text(encoding='utf-8')
+        launch = (ROS / 'launch' / 'aubo_i5_stepwise.launch.py').read_text(encoding='utf-8')
+        self.assertIn('stepwise_drag_axis_mask: [1.0, 1.0, 1.0]', params)
+        self.assertIn('DeclareLaunchArgument("drag_axis_mask", default_value="[1.0, 1.0, 1.0]")',
+                      launch)
+
     def test_original_fr5_launch_cannot_run(self):
         launch = (ROS / "launch" / "traction_system.launch.py").read_text(
             encoding="utf-8"

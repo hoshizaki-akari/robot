@@ -30,7 +30,7 @@ def generate_launch_description():
         DeclareLaunchArgument("serial_path", default_value="/dev/ttyUSB0"),
         DeclareLaunchArgument("axis_sign", default_value="0.0"),
         DeclareLaunchArgument("wrench_calibration_file", default_value=mount),
-        DeclareLaunchArgument("drag_axis_mask", default_value="[1.0, 1.0, 0.0]"),
+        DeclareLaunchArgument("drag_axis_mask", default_value="[1.0, 1.0, 1.0]"),
     ])
     return LaunchDescription(arguments + [
         Node(

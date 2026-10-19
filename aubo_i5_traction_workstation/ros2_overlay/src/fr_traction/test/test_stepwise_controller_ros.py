@@ -421,6 +421,45 @@ def test_drag_axes_follow_identity_pose_and_let_go_returns_zero(controller):
     )
 
 
+def _reference_rotate_force(force, quaternion):
+    """Independent cross-product rotation for offline test expectations."""
+    magnitude = math.sqrt(sum(value * value for value in quaternion))
+    x, y, z, w = (value / magnitude for value in quaternion)
+    fx, fy, fz = force
+    tx, ty, tz = 2 * (y * fz - z * fy), 2 * (z * fx - x * fz), 2 * (x * fy - y * fx)
+    return (fx + w * tx + y * tz - z * ty,
+            fy + w * ty + z * tx - x * tz,
+            fz + w * tz + x * ty - y * tx)
+
+
+@pytest.mark.parametrize('quaternion', [
+    (0.0, 0.0, 0.0, 1.0),
+    (0.0, math.sqrt(0.5), 0.0, math.sqrt(0.5)),
+    (-0.3317575632, -0.5098593730, 0.7853675603, 0.1147960553),
+])
+def test_full_xyz_drag_and_release_through_rotated_tool_pose(controller, quaternion):
+    """Six signed axes and diagonals survive tool/base rotation without XY projection."""
+    for force_tool in ((3, 0, 0), (-3, 0, 0), (0, 3, 0), (0, -3, 0),
+                       (0, 0, 3), (0, 0, -3), (2, -3, 4), (-2, 3, -4)):
+        force_base = _reference_rotate_force(force_tool, quaternion)
+        force_norm = math.sqrt(sum(value * value for value in force_base))
+        mark = controller.mark()
+        controller.configure(TractionCommand.DRAG, 0.0, force_base, ee_quaternion=quaternion)
+
+        def follows_full_force(message):
+            speed = _norm(message)
+            velocity = (message.linear.x, message.linear.y, message.linear.z)
+            alignment = sum(v * f for v, f in zip(velocity, force_base))
+            return (0.001 <= speed <= 0.002000001 and
+                    alignment / (speed * force_norm) > 0.9999)
+
+        controller.wait_for_stable_output(mark, follows_full_force)
+        controller.wait_for_stable_health(mark, True)
+        released = controller.mark()
+        controller.configure(TractionCommand.DRAG, 0.0, (0.0, 0.0, 0.0), ee_quaternion=quaternion)
+        controller.wait_for_stable_output(released, lambda message: _norm(message) <= ZERO_EPSILON)
+
+
 def test_drag_axis_mask_blocks_z_and_preserves_xy_response(xy_drag_controller):
     """An explicit XY mask rejects Z force while retaining XY drag response."""
     masked_z = xy_drag_controller.mark()

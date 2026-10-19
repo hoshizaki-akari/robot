@@ -24,6 +24,9 @@ traction_controller:
     drag_sign_x: 1.0
     drag_sign_y: 1.0
     drag_sign_z: 1.0
+    # Full translational drag: do not silently discard tool-Z force.
+    # Calibration/motion verification gates remain separate and default closed.
+    stepwise_drag_axis_mask: [1.0, 1.0, 1.0]
     # Never reuse the FR5 tool-Z inversion on the AUBO i5.
     traction_sign_x: 1.0
     traction_sign_y: 1.0
