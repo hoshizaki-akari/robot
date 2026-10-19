@@ -1,4 +1,43 @@
-===== AUBO I5 TRACTION / NATIVE TRACKING CHECKPOINT =====
+===== LATEST: 2026-10-19 LOW-FORCE RESPONSE / XY RECHECK =====
+input = session_1792396166515_full_log.zip
+operator = stutter improved; still heavy; XY direction questioned
+native trial = 306 ACKs, max displacement 46.469 mm, peak force 16.895 N
+terminal fault = WRENCH_INVALID, not HARD_OVERFORCE
+
+repair = consistent bounded 50 ms source-clock tolerance + detailed fault reason
+retained = stale-source / monotonic receipt / finite / frame checks
+old fault cause = not uniquely proven because source age was not logged
+drag gain = 0.020 m/s/N; live parameter readback confirmed
+1 N -> 10 mm/s command; 1.5 N -> 20 mm/s command; not physical-speed proof
+release deadband / command ceiling = unchanged 0.5 N / 20 mm/s
+position / constant-force parameters = unchanged
+
+direction = old XY angle 109.706 deg; orthogonal fit residual 9.853 deg per axis
+old sensor-Z / flange-Z tilt = 16.505 deg
+software chain = proper rotation, no evident transpose/sign error
+new operator X under old calibration = unit [0.8143, 0.5440, -0.2023]
+new unloaded / X captures = real sensor data, stationary, no motion commands
+new Y capture = pending; runtime mounting/signs not changed
+
+offline = fr_traction 206 reported entries / 0 errors / 0 failures / 24 skipped
+driver = 127 reported entries / 0 errors / 0 failures / 14 skipped
+manager ROS = 17 passed, including bounded future / excessive future / stale
+light-drag core = 25 passed including six signed directions and release
+scheduler / transport = each 20 repeats passed; Python/web 53 passed; Ruff passed
+ROS reported entries include lint/test aggregation, not live trials
+
+runtime = http://127.0.0.1:8082/ ; startup READY / connected / measured idle
+logs = debug/session_20261019_155900_workstation
+debug = debug/session_20261019_hardware/source_freshness_offline.log
+debug = debug/session_20261019_hardware/light_drag_curve_tests.log
+debug = debug/session_20261019_hardware/xy_recheck_unloaded.json
+debug = debug/session_20261019_hardware/xy_recheck_tool_x_push.json
+details = DRAG_DIRECTION_RESPONSE_20261019.md
+status = WAITING_CHECKPOINT_OPERATOR_Y_POSITIVE_FORCE_SAMPLE
+operator_action = hold actual tool Y+ force, reply Y+ held; no active motion
+not_accepted = new lightness / physical directions / loaded position and constant-force
+
+===== HISTORICAL: NATIVE TRACKING INITIAL CHECKPOINT =====
 date = 2026-10-19
 source = traction workstation at 881117c; original FR5 files not edited
 scope = assisted XYZ drag, position traction, constant-force traction

@@ -90,6 +90,8 @@ if(BUILD_TESTING)
   target_link_libraries(test_stepwise_traction fr_traction_core)
   ament_add_gtest(test_zero_pose_policy test/test_zero_pose_policy.cpp)
   target_link_libraries(test_zero_pose_policy fr_traction_core)
+  ament_add_gtest(test_source_freshness test/test_source_freshness.cpp)
+  target_link_libraries(test_source_freshness fr_traction_core)
   ament_add_pytest_test(test_stepwise_controller_ros test/test_stepwise_controller_ros.py
     TIMEOUT 120
     ENV AUBO_TRACTION_CONTROLLER_EXECUTABLE=$<TARGET_FILE:traction_controller_node>)

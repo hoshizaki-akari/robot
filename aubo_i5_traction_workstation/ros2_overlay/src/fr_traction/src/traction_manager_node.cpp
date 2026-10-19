@@ -4,6 +4,7 @@
 #include "fr_traction/traction_state_machine.hpp"
 #include "fr_traction/stepwise_traction.hpp"
 #include "fr_traction/zero_pose_policy.hpp"
+#include "fr_traction/source_freshness.hpp"
 
 #include <algorithm>
 #include <array>
@@ -439,7 +440,8 @@ private:
     latest_torque_finite_ = std::isfinite(message.wrench.torque.x) &&
       std::isfinite(message.wrench.torque.y) && std::isfinite(message.wrench.torque.z);
     wrench_frame_valid_ = message.header.frame_id == expected_wrench_frame_;
-    const bool source_fresh = source_stamp_fresh(message.header.stamp, wrench_timeout_s_);
+    latest_wrench_source_age_s_ = source_stamp_age(message.header.stamp);
+    const bool source_fresh = source_age_fresh(latest_wrench_source_age_s_, wrench_timeout_s_);
     wrench_valid_ = finite(latest_wrench_) && latest_torque_finite_ && wrench_frame_valid_ &&
       (!require_measured_idle_ || source_fresh);
     last_wrench_at_ = now();
@@ -501,12 +503,18 @@ private:
     return std::isfinite(age) && age >= 0.0 ? age : std::numeric_limits<double>::infinity();
   }
 
+  double source_stamp_age(const builtin_interfaces::msg::Time & stamp) const
+  {
+    if (stamp.sec == 0 && stamp.nanosec == 0) {
+      return std::numeric_limits<double>::infinity();
+    }
+    const rclcpp::Time source_time(stamp, RCL_ROS_TIME);
+    return (now() - source_time).seconds();
+  }
+
   bool source_stamp_fresh(const builtin_interfaces::msg::Time & stamp, double timeout_s) const
   {
-    if (stamp.sec == 0 && stamp.nanosec == 0) {return false;}
-    const rclcpp::Time source_time(stamp, RCL_ROS_TIME);
-    const double age_s = (now() - source_time).seconds();
-    return std::isfinite(age_s) && age_s >= 0.0 && age_s <= timeout_s;
+    return source_age_fresh(source_stamp_age(stamp), timeout_s);
   }
 
   bool live_wrench() const
@@ -1429,10 +1437,13 @@ private:
         get_logger(),
         "Feedback freshness failed before safety fault: wrench_valid=%s frame_valid=%s "
         "wrench_age=%.3f s ee_valid=%s ee_age=%.3f s "
-        "wrench_timeout=%.3f s ee_timeout=%.3f s.",
+        "wrench_timeout=%.3f s ee_timeout=%.3f s "
+        "wrench_source_age=%.6f s force_finite=%s torque_finite=%s.",
         wrench_valid_ ? "true" : "false", wrench_frame_valid_ ? "true" : "false",
         age_seconds(last_wrench_steady_at_), ee_valid_ ? "true" : "false",
-        age_seconds(last_ee_steady_at_), wrench_timeout_s_, ee_state_timeout_s_);
+        age_seconds(last_ee_steady_at_), wrench_timeout_s_, ee_state_timeout_s_,
+        latest_wrench_source_age_s_, finite(latest_wrench_) ? "true" : "false",
+        latest_torque_finite_ ? "true" : "false");
     }
     if (!sample.controller_healthy) {
       RCLCPP_ERROR(
@@ -2199,6 +2210,7 @@ private:
   bool wrench_baseline_valid_ = false;
   bool wrench_frame_valid_ = false;
   bool latest_torque_finite_ = false;
+  double latest_wrench_source_age_s_ = std::numeric_limits<double>::infinity();
   bool ee_valid_ = false;
   bool controller_healthy_ = false;
   bool require_measured_idle_{false}, measured_motion_idle_{false};

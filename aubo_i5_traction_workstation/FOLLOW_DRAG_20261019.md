@@ -1,5 +1,9 @@
 # 旧版 AUBO 原生 TRACKING 拖拽
 
+最新实测：`session_1792396166515` 已产生 306 次跟随 ACK，操作者确认顿挫改善，
+但轻便度及 X/Y 方向未通过，末尾发生 WRENCH_INVALID。后续修正以
+`DRAG_DIRECTION_RESPONSE_20261019.md` 为准，下方兼容性探针是历史证据。
+
 ## 为什么换接口
 
 普通 LineMove 方案已经在真实手推下达到约 49.810 mm，但操作者明确报告顿挫、

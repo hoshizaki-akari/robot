@@ -18,6 +18,7 @@ from fr_traction.msg import EndEffectorState, TractionCommand, TractionStatus
 from fr_traction.srv import SetOperationMode, SetTargetForce
 from geometry_msgs.msg import WrenchStamped
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -231,6 +232,7 @@ class ManagerHarness:
         self.publish_motion_idle = True
         self.motion_idle = True
         self.wrench_force = (0.0, 0.0, 0.0)
+        self.wrench_stamp_offset_s = 0.0
         self.ee_position = (0.0, 0.0, 0.0)
         self.ee_quaternion = (0.0, 0.0, 0.0, 1.0)
         self.ee_frame = BASE_FRAME
@@ -247,6 +249,9 @@ class ManagerHarness:
         if self.publish_wrench:
             message = WrenchStamped()
             self._stamp(message)
+            message.header.stamp = (
+                self.node.get_clock().now() + Duration(seconds=self.wrench_stamp_offset_s)
+            ).to_msg()
             message.header.frame_id = BASE_FRAME
             message.wrench.force.x, message.wrench.force.y, message.wrench.force.z = (
                 self.wrench_force
@@ -446,6 +451,22 @@ def test_drag_limit_is_distinct_and_still_debounces_overforce(ros_runtime):
         assert harness.status_history[-1].fault_code == 'HARD_OVERFORCE'
     finally:
         harness.close()
+
+
+@pytest.mark.parametrize('invalid_offset', [0.5, -3.0])
+def test_drag_accepts_bounded_clock_skew_but_rejects_invalid_source_age(manager, invalid_offset):
+    """Offline clock injection never bypasses the source-age or receipt watchdog."""
+    manager.wait_ready()
+    assert manager.set_operation_mode(2).success
+    assert manager.trigger('/traction/prepare').success
+    assert manager.trigger('/traction/start').success
+    manager.wait_status(TractionStatus.DRAGGING)
+    manager.wrench_stamp_offset_s = 0.02
+    manager.pump(duration_s=0.4)
+    assert manager.status_history[-1].state == TractionStatus.DRAGGING
+    manager.wrench_stamp_offset_s = invalid_offset
+    manager.wait_status(TractionStatus.FAULT)
+    assert manager.status_history[-1].fault_code == 'WRENCH_INVALID'
 
 
 def test_session_bound_waits_for_actual_stop_and_allows_next_prepare(manager):
