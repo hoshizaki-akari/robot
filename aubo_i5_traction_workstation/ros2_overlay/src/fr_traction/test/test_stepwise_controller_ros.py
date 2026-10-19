@@ -421,6 +421,35 @@ def test_drag_axes_follow_identity_pose_and_let_go_returns_zero(controller):
     )
 
 
+def test_responsive_drag_parameters_reach_all_axes_without_retuning_force_modes(ros_runtime):
+    """Exercise real ROS parameter wiring, not only the pure decision policy."""
+    child = ControllerProcess(verified=True, extra_parameters=[
+        "-p", "stepwise_drag_deadband_n:=0.5",
+        "-p", "stepwise_drag_gain_mps_per_n:=0.003",
+        "-p", "stepwise_drag_maximum_speed_mps:=0.005",
+    ]).start()
+    harness = ControllerHarness(ros_runtime, child)
+    try:
+        harness.wait_until(lambda: bool(harness.health), timeout_s=5.0)
+        for force in ((0.8, 0.0, 0.0), (0.0, 2.0, 0.0), (0.0, 0.0, 3.0)):
+            mark = harness.mark()
+            harness.configure(TractionCommand.DRAG, 0.0, force)
+            expected = min(0.005, max(0.0012, 0.003 * (math.sqrt(
+                sum(value * value for value in force)) - 0.5)))
+            harness.wait_for_stable_output(
+                mark, lambda message: abs(_norm(message) - expected) < 0.00001)
+        mark = harness.mark()
+        harness.configure(TractionCommand.DRAG, 0.0, (0.0, 0.0, 0.0))
+        harness.wait_for_stable_output(mark, lambda message: _norm(message) <= ZERO_EPSILON)
+        for mode in (TractionCommand.TRACTION, TractionCommand.POSITIONING):
+            mark = harness.mark()
+            harness.configure(mode, 20.0, (0.0, 0.0, 0.0))
+            harness.wait_for_stable_output(
+                mark, lambda message: 0.001 < _norm(message) <= 0.002000001)
+    finally:
+        harness.close()
+
+
 def _reference_rotate_force(force, quaternion):
     """Independent cross-product rotation for offline test expectations."""
     magnitude = math.sqrt(sum(value * value for value in quaternion))

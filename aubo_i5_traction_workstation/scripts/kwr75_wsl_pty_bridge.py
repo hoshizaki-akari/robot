@@ -5,9 +5,15 @@ import argparse
 import errno
 import os
 import selectors
+import signal
 import socket
 import tty
 from pathlib import Path
+
+
+def _request_shutdown(_signum, _frame):
+    """Run the existing finally cleanup when the supervisor sends SIGTERM."""
+    raise KeyboardInterrupt
 
 
 def main() -> None:
@@ -58,6 +64,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _request_shutdown)
     try:
         main()
     except KeyboardInterrupt:

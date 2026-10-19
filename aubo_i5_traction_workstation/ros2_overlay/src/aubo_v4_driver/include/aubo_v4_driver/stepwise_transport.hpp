@@ -16,6 +16,7 @@ struct TransportOptions
   double speed_mps{0.002}, acceleration_mps2{0.01};
   double maximum_joint_step_rad{0.05};
   double maximum_step_m{0.0005};
+  double state_poll_interval_s{0.1};
 };
 struct TransportSample
 {
@@ -23,6 +24,9 @@ struct TransportSample
   std::array<double, 6> joints{};
   double diagnosis_at{0.0}, robot_state_at{0.0};
   bool diagnosis_ok{false};
+  double sdk_speed_mps{0.0}, sdk_acceleration_mps2{0.0}, waypoint_interval_s{0.0};
+  std::uint64_t motion_ack_count{0}, last_command_id{0};
+  double requested_speed_mps{0.0};
   std::string error;
 };
 struct TransportResult

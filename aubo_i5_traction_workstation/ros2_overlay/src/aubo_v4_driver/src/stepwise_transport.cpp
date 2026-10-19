@@ -39,6 +39,24 @@ struct StepwiseTransport::Impl
   std::deque<TransportResult> results;
   TransportSample latest;
 
+  // These getters report this SDK session's profile, not measured physical speed.
+  bool apply_profile(double speed)
+  {
+    if (send->robotServiceSetGlobalMoveEndMaxLineVelc(speed) != vendor::ErrnoSucc) {
+      return false;
+    }
+    double velocity = NAN, acceleration = NAN;
+    send->robotServiceGetGlobalMoveEndMaxLineVelc(velocity);
+    send->robotServiceGetGlobalMoveEndMaxLineAcc(acceleration);
+    if (!std::isfinite(velocity) || !std::isfinite(acceleration) ||
+      std::abs(velocity - speed) > 1e-9 ||
+      std::abs(acceleration - options.acceleration_mps2) > 1e-9) {return false;}
+    std::lock_guard<std::mutex> lock(mutex);
+    latest.sdk_speed_mps = velocity;
+    latest.sdk_acceleration_mps2 = acceleration;
+    return true;
+  }
+
   ~Impl()
   {
     // No detached SDK work may outlive the owner. Vendor calls have their
@@ -102,6 +120,7 @@ struct StepwiseTransport::Impl
     self.pose_valid = true;
     double speed = 0.0;
     const double dt = time - self.latest.feedback.received_at;
+    self.latest.waypoint_interval_s = self.latest.feedback.sequence > 0 ? dt : 0.0;
     if (self.latest.feedback.sequence > 0 && dt > 0.0 && dt <= 1.0) {
       double squared = 0.0;
       for (std::size_t i = 0; i < 3; ++i) {
@@ -170,6 +189,10 @@ struct StepwiseTransport::Impl
           reply.detail = "stepwise IK failed or exceeded joint-step bound";
         } else if (!allowed || current.command.epoch != allowed_epoch || shutdown) {
           reply.detail = "stepwise command cancelled before dispatch";
+        } else if (!apply_profile(current.command.speed_mps)) {
+          reply.detail = "stepwise SDK speed profile readback failed";
+        } else if (!allowed || current.command.epoch != allowed_epoch || shutdown) {
+          reply.detail = "stepwise command cancelled during profile update";
         } else {
           // Absolute bounded endpoint: no speculative queued trajectory, no
           // automatic resend. 'false' does NOT promise zero request latency.
@@ -179,6 +202,12 @@ struct StepwiseTransport::Impl
           }
           const int code = send->robotServiceLineMove(target, false);
           reply.success = code == vendor::ErrnoSucc;
+          {
+            std::lock_guard<std::mutex> lock(mutex);
+            ++latest.motion_ack_count;
+            latest.last_command_id = current.command.id;
+            latest.requested_speed_mps = current.command.speed_mps;
+          }
           reply.detail = "ordinary LineMove SDK result " + std::to_string(code);
         }
       } catch (const std::exception & exception) {
@@ -287,7 +316,9 @@ struct StepwiseTransport::Impl
         latest.error = good ? std::string{} : "telemetry unavailable or unhealthy: " + reason;
       }
       std::unique_lock<std::mutex> lock(mutex);
-      changed.wait_for(lock, std::chrono::milliseconds(100), [this]() {return shutdown.load();});
+      changed.wait_for(
+        lock, std::chrono::duration<double>(options.state_poll_interval_s),
+        [this]() {return shutdown.load();});
     }
   }
 };
@@ -305,7 +336,8 @@ bool StepwiseTransport::connect(const TransportOptions & options, std::string & 
     options.acceleration_mps2 > 0.02 || !std::isfinite(options.maximum_joint_step_rad) ||
     options.maximum_joint_step_rad <= 0.0 || options.maximum_joint_step_rad > 0.1 ||
     !std::isfinite(options.maximum_step_m) || options.maximum_step_m <= 0.0 ||
-    options.maximum_step_m > 0.001)
+    options.maximum_step_m > 0.001 || !std::isfinite(options.state_poll_interval_s) ||
+    options.state_poll_interval_s < 0.02 || options.state_poll_interval_s > 1.0)
   {
     error = "invalid stepwise transport configuration or repeated connect";
     return false;
@@ -341,7 +373,7 @@ bool StepwiseTransport::connect(const TransportOptions & options, std::string & 
     if (self.send->robotServiceInitGlobalMoveProfile() != vendor::ErrnoSucc ||
       self.send->robotServiceSetGlobalMoveEndMaxLineAcc(options.acceleration_mps2) !=
       vendor::ErrnoSucc ||
-      self.send->robotServiceSetGlobalMoveEndMaxLineVelc(options.speed_mps) != vendor::ErrnoSucc)
+      !self.apply_profile(options.speed_mps))
     {
       error = "stepwise move profile/limits rejected";
       return false;
@@ -374,6 +406,8 @@ bool StepwiseTransport::submit(const StepwiseCommand & command, const std::array
 {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   if (impl_->shutdown || impl_->busy || impl_->job || impl_->stop_job ||
+    !std::isfinite(command.speed_mps) || command.speed_mps <= 0.0 ||
+    command.speed_mps > impl_->options.speed_mps ||
     impl_->stop_in_progress || !impl_->sender.joinable() ||
     command.id <= impl_->last_submitted_id || command.epoch < impl_->allowed_epoch)
   {

@@ -67,7 +67,8 @@ test -e /tmp/kwr75d-bridge-tty
 BIN="$PROJECT_DIR/ros2_overlay/install"
 launch robot "$BIN/aubo_v4_driver/lib/aubo_v4_driver/aubo_v4_stepwise_node" \
   --ros-args -p connect_hardware:=true -p enable_motion_interface:=true \
-  -p maximum_step_m:=0.001 -p planning_horizon_s:=0.5 -p arrival_tolerance_m:=0.0002
+  -p maximum_step_m:=0.001 -p planning_horizon_s:=0.5 -p arrival_tolerance_m:=0.0002 \
+  -p maximum_speed_mps:=0.005 -p state_poll_interval_s:=0.02
 launch sensor "$BIN/aubo_kwr75_sensor/lib/aubo_kwr75_sensor/kwr75_sensor_node" \
   --ros-args -p serial_path:=/tmp/kwr75d-bridge-tty
 launch wrench "$BIN/fr_traction/lib/fr_traction/aubo_wrench_transform_node.py" \

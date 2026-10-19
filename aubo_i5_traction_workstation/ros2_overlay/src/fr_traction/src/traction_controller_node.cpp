@@ -61,6 +61,20 @@ public:
     stepwise_config_.maximum_speed_mps = declare_parameter("stepwise_maximum_speed_mps", 0.002);
     stepwise_config_.minimum_command_speed_mps = declare_parameter(
       "stepwise_minimum_command_speed_mps", 0.0012);
+    stepwise_config_.drag_deadband_n = declare_parameter("stepwise_drag_deadband_n", 1.0);
+    stepwise_config_.drag_gain_mps_per_n = declare_parameter("stepwise_drag_gain_mps_per_n", 0.001);
+    stepwise_config_.drag_maximum_speed_mps = declare_parameter(
+      "stepwise_drag_maximum_speed_mps", 0.002);
+    if (stepwise_backend_ && (!std::isfinite(stepwise_config_.drag_deadband_n) ||
+      stepwise_config_.drag_deadband_n < 0.0 ||
+      !std::isfinite(stepwise_config_.drag_gain_mps_per_n) ||
+      stepwise_config_.drag_gain_mps_per_n <= 0.0 ||
+      !std::isfinite(stepwise_config_.drag_maximum_speed_mps) ||
+      stepwise_config_.drag_maximum_speed_mps > 0.005 ||
+      stepwise_config_.drag_maximum_speed_mps < stepwise_config_.minimum_command_speed_mps))
+    {
+      throw std::invalid_argument("invalid stepwise drag response parameters");
+    }
     if (stepwise_backend_ && (!std::isfinite(stepwise_config_.axis_sign) ||
       (stepwise_config_.axis_sign != 0.0 && std::abs(stepwise_config_.axis_sign) != 1.0) ||
       (stepwise_config_.force_polarity_verified && stepwise_config_.axis_sign == 0.0) ||

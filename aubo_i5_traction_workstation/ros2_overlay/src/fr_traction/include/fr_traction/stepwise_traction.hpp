@@ -15,6 +15,7 @@ struct StepwiseTractionConfig
   // Actual minimum repeatable motion remains a hardware checkpoint.
   double minimum_command_speed_mps{0.0012};
   double drag_deadband_n{1.0}, drag_gain_mps_per_n{0.001};
+  double drag_maximum_speed_mps{0.002};
   Vec3 drag_signs{1.0, 1.0, 1.0};
   Vec3 drag_axis_mask{1.0, 1.0, 1.0};
 };
@@ -51,6 +52,9 @@ inline ControllerOutput stepwise_traction_output(
       (config.drag_axis_mask.z != 0.0 && config.drag_axis_mask.z != 1.0) ||
       (config.drag_axis_mask.x + config.drag_axis_mask.y + config.drag_axis_mask.z < 1.0) ||
       !std::isfinite(config.drag_deadband_n) || config.drag_deadband_n < 0.0 ||
+      !std::isfinite(config.drag_maximum_speed_mps) || config.drag_maximum_speed_mps <= 0.0 ||
+      config.drag_maximum_speed_mps > 0.005 ||
+      config.drag_maximum_speed_mps < config.minimum_command_speed_mps ||
       !std::isfinite(config.drag_gain_mps_per_n) || config.drag_gain_mps_per_n <= 0.0)
     {
       return result;
@@ -64,7 +68,7 @@ inline ControllerOutput stepwise_traction_output(
     if (force > config.drag_deadband_n) {
       const double speed = std::clamp(
         config.drag_gain_mps_per_n * (force - config.drag_deadband_n),
-        config.minimum_command_speed_mps, config.maximum_speed_mps);
+        config.minimum_command_speed_mps, config.drag_maximum_speed_mps);
       result.linear_velocity = {
         config.drag_signs.x * masked_wrench.x * speed / force,
         config.drag_signs.y * masked_wrench.y * speed / force,

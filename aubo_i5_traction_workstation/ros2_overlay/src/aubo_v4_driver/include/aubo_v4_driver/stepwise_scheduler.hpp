@@ -42,6 +42,7 @@ struct StepwiseCommand
   std::array<double, 3> start{};
   std::array<double, 3> target{};
   std::array<double, 4> orientation{};
+  double speed_mps{0.002};
 };
 
 enum class StepwiseState

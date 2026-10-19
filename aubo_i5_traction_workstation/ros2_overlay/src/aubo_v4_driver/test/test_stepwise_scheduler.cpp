@@ -64,6 +64,23 @@ TEST(StepwiseSchedulerConfig, RejectsNonFiniteAndUnsafeValues)
   EXPECT_THROW(static_cast<void>(StepwiseScheduler{config}), std::invalid_argument);
 }
 
+TEST(StepwiseSchedulerResponse, CarriesClampedSpeedIndependentlyOfEndpointClipping)
+{
+  StepwiseConfig config;
+  config.maximum_step_m = 0.001;
+  config.maximum_speed_mps = 0.005;
+  config.horizon_s = 0.5;
+  StepwiseScheduler scheduler(config);
+  arm(scheduler);
+  const auto command = send(scheduler, {0.006, 0.008, 0.0});
+  EXPECT_NEAR(command.speed_mps, 0.005, 1e-12);
+  EXPECT_NEAR(command.target[0], 0.0006, 1e-12);
+  EXPECT_NEAR(command.target[1], 0.0008, 1e-12);
+  StepwiseScheduler slower(config);
+  arm(slower);
+  EXPECT_NEAR(send(slower, {0.0012, 0.0, 0.0}).speed_mps, 0.0012, 1e-12);
+}
+
 TEST(StepwiseSchedulerActivation, RequiresFreshHealthyQuietStoppedFeedback)
 {
   StepwiseScheduler scheduler;

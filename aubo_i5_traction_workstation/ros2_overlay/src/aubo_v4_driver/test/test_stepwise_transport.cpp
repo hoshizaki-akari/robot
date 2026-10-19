@@ -183,6 +183,88 @@ TEST_F(StepwiseTransportTest, ConstructionAndDestructionCreateNoSdkObjects)
   EXPECT_EQ(constructor_count(), 0);
 }
 
+TEST_F(StepwiseTransportTest, CommandSpeedIsAppliedAndReportedBeforeMotion)
+{
+  StepwiseTransport transport;
+  ASSERT_TRUE(connect(transport));
+  auto value = command(1, 1);
+  value.speed_mps = 0.0013;
+  ASSERT_TRUE(transport.submit(value, seed));
+  const auto result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(result);
+  EXPECT_TRUE(result->success);
+  const auto sample = transport.sample();
+  EXPECT_DOUBLE_EQ(sample.sdk_speed_mps, value.speed_mps);
+  EXPECT_DOUBLE_EQ(sample.requested_speed_mps, value.speed_mps);
+  EXPECT_EQ(sample.motion_ack_count, 1U);
+  EXPECT_EQ(sample.last_command_id, 1U);
+}
+
+TEST_F(StepwiseTransportTest, InvalidSpeedAndPollIntervalFailClosed)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.state_poll_interval_s = 0.0;
+  std::string error;
+  EXPECT_FALSE(transport.connect(settings, error));
+  EXPECT_EQ(constructor_count(), 0);
+  ASSERT_TRUE(connect(transport));
+  for (double speed : {0.0, -0.001, 0.003, std::numeric_limits<double>::quiet_NaN()}) {
+    auto value = command(1, 1);
+    value.speed_mps = speed;
+    EXPECT_FALSE(transport.submit(value, seed));
+  }
+  EXPECT_EQ(ik_call_count(), 0);
+}
+
+TEST_F(StepwiseTransportTest, ProfileReadbackFailurePreventsMotion)
+{
+  StepwiseTransport transport;
+  ASSERT_TRUE(connect(transport));
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.bad_profile_readback = true;
+  }
+  ASSERT_TRUE(transport.submit(command(1, 1), seed));
+  const auto result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(result);
+  EXPECT_FALSE(result->success);
+  EXPECT_EQ(line_move_count(), 0);
+}
+
+TEST_F(StepwiseTransportTest, CancellationDuringProfileUpdateCannotDispatchLateMotion)
+{
+  StepwiseTransport transport;
+  ASSERT_TRUE(connect(transport));
+  auto & state = aubo_v4_test_sdk::state();
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.block_profile = true;
+    state.profile_entered = false;
+  }
+  ASSERT_TRUE(transport.submit(command(1, 1), seed));
+  bool entered;
+  {
+    std::unique_lock<std::mutex> lock(state.mutex);
+    entered = state.changed.wait_for(lock, 1s, [&state]() {return state.profile_entered;});
+  }
+  transport.cancel_and_stop(2);
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.release_profile = true;
+    state.changed.notify_all();
+  }
+  EXPECT_TRUE(entered);
+  const auto result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(result);
+  EXPECT_FALSE(result->success);
+  EXPECT_EQ(line_move_count(), 0);
+  const auto stopped = wait_for_stop_result(transport, 1s);
+  ASSERT_TRUE(stopped);
+  EXPECT_TRUE(stopped->success);
+}
+
 TEST_F(StepwiseTransportTest, InvalidOptionsRejectBeforeSdkConstruction)
 {
   StepwiseTransport transport;

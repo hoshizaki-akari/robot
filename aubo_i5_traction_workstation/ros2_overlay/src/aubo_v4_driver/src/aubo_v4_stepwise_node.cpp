@@ -193,6 +193,7 @@ public:
       options.speed_mps = config_.maximum_speed_mps;
       options.maximum_step_m = config_.maximum_step_m;
       options.acceleration_mps2 = declare_parameter("line_acceleration_mps2", 0.01);
+      options.state_poll_interval_s = declare_parameter("state_poll_interval_s", 0.1);
       transport_ = std::make_unique<av::StepwiseTransport>();
       connected_ = transport_->connect(options, connection_error_);
     } else {
@@ -389,6 +390,17 @@ private:
     add("planning_horizon_s", std::to_string(config_.horizon_s));
     add("maximum_step_m", std::to_string(config_.maximum_step_m));
     add("arrival_tolerance_m", std::to_string(config_.arrival_tolerance_m));
+    add("maximum_speed_mps", std::to_string(config_.maximum_speed_mps));
+    if (transport_) {
+      const auto sample = transport_->sample();
+      add("sdk_profile_speed_mps", std::to_string(sample.sdk_speed_mps));
+      add("sdk_profile_acceleration_mps2", std::to_string(sample.sdk_acceleration_mps2));
+      add("waypoint_interval_s", std::to_string(sample.waypoint_interval_s));
+      add("waypoint_sequence", std::to_string(sample.feedback.sequence));
+      add("motion_ack_count", std::to_string(sample.motion_ack_count));
+      add("last_command_id", std::to_string(sample.last_command_id));
+      add("requested_speed_mps", std::to_string(sample.requested_speed_mps));
+    }
     diagnostic_msgs::msg::DiagnosticArray array;
     array.header.stamp = now();
     array.status.push_back(status);

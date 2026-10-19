@@ -23,6 +23,42 @@ TEST(StepwiseTraction, UnverifiedForceCannotMove)
     EXPECT_FALSE(ft::stepwise_traction_output({}, mode, {1, 0, 0}, 5, {1, 0, 0}).valid);
   }
 }
+
+TEST(StepwiseTraction, ResponsiveDragDoesNotAccelerateForceModes)
+{
+  auto config = verified();
+  config.drag_deadband_n = 0.5;
+  config.drag_gain_mps_per_n = 0.003;
+  config.drag_maximum_speed_mps = 0.005;
+  for (const auto & force : {ft::Vec3{2, 0, 0}, ft::Vec3{0, 2, 0}, ft::Vec3{0, 0, 2}}) {
+    const auto out = ft::stepwise_traction_output(config, ft::ControlMode::DRAGGING, {}, 0, force);
+    ASSERT_TRUE(out.valid);
+    EXPECT_NEAR(ft::norm(out.linear_velocity), 0.0045, 1e-12);
+    EXPECT_GT(ft::dot(out.linear_velocity, force), 0.0);
+  }
+  EXPECT_DOUBLE_EQ(
+    ft::norm(
+      ft::stepwise_traction_output(
+        config, ft::ControlMode::DRAGGING, {}, 0, {0.5, 0, 0}).linear_velocity), 0.0);
+  EXPECT_NEAR(
+    ft::norm(
+      ft::stepwise_traction_output(
+        config, ft::ControlMode::DRAGGING, {}, 0, {0.6, 0, 0}).linear_velocity), 0.0012, 1e-12);
+  EXPECT_NEAR(
+    ft::norm(
+      ft::stepwise_traction_output(
+        config, ft::ControlMode::DRAGGING, {}, 0, {3, 4, 0}).linear_velocity), 0.005, 1e-12);
+  for (auto mode : {ft::ControlMode::TRACTION, ft::ControlMode::POSITIONING}) {
+    EXPECT_LE(
+      ft::norm(
+        ft::stepwise_traction_output(
+          config, mode, {1, 0, 0}, 20, {}).linear_velocity), 0.002);
+  }
+  config.drag_maximum_speed_mps = 0.006;
+  EXPECT_FALSE(
+    ft::stepwise_traction_output(
+      config, ft::ControlMode::DRAGGING, {}, 0, {2, 0, 0}).valid);
+}
 TEST(StepwiseTraction, UnverifiedDragCannotMove)
 {
   EXPECT_FALSE(ft::stepwise_traction_output({}, ft::ControlMode::DRAGGING, {}, 0, {5, 0, 0}).valid);

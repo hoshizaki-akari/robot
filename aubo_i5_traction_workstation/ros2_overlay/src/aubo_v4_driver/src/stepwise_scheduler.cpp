@@ -317,6 +317,7 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
     return std::nullopt;
   }
   StepwiseCommand command;
+  command.speed_mps = std::min(requested_speed, config_.maximum_speed_mps);
   command.id = next_command_id_++;
   command.epoch = epoch_;
   command.start = feedback_->position;

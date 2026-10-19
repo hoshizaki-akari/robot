@@ -29,6 +29,9 @@ namespace aubo_v4_test_sdk
     int line_move_completed_count {0};
     int stop_count {0};
     int diagnosis_count {0};
+    double profile_speed {0.0}, profile_acceleration {0.0};
+    bool bad_profile_readback {false};
+    bool block_profile {false}, profile_entered {false}, release_profile {false};
     std::size_t login_index {0};
     std::vector < int > login_results {aubo_robot_namespace::ErrnoSucc};
     int ik_result {aubo_robot_namespace::ErrnoSucc};
@@ -76,6 +79,9 @@ namespace aubo_v4_test_sdk
       line_move_completed_count = 0;
       stop_count = 0;
       diagnosis_count = 0;
+      profile_speed = profile_acceleration = 0.0;
+      bad_profile_readback = false;
+      block_profile = profile_entered = release_profile = false;
       login_index = 0;
       login_results = {aubo_robot_namespace::ErrnoSucc};
       ik_result = aubo_robot_namespace::ErrnoSucc;
@@ -299,20 +305,40 @@ public:
       return aubo_robot_namespace::ErrnoSucc;
     }
 
-    int robotServiceSetGlobalMoveEndMaxLineAcc(double)
+    int robotServiceSetGlobalMoveEndMaxLineAcc(double value)
     {
       State & s = state();
       std::lock_guard < std::mutex > lock(s.mutex);
       s.notify("set_acc");
+      s.profile_acceleration = value;
       return aubo_robot_namespace::ErrnoSucc;
     }
 
-    int robotServiceSetGlobalMoveEndMaxLineVelc(double)
+    int robotServiceSetGlobalMoveEndMaxLineVelc(double value)
+    {
+      State & s = state();
+      std::unique_lock < std::mutex > lock(s.mutex);
+      s.profile_entered = true;
+      s.notify("set_vel");
+      s.changed.wait(lock, [&s]() {return !s.block_profile || s.release_profile;});
+      s.profile_speed = value;
+      return aubo_robot_namespace::ErrnoSucc;
+    }
+
+    void robotServiceGetGlobalMoveEndMaxLineVelc(double & value)
     {
       State & s = state();
       std::lock_guard < std::mutex > lock(s.mutex);
-      s.notify("set_vel");
-      return aubo_robot_namespace::ErrnoSucc;
+      value = s.bad_profile_readback ? 0.05 : s.profile_speed;
+      s.notify("get_vel");
+    }
+
+    void robotServiceGetGlobalMoveEndMaxLineAcc(double & value)
+    {
+      State & s = state();
+      std::lock_guard < std::mutex > lock(s.mutex);
+      value = s.profile_acceleration;
+      s.notify("get_acc");
     }
 
     int robotServiceRegisterRealTimeRoadPointCallback(
