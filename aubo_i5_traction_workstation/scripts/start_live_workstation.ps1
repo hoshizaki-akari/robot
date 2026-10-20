@@ -3,6 +3,7 @@ param(
     [string]$ProjectPath = '/home/zhj/projects/aubo_i5_traction_ws/aubo_i5_traction_workstation',
     [string]$CalibrationFile,
     [string]$ConnectionFile = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'AuboTraction\connection.clixml'),
+    [switch]$CheckLocalConfig,
     [switch]$Background,
     [switch]$WaitForPreviousShutdown
 )
@@ -19,8 +20,24 @@ if (Test-Path -LiteralPath $ConnectionFile) {
         $env:AUBO_V4_PASSWORD = $localConnection.Credential.GetNetworkCredential().Password
     }
 }
+if ($CheckLocalConfig) {
+    $calibrationExists = $false
+    if ($CalibrationFile) {
+        & wsl.exe -d $Distro --exec /usr/bin/test -f $CalibrationFile
+        $calibrationExists = ($LASTEXITCODE -eq 0)
+    }
+    [pscustomobject]@{
+        WindowsUser = [Environment]::UserName
+        ConnectionFile = $ConnectionFile
+        ConnectionFileExists = (Test-Path -LiteralPath $ConnectionFile)
+        CalibrationFile = $CalibrationFile
+        CalibrationFileExistsInDistro = $calibrationExists
+        CredentialPresent = ($null -ne $localConnection.Credential)
+    } | ConvertTo-Json -Compress
+    exit 0
+}
 if (-not $CalibrationFile) {
-    throw 'No local calibration configured. Run scripts/configure_live_connection.ps1 once.'
+    throw "No local calibration configured. Connection file: $ConnectionFile. Run scripts/configure_live_connection.ps1 with -CalibrationFile /absolute/wsl/path."
 }
 # Supply the already established SDK credentials through this process environment.
 # They are inherited, never written to command lines, logs, or the repository.

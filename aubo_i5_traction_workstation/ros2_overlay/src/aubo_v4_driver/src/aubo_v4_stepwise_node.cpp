@@ -275,6 +275,9 @@ private:
     const auto sample = transport_->sample();
     while (const auto result = transport_->take_result()) {
       last_sdk_result_ = result->detail;
+      if (!result->stop && !result->success) {
+        last_motion_failure_ = result->detail;
+      }
       const auto time = av::steady_seconds();
       state_fence_at_ = time;
       if (result->stop) {
@@ -487,6 +490,7 @@ private:
     add("motion_idle", idle.data ? "1" : "0");
     add("epoch", std::to_string(scheduler_->epoch()));
     add("last_sdk_result", last_sdk_result_);
+    add("last_motion_failure", last_motion_failure_);
     add("fault_reason", scheduler_->fault_reason());
     add("health_failure_reason", health_failure);
     add("last_hardware_health_failure", last_health_failure_);
@@ -507,6 +511,10 @@ private:
       add("waypoint_sequence", std::to_string(sample.feedback.sequence));
       add("motion_ack_count", std::to_string(sample.motion_ack_count));
       add("last_command_id", std::to_string(sample.last_command_id));
+      add("last_ik_result", std::to_string(sample.last_ik_result));
+      add("last_ik_max_joint_delta_rad", std::to_string(sample.last_ik_max_joint_delta_rad));
+      add("last_ik_joint_index", std::to_string(sample.last_ik_joint_index));
+      add("last_ik_failure", sample.last_ik_failure);
       add("requested_speed_mps", std::to_string(sample.requested_speed_mps));
       add("diagnosis_age_s", std::to_string(time - sample.diagnosis_at));
       add("robot_state_age_s", std::to_string(time - sample.robot_state_at));
@@ -541,7 +549,7 @@ private:
   bool enable_follow_drag_{false};
   unsigned last_command_mode_{0};
   double mode_at_{0.0};
-  std::string connection_error_, last_sdk_result_, pose_frame_;
+  std::string connection_error_, last_sdk_result_, last_motion_failure_, pose_frame_;
   std::vector<std::string> names_;
   std::uint64_t intent_sequence_{0}, resume_after_intent_{0}, published_sequence_{0};
   double intent_at_{0.0}, state_fence_at_{0.0};

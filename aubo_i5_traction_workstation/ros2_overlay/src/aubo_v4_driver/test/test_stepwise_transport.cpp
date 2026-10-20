@@ -200,6 +200,50 @@ TEST_F(StepwiseTransportTest, CommandSpeedIsAppliedAndReportedBeforeMotion)
   EXPECT_EQ(sample.last_command_id, 1U);
 }
 
+TEST_F(StepwiseTransportTest, IKSdkFailureIsReportedSeparatelyFromJointContinuity)
+{
+  StepwiseTransport transport;
+  ASSERT_TRUE(connect(transport));
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.ik_result = 37;
+  }
+  ASSERT_TRUE(transport.submit(command(1, 1), seed));
+  const auto result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(result);
+  EXPECT_FALSE(result->success);
+  EXPECT_EQ(result->detail, "robotServiceRobotIk SDK result 37");
+  const auto sample = transport.sample();
+  EXPECT_EQ(sample.last_ik_result, 37);
+  EXPECT_EQ(sample.last_ik_failure, result->detail);
+  EXPECT_EQ(line_move_count(), 0);
+}
+
+TEST_F(StepwiseTransportTest, IKJointContinuityRejectionReportsJointAndDelta)
+{
+  StepwiseTransport transport;
+  ASSERT_TRUE(connect(transport));
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.ik_delta[4] = 0.06;
+  }
+  ASSERT_TRUE(transport.submit(command(1, 1), seed));
+  const auto result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(result);
+  EXPECT_FALSE(result->success);
+  EXPECT_NE(
+    result->detail.find("IK joint 5 delta 0.060000 rad exceeds 0.050000 rad"),
+    std::string::npos);
+  const auto sample = transport.sample();
+  EXPECT_EQ(sample.last_ik_result, 0);
+  EXPECT_DOUBLE_EQ(sample.last_ik_max_joint_delta_rad, 0.06);
+  EXPECT_EQ(sample.last_ik_joint_index, 5U);
+  EXPECT_EQ(sample.last_ik_failure, result->detail);
+  EXPECT_EQ(line_move_count(), 0);
+}
+
 TEST_F(StepwiseTransportTest, InvalidSpeedAndPollIntervalFailClosed)
 {
   StepwiseTransport transport;

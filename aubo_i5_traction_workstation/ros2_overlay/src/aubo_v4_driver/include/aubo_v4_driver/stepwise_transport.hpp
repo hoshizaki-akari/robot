@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -31,6 +32,10 @@ struct TransportSample
   std::uint64_t motion_ack_count{0}, last_command_id{0};
   double requested_speed_mps{0.0};
   int diagnosis_result{-1}, state_result{-1};
+  int last_ik_result{-1};
+  double last_ik_max_joint_delta_rad{0.0};
+  std::size_t last_ik_joint_index{0};
+  std::string last_ik_failure;
   double query_duration_s{0.0};
   std::string last_telemetry_failure;
   bool follow_joint_mode{false};

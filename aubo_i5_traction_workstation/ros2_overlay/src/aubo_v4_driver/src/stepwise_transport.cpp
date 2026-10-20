@@ -219,13 +219,38 @@ struct StepwiseTransport::Impl
         vendor::wayPoint_S target{};
         const int ik = send->robotServiceRobotIk(
           current.seed.data(), position, orientation, target);
-        bool valid = ik == vendor::ErrnoSucc;
-        for (std::size_t i = 0; i < 6; ++i) {
-          valid = valid && std::isfinite(target.jointpos[i]) &&
-            std::abs(target.jointpos[i] - current.seed[i]) <= options.maximum_joint_step_rad;
+        double maximum_joint_delta = 0.0;
+        std::size_t maximum_joint_index = 0;
+        std::string ik_failure;
+        if (ik != vendor::ErrnoSucc) {
+          ik_failure = "robotServiceRobotIk SDK result " + std::to_string(ik);
+        } else {
+          for (std::size_t i = 0; i < 6; ++i) {
+            if (!std::isfinite(target.jointpos[i])) {
+              ik_failure = "robotServiceRobotIk returned nonfinite joint " + std::to_string(i + 1);
+              break;
+            }
+            const double delta = std::abs(target.jointpos[i] - current.seed[i]);
+            if (delta > maximum_joint_delta) {
+              maximum_joint_delta = delta;
+              maximum_joint_index = i;
+            }
+          }
+          if (ik_failure.empty() && maximum_joint_delta > options.maximum_joint_step_rad) {
+            ik_failure = "IK joint " + std::to_string(maximum_joint_index + 1) +
+              " delta " + std::to_string(maximum_joint_delta) + " rad exceeds " +
+              std::to_string(options.maximum_joint_step_rad) + " rad continuity bound";
+          }
         }
-        if (!valid) {
-          reply.detail = "stepwise IK failed or exceeded joint-step bound";
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          latest.last_ik_result = ik;
+          latest.last_ik_max_joint_delta_rad = maximum_joint_delta;
+          latest.last_ik_joint_index = ik == vendor::ErrnoSucc ? maximum_joint_index + 1 : 0;
+          latest.last_ik_failure = ik_failure;
+        }
+        if (!ik_failure.empty()) {
+          reply.detail = ik_failure;
         } else if (!allowed || current.command.epoch != allowed_epoch || shutdown) {
           reply.detail = "stepwise command cancelled before dispatch";
         } else if (!apply_profile(current.command.speed_mps)) {

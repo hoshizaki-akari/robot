@@ -12,6 +12,12 @@ if [[ "$mode" == --restart-live ]]; then
   restart=true
   mode=--live
 fi
+if [[ "$mode" == --check-config ]]; then
+  launcher="$(wslpath -w "$PROJECT_DIR/scripts/start_live_workstation.ps1")"
+  powershell="$(command -v powershell.exe || true)"
+  powershell="${powershell:-/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe}"
+  exec "$powershell" -NoProfile -ExecutionPolicy Bypass -File "$launcher" -CheckLocalConfig
+fi
 if [[ "$mode" == --live ]]; then
   launcher="$(wslpath -w "$PROJECT_DIR/scripts/start_live_workstation.ps1")"
   powershell="$(command -v powershell.exe || true)"
@@ -21,7 +27,7 @@ if [[ "$mode" == --live ]]; then
   exec "$powershell" "${arguments[@]}"
 fi
 if [[ "$mode" != --web-only ]]; then
-  echo 'Usage: bash run_workstation.sh [--live|--restart-live|--web-only]' >&2
+  echo 'Usage: bash run_workstation.sh [--live|--restart-live|--web-only|--check-config]' >&2
   exit 2
 fi
 ROS_WS="$PROJECT_DIR/ros2_overlay"
