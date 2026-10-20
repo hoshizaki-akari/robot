@@ -26,7 +26,9 @@ export LD_LIBRARY_PATH="$PROTOBUF_DIR:$SDK_ROOT/lib/lib64/aubocontroller:$SDK_RO
 source /opt/ros/humble/setup.bash
 source "$PROJECT_DIR/ros2_overlay/install/setup.bash"
 export ROS_DOMAIN_ID=42 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_LOCALHOST_ONLY=1
-export CYCLONEDDS_URI="${CYCLONEDDS_URI:-file://$PROJECT_DIR/config/cyclonedds_local.xml}"
+# This full-workstation entry point owns its validated local DDS transport.
+# Do not inherit unrelated global profiles that can restore oversized packets.
+export CYCLONEDDS_URI="file://$PROJECT_DIR/config/cyclonedds_local.xml"
 export AUBO_TRACTION_ENABLED=true
 cd "$PROJECT_DIR"
 

@@ -21,6 +21,17 @@ class LiveLauncherTest(unittest.TestCase):
         self.assertLessEqual(maximum + 28, 1500)
         self.assertLess(fragment, maximum)
         self.assertIn('export CYCLONEDDS_URI=', SCRIPT.read_text(encoding='utf-8'))
+        # Evaluate just the export, never the hardware launcher, with an invalid
+        # ambient profile: full startup must still select the validated file.
+        assignment = next(line for line in SCRIPT.read_text(encoding='utf-8').splitlines()
+                          if line.startswith('export CYCLONEDDS_URI='))
+        environment = dict(os.environ, CYCLONEDDS_URI='file:///invalid/ambient.xml',
+                           PROJECT_DIR=str(ROOT))
+        effective = subprocess.check_output(
+            ['bash', '-c', assignment + '\nprintf "%s" "$CYCLONEDDS_URI"'],
+            env=environment, text=True,
+        )
+        self.assertEqual(effective, 'file://' + str(config))
 
     def test_shell_syntax(self):
         subprocess.run(['bash', '-n', str(SCRIPT)], check=True, capture_output=True)
