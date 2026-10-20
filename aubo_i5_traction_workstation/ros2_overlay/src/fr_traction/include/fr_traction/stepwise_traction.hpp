@@ -72,7 +72,7 @@ inline ControllerOutput stepwise_traction_output(
       (config.drag_axis_mask.x + config.drag_axis_mask.y + config.drag_axis_mask.z < 1.0) ||
       !std::isfinite(config.drag_deadband_n) || config.drag_deadband_n < 0.0 ||
       !std::isfinite(config.drag_maximum_speed_mps) || config.drag_maximum_speed_mps <= 0.0 ||
-      config.drag_maximum_speed_mps > 0.050 ||
+      config.drag_maximum_speed_mps > 0.200 ||
       !std::isfinite(config.drag_minimum_speed_mps) || config.drag_minimum_speed_mps <= 0.0 ||
       config.drag_maximum_speed_mps < config.drag_minimum_speed_mps ||
       !std::isfinite(config.drag_gain_mps_per_n) || config.drag_gain_mps_per_n <= 0.0)

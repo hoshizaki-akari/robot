@@ -25,7 +25,12 @@ if [[ "$mode" == --live ]]; then
   if $restart; then
     # Validate before stopping a working instance. The second invocation uses
     # the same project-local reference and Windows credential file.
-    "$powershell" "${arguments[@]}" -CheckLocalConfig
+    if config_report="$("$powershell" "${arguments[@]}" -CheckLocalConfig)"; then
+      echo 'Local connection and calibration configuration OK.'
+    else
+      printf '%s\n' "$config_report" >&2
+      exit 2
+    fi
     bash "$PROJECT_DIR/scripts/stop_live_workstation.sh"
     arguments+=(-WaitForPreviousShutdown)
   fi

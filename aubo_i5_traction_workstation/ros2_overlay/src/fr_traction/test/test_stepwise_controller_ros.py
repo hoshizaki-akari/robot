@@ -611,7 +611,6 @@ def test_production_response_tuning_reversal_and_both_force_modes(ros_runtime):
         '--params-file', str(root / 'config/response_tuning.yaml'),
         '-p', 'stepwise_drag_gain_mps_per_n:=0.080',
         '-p', 'stepwise_drag_deadband_n:=0.15',
-        '-p', 'stepwise_drag_maximum_speed_mps:=0.050',
     ]).start()
     harness = ControllerHarness(ros_runtime, child)
     try:
@@ -626,6 +625,9 @@ def test_production_response_tuning_reversal_and_both_force_modes(ros_runtime):
                 return all(abs(v - 0.128 * f) < 0.001 for v, f in zip(values, force))
 
             harness.wait_for_stable_output(mark, follows, timeout_s=2.0)
+        mark = harness.mark()
+        harness.configure(TractionCommand.DRAG, 0.0, (5.5, 0.0, 0.0))
+        harness.wait_for_stable_output(mark, lambda msg: abs(msg.linear.x - 0.150) < 0.001)
         mark = harness.mark()
         harness.configure(TractionCommand.DRAG, 0.0, (0.0, 0.0, 0.0))
         harness.wait_for_stable_output(mark, lambda msg: _norm(msg) <= ZERO_EPSILON)

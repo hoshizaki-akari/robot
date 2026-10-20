@@ -346,10 +346,49 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
   const double horizon = follow_mode_ ?
     std::min(config_.horizon_s, config_.follow_horizon_s) : config_.horizon_s;
   const double speed_scale = std::min(1.0, config_.maximum_speed_mps / requested_speed);
-  const double step_scale = std::min(
-    1.0, config_.maximum_step_m / (requested_speed * speed_scale * horizon));
-  for (double & component : displacement) {
-    component *= speed_scale * horizon * step_scale;
+  if (follow_mode_ && config_.follow_reference_enabled && !holding) {
+    double projection = 0.0;
+    for (unsigned i = 0; i < 3; ++i) {
+      projection += last_follow_velocity_[i] * displacement[i];
+    }
+    const bool continuing = updating_follow && pending_ && !pending_->hold_position &&
+      projection > 0.5 * norm3(last_follow_velocity_) * requested_speed;
+    // With a fixed SDK joint profile, velocity is encoded by a time-paced
+    // reference. Do not add a full lookahead to the measured pose every tick:
+    // that would multiply low-force speed by horizon/update_interval.
+    const double dt = continuing ? std::min(
+      now - last_follow_dispatch_at_,
+      config_.command_timeout_s) : config_.follow_update_interval_s;
+    for (unsigned i = 0; i < 3; ++i) {
+      displacement[i] = (continuing ? pending_->target[i] - feedback_->position[i] : 0.0) +
+        (*velocity_)[i] * speed_scale * dt;
+    }
+    double forward = 0.0;
+    for (unsigned i = 0; i < 3; ++i) {
+      forward += displacement[i] * (*velocity_)[i];
+    }
+    if (forward <= 0.0) {
+      // If the measured arm overtook the reference, never pull it backwards
+      // toward an obsolete endpoint while the operator still pushes forward.
+      for (unsigned i = 0; i < 3; ++i) {
+        displacement[i] = (*velocity_)[i] * speed_scale * config_.follow_update_interval_s;
+      }
+    }
+    const double lead = norm3(displacement);
+    const double maximum_lead = std::min(
+      config_.maximum_step_m,
+      requested_speed * speed_scale * horizon);
+    if (lead > maximum_lead) {
+      for (double & component : displacement) {
+        component *= maximum_lead / lead;
+      }
+    }
+  } else {
+    const double step_scale = std::min(
+      1.0, config_.maximum_step_m / (requested_speed * speed_scale * horizon));
+    for (double & component : displacement) {
+      component *= speed_scale * horizon * step_scale;
+    }
   }
   const double displacement_norm = norm3(displacement);
   const double minimum_step = follow_mode_ ? 1e-10 : 2.0 * config_.arrival_tolerance_m;
@@ -377,6 +416,7 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
     follow_progress_position_ = feedback_->position;
   }
   pending_ = command;
+  last_follow_velocity_ = *velocity_;
   last_follow_dispatch_at_ = now;
   last_follow_feedback_sequence_ = feedback_->sequence;
   ack_deadline_ = now + config_.ack_timeout_s;

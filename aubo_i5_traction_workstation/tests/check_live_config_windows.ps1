@@ -34,15 +34,26 @@ try {
         throw 'Explicit calibration override was not preserved'
     }
     Remove-Item -LiteralPath $referencePath
-    & $shellExecutable -NoProfile -File $launcher -Distro $Distro -ConnectionFile $fixturePath -CheckLocalConfig | Out-Null
-    if ($LASTEXITCODE -eq 0) { throw 'Missing calibration was incorrectly accepted' }
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $shellExecutable -NoProfile -File $launcher -Distro $Distro -ConnectionFile $fixturePath -CheckLocalConfig 2>$null | Out-Null
+        $missingStatus = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $previousPreference }
+    if ($missingStatus -eq 0) { throw 'Missing calibration was incorrectly accepted' }
     $fixture.CalibrationFile = $ExistingWslFile
     $fixture | Export-Clixml -LiteralPath $fixturePath
     $result = & $shellExecutable -NoProfile -File $launcher -Distro $Distro -ConnectionFile $fixturePath -CheckLocalConfig
     if ($LASTEXITCODE -ne 0 -or ($result | ConvertFrom-Json).CalibrationSource -ne 'Windows connection file') {
         throw 'Existing Windows calibration fallback was not preserved'
     }
-    Write-Output 'PASS: project recovery, explicit override, missing-config failure, Windows fallback; no hardware opened.'
+    # Resolve a shared credential source even when Windows LocalAppData is a
+    # different/missing profile view. This remains a protected dummy credential.
+    $result = & $shellExecutable -NoProfile -File $launcher -Distro $Distro -SharedConnectionFile $fixturePath -CheckLocalConfig
+    if ($LASTEXITCODE -ne 0 -or ($result | ConvertFrom-Json).ConnectionFile -ne $fixturePath) {
+        throw 'Shared WSL connection source was not selected'
+    }
+    Write-Output 'PASS: project recovery, explicit override, missing-config failure, Windows fallback, shared credential source; no hardware opened.'
 }
 finally {
     $resolvedTest = [IO.Path]::GetFullPath($testDirectory)

@@ -75,7 +75,7 @@ public:
       !std::isfinite(stepwise_config_.drag_response_scale) ||
       stepwise_config_.drag_response_scale <= 0.0 ||
       !std::isfinite(stepwise_config_.drag_maximum_speed_mps) ||
-      stepwise_config_.drag_maximum_speed_mps > 0.050 ||
+      stepwise_config_.drag_maximum_speed_mps > 0.200 ||
       !std::isfinite(stepwise_config_.drag_minimum_speed_mps) ||
       stepwise_config_.drag_minimum_speed_mps <= 0.0 ||
       stepwise_config_.drag_maximum_speed_mps < stepwise_config_.drag_minimum_speed_mps))

@@ -443,6 +443,37 @@ TEST_F(StepwiseTransportTest, SlowStateGetterDoesNotHideCompletedDiagnosis)
   EXPECT_TRUE(wait_for_diagnosis(transport, 1s));
 }
 
+TEST_F(StepwiseTransportTest, FixedFollowProfileIsConfiguredBeforeMotionAndNotPerTarget)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = true;
+  settings.fixed_follow_profile = true;
+  settings.speed_mps = 0.15;
+  settings.maximum_step_m = 0.005;
+  settings.follow_joint_speed_radps = 0.8;
+  settings.follow_joint_acceleration_radps2 = 2.0;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  EXPECT_EQ(transport.sample().follow_profile_updates, 1U);
+  for (unsigned id = 1; id <= 4; ++id) {
+    auto value = command(id, 1);
+    value.follow_joint_mode = true;
+    value.speed_mps = 0.01 * id;
+    {
+      auto & state = aubo_v4_test_sdk::state();
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.ik_delta[0] = 0.001 * id;
+    }
+    ASSERT_TRUE(transport.submit(value, seed));
+    const auto result = wait_for_motion_result(transport, 1s);
+    ASSERT_TRUE(result);
+    EXPECT_TRUE(result->success);
+    EXPECT_EQ(transport.sample().follow_profile_updates, 1U);
+  }
+  EXPECT_DOUBLE_EQ(transport.sample().follow_joint_speed_max_radps, 0.8);
+}
+
 TEST_F(StepwiseTransportTest, FollowStopCannotBeConfirmedBeforeSenderQuiesces)
 {
   StepwiseTransport transport;

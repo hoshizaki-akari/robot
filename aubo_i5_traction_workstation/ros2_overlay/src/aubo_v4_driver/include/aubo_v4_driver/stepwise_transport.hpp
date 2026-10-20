@@ -21,6 +21,7 @@ struct TransportOptions
   double maximum_step_m{0.0005};
   double state_poll_interval_s{0.1};
   bool allow_follow_mode{false};
+  bool fixed_follow_profile{false};
   double follow_joint_speed_radps{0.2}, follow_joint_acceleration_radps2{0.5};
 };
 struct TransportSample

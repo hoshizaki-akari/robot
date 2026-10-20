@@ -3,6 +3,7 @@ param(
     [int]$Port = 8899,
     [Parameter(Mandatory = $true)][string]$CalibrationFile,
     [System.Management.Automation.PSCredential]$Credential,
+    [string]$Distro = 'Ubuntu-22.04-F',
     [string]$ConnectionFile = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'AuboTraction\connection.clixml')
 )
 $ErrorActionPreference = 'Stop'
@@ -28,6 +29,14 @@ New-Item -ItemType Directory -Path $directory -Force | Out-Null
     CalibrationFile = $CalibrationFile
     Credential = $Credential
 } | Export-Clixml -LiteralPath $ConnectionFile
+if ($CalibrationFile -notmatch '^(/home/[^/]+)/') { throw 'Calibration must be inside the WSL user home.' }
+$sharedDirectory = $Matches[1] + '/.local/share/aubo-traction'
+& wsl.exe -d $Distro --exec /usr/bin/install -d -m 700 $sharedDirectory
+if ($LASTEXITCODE -ne 0) { throw 'Could not create the WSL user connection directory.' }
+$sharedFile = "\\wsl.localhost\$Distro" + (($sharedDirectory + '/connection.clixml') -replace '/', '\')
+Copy-Item -LiteralPath $ConnectionFile -Destination $sharedFile -Force
+& wsl.exe -d $Distro --exec /bin/chmod 600 ($sharedDirectory + '/connection.clixml')
+if ($LASTEXITCODE -ne 0) { throw 'Could not restrict the WSL user connection file permissions.' }
 $localProject = Split-Path $PSScriptRoot -Parent
 $calibrationReference = Join-Path $localProject 'config/live_calibration.local.path'
 Set-Content -LiteralPath $calibrationReference -Value $CalibrationFile -Encoding Ascii

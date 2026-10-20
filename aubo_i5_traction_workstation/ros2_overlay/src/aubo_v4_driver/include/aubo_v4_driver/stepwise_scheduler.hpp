@@ -49,6 +49,7 @@ struct StepwiseConfig
   double follow_update_interval_s{0.1};
   double follow_horizon_s{0.15};
   bool follow_hold_enabled{false};
+  bool follow_reference_enabled{false};
 };
 
 struct StepwiseFeedback
@@ -161,6 +162,7 @@ private:
   bool follow_mode_{false};
   double last_follow_dispatch_at_{0.0}, follow_progress_at_{0.0};
   std::array<double, 3> follow_progress_position_{};
+  std::array<double, 3> last_follow_velocity_{};
   std::uint64_t last_follow_feedback_sequence_{0};
 };
 

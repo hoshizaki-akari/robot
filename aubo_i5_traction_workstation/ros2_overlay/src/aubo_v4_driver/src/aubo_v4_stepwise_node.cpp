@@ -78,7 +78,12 @@ public:
     config.follow_update_interval_s = declare_parameter("follow_update_interval_s", 0.1);
     config.follow_horizon_s = declare_parameter("follow_horizon_s", 0.15);
     config.follow_hold_enabled = declare_parameter("follow_hold_enabled", false);
-    if (config.maximum_step_m > 0.005 || config.maximum_speed_mps > 0.050 ||
+    config.follow_reference_enabled = declare_parameter("follow_reference_enabled", false);
+    const bool fixed_follow_profile = declare_parameter("fixed_follow_profile", false);
+    if (fixed_follow_profile && !config.follow_reference_enabled) {
+      throw std::invalid_argument("fixed follow profiles require a time-paced reference");
+    }
+    if (config.maximum_step_m > 0.005 || config.maximum_speed_mps > 0.200 ||
       config.horizon_s > 0.5 || config.feedback_timeout_s > 1.0)
     {
       throw std::invalid_argument("stepwise prototype step/speed/timing limits exceeded");
@@ -238,6 +243,7 @@ public:
       options.fast_acceleration_mps2 = declare_parameter("fast_line_acceleration_mps2", 0.01);
       options.state_poll_interval_s = declare_parameter("state_poll_interval_s", 0.1);
       options.allow_follow_mode = enable_follow_drag_ || enable_follow_traction_;
+      options.fixed_follow_profile = fixed_follow_profile;
       options.follow_joint_speed_radps = 0.2 * follow_response_scale;
       options.follow_joint_acceleration_radps2 = 0.5 * follow_response_scale;
       transport_ = std::make_unique<av::StepwiseTransport>();
@@ -524,6 +530,7 @@ private:
     add("follow_update_interval_s", std::to_string(config_.follow_update_interval_s));
     add("follow_horizon_s", std::to_string(config_.follow_horizon_s));
     add("follow_hold_enabled", config_.follow_hold_enabled ? "1" : "0");
+    add("follow_reference_enabled", config_.follow_reference_enabled ? "1" : "0");
     add("telemetry_timeout_s", std::to_string(telemetry_timeout_s_));
     add("session_limit_reached", session_limit_reached_ ? "1" : "0");
     add("session_limit_handoff_error", session_limit_handoff_error_);

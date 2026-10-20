@@ -286,6 +286,53 @@ TEST(StepwiseFollowResponse, SubArrivalToleranceContinuousForceStepIsNotDiscarde
   EXPECT_NEAR(command.target[0], 0.00004, 1e-12);
 }
 
+TEST(StepwiseFollowResponse, FixedProfileReferenceAdvancesByTimeAndRebasesOnReversal)
+{
+  StepwiseConfig config;
+  config.maximum_step_m = 0.005;
+  config.maximum_speed_mps = 0.15;
+  config.follow_update_interval_s = 0.03;
+  config.follow_horizon_s = 0.08;
+  config.follow_reference_enabled = true;
+  StepwiseScheduler scheduler(config);
+  arm(scheduler);
+  scheduler.set_follow_mode(true, 0);
+  auto first = send(scheduler, {0.05, 0, 0});
+  EXPECT_NEAR(first.target[0], 0.0015, 1e-12);
+  acknowledge(scheduler, first);
+  scheduler.set_feedback(feedback(2, 0.05, false, 0.05, {0.0015, 0, 0}), 0.05);
+  scheduler.set_velocity({0.05, 0, 0}, 0.05);
+  auto next = scheduler.take_command(0.05);
+  ASSERT_TRUE(next);
+  EXPECT_NEAR(next->target[0], 0.0035, 1e-12);
+  scheduler.acknowledge(next->id, next->epoch, true, 0.06);
+  scheduler.set_feedback(feedback(3, 0.09, false, 0.05, {0.0035, 0, 0}), 0.09);
+  scheduler.set_velocity({-0.05, 0, 0}, 0.09);
+  auto reverse = scheduler.take_command(0.09);
+  ASSERT_TRUE(reverse);
+  EXPECT_NEAR(reverse->target[0], 0.0020, 1e-12);
+}
+
+TEST(StepwiseFollowResponse, OvertakenReferenceCannotCommandMotionAgainstCurrentForce)
+{
+  StepwiseConfig config;
+  config.maximum_step_m = 0.005;
+  config.maximum_speed_mps = 0.15;
+  config.follow_update_interval_s = 0.03;
+  config.follow_horizon_s = 0.08;
+  config.follow_reference_enabled = true;
+  StepwiseScheduler scheduler(config);
+  arm(scheduler);
+  scheduler.set_follow_mode(true, 0);
+  const auto first = send(scheduler, {0.05, 0, 0});
+  acknowledge(scheduler, first);
+  scheduler.set_feedback(feedback(2, 0.05, false, 0.05, {0.005, 0, 0}), 0.05);
+  scheduler.set_velocity({0.05, 0, 0}, 0.05);
+  auto next = scheduler.take_command(0.05);
+  ASSERT_TRUE(next);
+  EXPECT_GT(next->target[0], next->start[0]);
+}
+
 TEST(SessionStopHandoff, RejectedAndMissingRepliesCannotBecomeNormalCompletion)
 {
   using aubo_v4_driver::StopHandoff;

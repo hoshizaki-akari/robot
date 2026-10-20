@@ -91,7 +91,7 @@ TEST(StepwiseTraction, ResponsiveDragDoesNotAccelerateForceModes)
         ft::stepwise_traction_output(
           config, mode, {1, 0, 0}, 20, {}).linear_velocity), 0.002);
   }
-  config.drag_maximum_speed_mps = 0.051;
+  config.drag_maximum_speed_mps = 0.201;
   EXPECT_FALSE(
     ft::stepwise_traction_output(
       config, ft::ControlMode::DRAGGING, {}, 0, {2, 0, 0}).valid);

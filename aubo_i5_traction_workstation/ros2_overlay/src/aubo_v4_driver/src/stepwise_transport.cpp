@@ -79,17 +79,20 @@ struct StepwiseTransport::Impl
       squared += delta * delta;
     }
     const double length = std::sqrt(squared);
-    if (!std::isfinite(length) || length <= 0.0) {return false;}
+    if (!options.fixed_follow_profile && (!std::isfinite(length) || length <= 0.0)) {return false;}
     vendor::JointVelcAccParam velocity{}, acceleration{}, got_velocity{}, got_acceleration{};
     bool unchanged = joint_profile_cached;
     for (unsigned i = 0; i < 6; ++i) {
-      const double ratio = std::abs(target.jointpos[i] - current.seed[i]) / length;
+      const double ratio = options.fixed_follow_profile ? 0.0 :
+        std::abs(target.jointpos[i] - current.seed[i]) / length;
       // Keep low-speed force regulation proportional. Cache only small (5%)
       // IK/profile changes, rather than rounding tiny velocities up to a large
       // bucket that would unexpectedly accelerate near-target regulation.
-      velocity.jointPara[i] = std::clamp(
+      velocity.jointPara[i] =
+        options.fixed_follow_profile ? options.follow_joint_speed_radps : std::clamp(
         ratio * current.command.speed_mps, 0.0001, options.follow_joint_speed_radps);
-      acceleration.jointPara[i] = std::clamp(
+      acceleration.jointPara[i] =
+        options.fixed_follow_profile ? options.follow_joint_acceleration_radps2 : std::clamp(
         ratio * options.fast_acceleration_mps2, 0.001, options.follow_joint_acceleration_radps2);
       unchanged = unchanged &&
         std::abs(velocity.jointPara[i] - cached_joint_velocity.jointPara[i]) <=
@@ -447,7 +450,7 @@ bool StepwiseTransport::connect(const TransportOptions & options, std::string & 
 {
   if (impl_->send || options.host.empty() || options.username.empty() || options.password.empty() ||
     options.port < 1 || options.port > 65535 || !std::isfinite(options.speed_mps) ||
-    options.speed_mps <= 0.0 || options.speed_mps > 0.050 ||
+    options.speed_mps <= 0.0 || options.speed_mps > 0.200 ||
     !std::isfinite(options.acceleration_mps2) || options.acceleration_mps2 <= 0.0 ||
     options.acceleration_mps2 > 0.02 || !std::isfinite(options.maximum_joint_step_rad) ||
     !std::isfinite(options.fast_acceleration_mps2) || options.fast_acceleration_mps2 <= 0.0 ||
@@ -507,6 +510,15 @@ bool StepwiseTransport::connect(const TransportOptions & options, std::string & 
     {
       error = "waypoint push registration rejected";
       return false;
+    }
+    if (options.allow_follow_mode && options.fixed_follow_profile) {
+      Impl::Job initial;
+      initial.command.follow_joint_mode = true;
+      vendor::wayPoint_S unused{};
+      if (!self.apply_follow_profile(initial, unused)) {
+        error = "fixed follow profile readback failed";
+        return false;
+      }
     }
     self.sender = std::thread([&self]() {self.send_loop();});
     self.stopper = std::thread([&self]() {self.stop_loop();});

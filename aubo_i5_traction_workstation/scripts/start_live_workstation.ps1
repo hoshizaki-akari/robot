@@ -2,7 +2,8 @@ param(
     [string]$Distro = 'Ubuntu-22.04-F',
     [string]$ProjectPath = '/home/zhj/projects/aubo_i5_traction_ws/aubo_i5_traction_workstation',
     [string]$CalibrationFile,
-    [string]$ConnectionFile = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'AuboTraction\connection.clixml'),
+    [string]$ConnectionFile,
+    [string]$SharedConnectionFile,
     [switch]$CheckLocalConfig,
     [switch]$Background,
     [switch]$WaitForPreviousShutdown
@@ -11,6 +12,21 @@ param(
 $ErrorActionPreference = 'Stop'
 $shellExecutable = (Get-Process -Id $PID).Path
 $localProject = Split-Path $PSScriptRoot -Parent
+$connectionSource = 'explicit connection file'
+if (-not $SharedConnectionFile) {
+    if ($ProjectPath -notmatch '^(/home/[^/]+)/') { throw 'ProjectPath must identify the WSL user home.' }
+    $sharedLinuxPath = $Matches[1] + '/.local/share/aubo-traction/connection.clixml'
+    $SharedConnectionFile = "\\wsl.localhost\$Distro" + ($sharedLinuxPath -replace '/', '\')
+}
+if (-not $ConnectionFile) {
+    if (Test-Path -LiteralPath $SharedConnectionFile) {
+        $ConnectionFile = $SharedConnectionFile
+        $connectionSource = 'WSL user configuration (outside Git)'
+    } else {
+        $ConnectionFile = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'AuboTraction\connection.clixml'
+        $connectionSource = 'Windows user configuration fallback'
+    }
+}
 $calibrationReference = Join-Path $localProject 'config/live_calibration.local.path'
 $calibrationSource = 'command line'
 if (-not $CalibrationFile -and (Test-Path -LiteralPath $calibrationReference)) {
@@ -40,13 +56,17 @@ if ($CheckLocalConfig) {
     [pscustomobject]@{
         WindowsUser = [Environment]::UserName
         ConnectionFile = $ConnectionFile
+        ConnectionSource = $connectionSource
         ConnectionFileExists = (Test-Path -LiteralPath $ConnectionFile)
         CalibrationFile = $CalibrationFile
         CalibrationSource = $calibrationSource
         CalibrationFileExistsInDistro = $calibrationExists
         CredentialPresent = $credentialPresent
     } | ConvertTo-Json -Compress
-    if (-not $calibrationExists -or -not $credentialPresent) { exit 2 }
+    if (-not $calibrationExists -or -not $credentialPresent) {
+        Write-Error 'Startup configuration incomplete. The workstation has NOT started. See the missing file/credential fields above.'
+        exit 2
+    }
     exit 0
 }
 if (-not $CalibrationFile) {

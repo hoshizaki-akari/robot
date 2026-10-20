@@ -6,6 +6,10 @@ aubo_v4_state_node:
     follow_update_interval_s: 0.03
     follow_horizon_s: 0.08
     follow_hold_enabled: true
+    follow_reference_enabled: true
+    fixed_follow_profile: true
+    maximum_speed_mps: 0.150
+    session_orientation_tolerance_rad: 0.10
     # Original joint profile caps 0.2 rad/s and 0.5 rad/s2 multiplied by four.
     follow_response_scale: 4.0
     fast_line_acceleration_mps2: 0.20
@@ -15,6 +19,8 @@ traction_controller:
   ros__parameters:
     # Low-force input gain is four times the previous response, before saturation.
     drag_response_scale: 4.0
+    drag_max_speed_mps: 0.150
+    stepwise_drag_maximum_speed_mps: 0.150
     # Previous fallback 0.0002 m/s/N kept both modes near 1.2 mm/s.
     stepwise_force_gain_mps_per_n: 0.004
     stepwise_minimum_command_speed_mps: 0.0005
