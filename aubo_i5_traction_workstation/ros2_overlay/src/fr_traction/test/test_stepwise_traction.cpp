@@ -24,6 +24,41 @@ TEST(StepwiseTraction, UnverifiedForceCannotMove)
   }
 }
 
+TEST(StepwiseResponse, ForceApproachIsFasterButContinuousAtHoldBand)
+{
+  auto config = verified();
+  config.maximum_speed_mps = 0.020;
+  config.minimum_command_speed_mps = 0.0;
+  config.force_gain_mps_per_n = 0.010;
+  config.force_deadband_n = 0.15;
+  config.force_soft_transition_n = 0.25;
+  const auto out = [&](double error) {
+      return ft::stepwise_traction_output(
+        config, ft::ControlMode::TRACTION,
+        {1, 0, 0}, 10.0, {10.0 - error, 0, 0});
+    };
+  EXPECT_GT(out(2.0).linear_velocity.x, 0.015);
+  EXPECT_NEAR(out(5.0).linear_velocity.x, 0.020, 1e-12);
+  EXPECT_NEAR(out(0.15).linear_velocity.x, 0.0, 1e-12);
+  EXPECT_LT(ft::norm(out(0.1501).linear_velocity), 1e-8);
+  EXPECT_LT(out(-2.0).linear_velocity.x, -0.015);
+}
+
+TEST(StepwiseResponse, VelocityRampDoesNotRetainOldDirectionOrDelayRelease)
+{
+  ft::Vec3 previous;
+  EXPECT_NEAR(ft::ramp_stepwise_velocity(previous, {0.15, 0, 0}, 0.01, 0.6).x, 0.006, 1e-12);
+  for (unsigned i = 0; i < 30; ++i) {
+    ft::ramp_stepwise_velocity(previous, {0.15, 0, 0}, 0.01, 0.6);
+  }
+  EXPECT_NEAR(previous.x, 0.15, 1e-12);
+  EXPECT_LT(ft::ramp_stepwise_velocity(previous, {-0.15, 0, 0}, 0.01, 0.6).x, 0.0);
+  const auto y = ft::ramp_stepwise_velocity(previous, {0, 0.15, 0}, 0.01, 0.6);
+  EXPECT_DOUBLE_EQ(y.x, 0.0);
+  EXPECT_GT(y.y, 0.0);
+  EXPECT_DOUBLE_EQ(ft::norm(ft::ramp_stepwise_velocity(previous, {}, 0.01, 0.6)), 0.0);
+}
+
 TEST(StepwiseResponse, DirectionChangeHasNoOldAxisFilterTail)
 {
   ft::FirstOrderLowPass filter(12.0);

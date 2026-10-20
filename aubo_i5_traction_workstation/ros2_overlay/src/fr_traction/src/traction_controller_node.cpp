@@ -58,6 +58,10 @@ public:
       "stepwise_force_gain_mps_per_n",
       0.0002);
     stepwise_config_.force_deadband_n = declare_parameter("stepwise_force_deadband_n", 0.5);
+    stepwise_config_.force_soft_transition_n = declare_parameter(
+      "stepwise_force_soft_transition_n",
+      0.0);
+    stepwise_velocity_ramp_enabled_ = declare_parameter("stepwise_velocity_ramp_enabled", false);
     stepwise_config_.maximum_speed_mps = declare_parameter("stepwise_maximum_speed_mps", 0.020);
     stepwise_config_.minimum_command_speed_mps = declare_parameter(
       "stepwise_minimum_command_speed_mps", 0.0012);
@@ -87,13 +91,15 @@ public:
       (stepwise_config_.force_polarity_verified && stepwise_config_.axis_sign == 0.0) ||
       !std::isfinite(stepwise_config_.force_gain_mps_per_n) ||
       stepwise_config_.force_gain_mps_per_n <= 0.0 ||
-      stepwise_config_.force_gain_mps_per_n > 0.005 ||
+      stepwise_config_.force_gain_mps_per_n > 0.020 ||
+      !std::isfinite(stepwise_config_.force_soft_transition_n) ||
+      stepwise_config_.force_soft_transition_n < 0.0 ||
       !std::isfinite(stepwise_config_.force_deadband_n) ||
       stepwise_config_.force_deadband_n < 0.0 ||
       !std::isfinite(stepwise_config_.maximum_speed_mps) ||
       stepwise_config_.maximum_speed_mps <= 0.0 || stepwise_config_.maximum_speed_mps > 0.020 ||
       !std::isfinite(stepwise_config_.minimum_command_speed_mps) ||
-      stepwise_config_.minimum_command_speed_mps <= 0.0 ||
+      stepwise_config_.minimum_command_speed_mps < 0.0 ||
       stepwise_config_.minimum_command_speed_mps > stepwise_config_.maximum_speed_mps))
     {
       throw std::invalid_argument("invalid stepwise force configuration or unverified axis sign");
@@ -335,6 +341,7 @@ private:
 
   void on_command(const msg::TractionCommand & message)
   {
+    if (message.mode != command_.mode) {previous_stepwise_velocity_ = {};}
     if (message.mode == msg::TractionCommand::DRAG &&
       command_.mode != msg::TractionCommand::DRAG)
     {
@@ -431,6 +438,7 @@ private:
 
   void publish_zero()
   {
+    previous_stepwise_velocity_ = {};
     drag_release_gate_.reset();
     drag_force_filter_.reset();
     previous_drag_filtered_ = {};
@@ -614,6 +622,23 @@ private:
         bounded_output.scalar_velocity_mps *= scale;
       }
     }
+    if (stepwise_backend_ && stepwise_velocity_ramp_enabled_) {
+      bounded_output.linear_velocity = ramp_stepwise_velocity(
+        previous_stepwise_velocity_, bounded_output.linear_velocity, dt_s,
+        mode ==
+        ControlMode::DRAGGING ? drag_max_acceleration_mps2_ : smoothing_max_acceleration_mps2_);
+      bounded_output.scalar_velocity_mps = mode == ControlMode::DRAGGING ?
+        norm(bounded_output.linear_velocity) : dot(
+        bounded_output.linear_velocity,
+        vector_from_message(command_.locked_direction_base));
+      if (bounded_output.position_control.valid) {
+        bounded_output.position_control.acceleration_limited =
+          std::abs(
+          bounded_output.position_control.velocity_mps -
+          bounded_output.scalar_velocity_mps) > 1e-9;
+        bounded_output.position_control.velocity_mps = bounded_output.scalar_velocity_mps;
+      }
+    }
     publish_output(bounded_output);
     publish_health(true);
   }
@@ -689,6 +714,8 @@ private:
   bool stepwise_backend_{false};
   bool stepwise_drag_release_gate_enabled_{false};
   DragReleaseGate drag_release_gate_;
+  bool stepwise_velocity_ramp_enabled_{false};
+  Vec3 previous_stepwise_velocity_;
   Vec3 previous_drag_filtered_;
   StepwiseTractionConfig stepwise_config_;
   std::chrono::steady_clock::time_point last_ee_steady_at_{};

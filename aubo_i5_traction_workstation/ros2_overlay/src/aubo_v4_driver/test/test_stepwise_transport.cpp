@@ -246,6 +246,42 @@ TEST_F(StepwiseTransportTest, IKJointContinuityRejectionReportsJointAndDelta)
   EXPECT_EQ(line_move_count(), 0);
 }
 
+TEST_F(StepwiseTransportTest, RecordedSlightFollowOversizeIsSubdividedWithoutRaisingJointBound)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = true;
+  settings.fixed_follow_profile = true;
+  settings.subdivide_follow_joint_steps = true;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.ik_delta[5] = 0.050853;
+  }
+  auto target = command(1, 1);
+  target.follow_joint_mode = true;
+  ASSERT_TRUE(transport.submit(target, seed));
+  const auto result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result->success);
+  EXPECT_NEAR(transport.sample().last_ik_max_joint_delta_rad, 0.045, 1e-12);
+  EXPECT_DOUBLE_EQ(transport.sample().proposed_ik_max_joint_delta_rad, 0.050853);
+  EXPECT_EQ(transport.sample().follow_joint_subdivisions, 1U);
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    EXPECT_NEAR(state.last_follow_target[5], 0.045, 1e-12);
+    state.ik_delta[5] = 0.20;
+  }
+  target.id = 2;
+  ASSERT_TRUE(submit_when_available(transport, target, 500ms));
+  const auto rejected = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(rejected);
+  EXPECT_FALSE(rejected->success);
+}
+
 TEST_F(StepwiseTransportTest, InvalidSpeedAndPollIntervalFailClosed)
 {
   StepwiseTransport transport;

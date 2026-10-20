@@ -23,6 +23,7 @@ struct TransportOptions
   bool allow_follow_mode{false};
   bool fixed_follow_profile{false};
   bool single_stop_when_quiescent{false};
+  bool subdivide_follow_joint_steps{false};
   double follow_joint_speed_radps{0.2}, follow_joint_acceleration_radps2{0.5};
 };
 struct TransportSample
@@ -37,6 +38,8 @@ struct TransportSample
   int diagnosis_result{-1}, state_result{-1};
   int last_ik_result{-1};
   double last_ik_max_joint_delta_rad{0.0};
+  double proposed_ik_max_joint_delta_rad{0.0};
+  std::uint64_t follow_joint_subdivisions{0};
   std::size_t last_ik_joint_index{0};
   std::string last_ik_failure;
   double query_duration_s{0.0};

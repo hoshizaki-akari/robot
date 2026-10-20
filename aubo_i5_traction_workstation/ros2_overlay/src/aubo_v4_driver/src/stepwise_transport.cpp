@@ -277,6 +277,26 @@ struct StepwiseTransport::Impl
               maximum_joint_index = i;
             }
           }
+          const double proposed_delta = maximum_joint_delta;
+          if (ik_failure.empty() && current.command.follow_joint_mode &&
+            options.subdivide_follow_joint_steps &&
+            maximum_joint_delta > options.maximum_joint_step_rad &&
+            maximum_joint_delta <= 2.0 * options.maximum_joint_step_rad)
+          {
+            // Execute a shorter joint-space segment, not the oversized target.
+            // A different IK branch remains an error, never a queued trajectory.
+            const double scale = 0.9 * options.maximum_joint_step_rad / maximum_joint_delta;
+            for (unsigned i = 0; i < 6; ++i) {
+              target.jointpos[i] = current.seed[i] + scale * (target.jointpos[i] - current.seed[i]);
+            }
+            maximum_joint_delta *= scale;
+            std::lock_guard<std::mutex> lock(mutex);
+            ++latest.follow_joint_subdivisions;
+          }
+          {
+            std::lock_guard<std::mutex> lock(mutex);
+            latest.proposed_ik_max_joint_delta_rad = proposed_delta;
+          }
           if (ik_failure.empty() && maximum_joint_delta > options.maximum_joint_step_rad) {
             ik_failure = "IK joint " + std::to_string(maximum_joint_index + 1) +
               " delta " + std::to_string(maximum_joint_delta) + " rad exceeds " +

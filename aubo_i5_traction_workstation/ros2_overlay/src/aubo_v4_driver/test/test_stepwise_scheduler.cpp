@@ -333,6 +333,27 @@ TEST(StepwiseFollowResponse, OvertakenReferenceCannotCommandMotionAgainstCurrent
   EXPECT_GT(next->target[0], next->start[0]);
 }
 
+TEST(StepwiseFollowResponse, DelayedSdkReplyDoesNotAccumulateACatchupJump)
+{
+  StepwiseConfig config;
+  config.maximum_step_m = 0.005;
+  config.maximum_speed_mps = 0.15;
+  config.follow_update_interval_s = 0.03;
+  config.follow_horizon_s = 0.16;
+  config.horizon_s = 0.5;
+  config.follow_reference_enabled = true;
+  StepwiseScheduler scheduler(config);
+  arm(scheduler);
+  scheduler.set_follow_mode(true, 0);
+  const auto first = send(scheduler, {0.02, 0, 0});
+  scheduler.acknowledge(first.id, first.epoch, true, 0.18);
+  scheduler.set_feedback(feedback(2, 0.20, false, 0.02, first.target), 0.20);
+  scheduler.set_velocity({0.02, 0, 0}, 0.20);
+  const auto next = scheduler.take_command(0.20);
+  ASSERT_TRUE(next);
+  EXPECT_NEAR(next->target[0] - first.target[0], 0.0012, 1e-12);
+}
+
 TEST(SessionStopHandoff, RejectedAndMissingRepliesCannotBecomeNormalCompletion)
 {
   using aubo_v4_driver::StopHandoff;

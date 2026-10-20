@@ -4,11 +4,12 @@ aubo_v4_state_node:
     enable_follow_traction: true
     # Reversal no longer waits for a complete stop at an obsolete endpoint.
     follow_update_interval_s: 0.03
-    follow_horizon_s: 0.08
+    follow_horizon_s: 0.16
     follow_hold_enabled: true
     follow_reference_enabled: true
     fixed_follow_profile: true
     single_stop_when_quiescent: true
+    subdivide_follow_joint_steps: true
     maximum_speed_mps: 0.150
     session_orientation_tolerance_rad: 0.10
     # Original joint profile caps 0.2 rad/s and 0.5 rad/s2 multiplied by four.
@@ -31,5 +32,8 @@ traction_controller:
     drag_max_speed_mps: 0.150
     stepwise_drag_maximum_speed_mps: 0.150
     # Previous fallback 0.0002 m/s/N kept both modes near 1.2 mm/s.
-    stepwise_force_gain_mps_per_n: 0.004
-    stepwise_minimum_command_speed_mps: 0.0005
+    stepwise_force_gain_mps_per_n: 0.010
+    stepwise_force_deadband_n: 0.15
+    stepwise_minimum_command_speed_mps: 0.0
+    stepwise_force_soft_transition_n: 0.25
+    stepwise_velocity_ramp_enabled: true

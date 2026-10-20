@@ -59,6 +59,7 @@ struct StepwiseTractionConfig
   double drag_maximum_speed_mps{0.002};
   double drag_minimum_speed_mps{0.0012};
   double drag_response_scale{1.0};
+  double force_soft_transition_n{0.0};
   Vec3 drag_signs{1.0, 1.0, 1.0};
   Vec3 drag_axis_mask{1.0, 1.0, 1.0};
 };
@@ -74,7 +75,7 @@ inline ControllerOutput stepwise_traction_output(
   if (!finite(wrench) || !finite(lateral_velocity) || !std::isfinite(target_force_n) ||
     target_force_n < 0.0 || !std::isfinite(config.maximum_speed_mps) ||
     config.maximum_speed_mps <= 0.0 || config.maximum_speed_mps > 0.020 ||
-    !std::isfinite(config.minimum_command_speed_mps) || config.minimum_command_speed_mps <= 0.0 ||
+    !std::isfinite(config.minimum_command_speed_mps) || config.minimum_command_speed_mps < 0.0 ||
     config.minimum_command_speed_mps > config.maximum_speed_mps)
   {
     return result;
@@ -155,8 +156,14 @@ inline ControllerOutput stepwise_traction_output(
     std::min(config.position_tolerance_n, std::max(0.05, 0.2 * target_force_n)) :
     config.force_deadband_n;
   const double excess = std::max(0.0, std::abs(error) - band);
+  if (!std::isfinite(config.force_soft_transition_n) || config.force_soft_transition_n < 0.0) {
+    return result;
+  }
+  // C1 transition at the hold band; no minimum-speed jump near the target.
+  const double shaped_excess = config.force_soft_transition_n > 0.0 ?
+    excess * excess / (excess + config.force_soft_transition_n) : excess;
   const double magnitude = excess > 0.0 ? std::clamp(
-    config.force_gain_mps_per_n * excess,
+    config.force_gain_mps_per_n * shaped_excess,
     config.minimum_command_speed_mps, config.maximum_speed_mps) : 0.0;
   const double scalar = config.axis_sign * std::copysign(magnitude, error);
   result.linear_velocity = cap(
@@ -171,6 +178,24 @@ inline ControllerOutput stepwise_traction_output(
   result.position_control.raw_velocity_mps = scalar;
   result.valid = finite(result.linear_velocity);
   return result;
+}
+
+inline Vec3 ramp_stepwise_velocity(
+  Vec3 & previous, const Vec3 & desired, double dt_s,
+  double acceleration)
+{
+  if (!finite(desired) || !std::isfinite(dt_s) || dt_s <= 0.0 ||
+    !std::isfinite(acceleration) || acceleration <= 0.0 || norm(desired) <= 1e-12)
+  {
+    previous = {};
+    return previous;
+  }
+  // Never carry old-direction momentum into an explicit reversal.
+  if (dot(previous, desired) <= 0.0) {previous = {};}
+  const Vec3 delta = desired - previous;
+  const double length = norm(delta), maximum = acceleration * std::min(dt_s, 0.05);
+  previous = length > maximum ? previous + delta * (maximum / length) : desired;
+  return previous;
 }
 
 // Shared completion predicate used by manager and directly unit-tested.

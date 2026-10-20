@@ -356,9 +356,12 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
     // With a fixed SDK joint profile, velocity is encoded by a time-paced
     // reference. Do not add a full lookahead to the measured pose every tick:
     // that would multiply low-force speed by horizon/update_interval.
+    // A delayed SDK call must not turn accumulated wall time into a catch-up
+    // position jump. Advance at most two nominal periods after a stall.
     const double dt = continuing ? std::min(
-      now - last_follow_dispatch_at_,
-      config_.command_timeout_s) : config_.follow_update_interval_s;
+      {
+        now - last_follow_dispatch_at_, config_.command_timeout_s,
+        2.0 * config_.follow_update_interval_s}) : config_.follow_update_interval_s;
     for (unsigned i = 0; i < 3; ++i) {
       displacement[i] = (continuing ? pending_->target[i] - feedback_->position[i] : 0.0) +
         (*velocity_)[i] * speed_scale * dt;

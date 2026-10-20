@@ -245,6 +245,8 @@ public:
       options.allow_follow_mode = enable_follow_drag_ || enable_follow_traction_;
       options.fixed_follow_profile = fixed_follow_profile;
       options.single_stop_when_quiescent = declare_parameter("single_stop_when_quiescent", false);
+      options.subdivide_follow_joint_steps =
+        declare_parameter("subdivide_follow_joint_steps", false);
       options.follow_joint_speed_radps = 0.2 * follow_response_scale;
       options.follow_joint_acceleration_radps2 = 0.5 * follow_response_scale;
       transport_ = std::make_unique<av::StepwiseTransport>();
@@ -547,6 +549,10 @@ private:
       add("last_command_id", std::to_string(sample.last_command_id));
       add("last_ik_result", std::to_string(sample.last_ik_result));
       add("last_ik_max_joint_delta_rad", std::to_string(sample.last_ik_max_joint_delta_rad));
+      add(
+        "proposed_ik_max_joint_delta_rad",
+        std::to_string(sample.proposed_ik_max_joint_delta_rad));
+      add("follow_joint_subdivisions", std::to_string(sample.follow_joint_subdivisions));
       add("last_ik_joint_index", std::to_string(sample.last_ik_joint_index));
       add("last_ik_failure", sample.last_ik_failure);
       add("requested_speed_mps", std::to_string(sample.requested_speed_mps));

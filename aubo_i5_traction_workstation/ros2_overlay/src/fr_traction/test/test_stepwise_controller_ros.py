@@ -638,5 +638,12 @@ def test_production_response_tuning_reversal_and_both_force_modes(ros_runtime):
             mark = harness.mark()
             harness.configure(mode, 10.0, (4.0, 0.0, 0.0))
             harness.wait_for_stable_output(mark, lambda msg: msg.linear.x > 0.015)
+        # Production near-target response has no minimum-speed discontinuity.
+        for measured, expected in ((8.0, 0.016297619), (12.0, -0.016297619),
+                                   (9.84, 0.000003846), (10.0, 0.0)):
+            mark = harness.mark()
+            harness.configure(TractionCommand.TRACTION, 10.0, (measured, 0.0, 0.0))
+            harness.wait_for_stable_output(
+                mark, lambda msg: abs(msg.linear.x - expected) < 0.000001)
     finally:
         harness.close()
