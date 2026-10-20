@@ -10,9 +10,19 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $shellExecutable = (Get-Process -Id $PID).Path
+$localProject = Split-Path $PSScriptRoot -Parent
+$calibrationReference = Join-Path $localProject 'config/live_calibration.local.path'
+$calibrationSource = 'command line'
+if (-not $CalibrationFile -and (Test-Path -LiteralPath $calibrationReference)) {
+    $CalibrationFile = (Get-Content -LiteralPath $calibrationReference -Raw).Trim()
+    $calibrationSource = 'project local reference'
+}
 if (Test-Path -LiteralPath $ConnectionFile) {
     $localConnection = Import-Clixml -LiteralPath $ConnectionFile
-    if (-not $CalibrationFile) { $CalibrationFile = $localConnection.CalibrationFile }
+    if (-not $CalibrationFile) {
+        $CalibrationFile = [string]$localConnection.CalibrationFile
+        $calibrationSource = 'Windows connection file'
+    }
     if (-not $env:AUBO_V4_HOST) { $env:AUBO_V4_HOST = $localConnection.HostAddress }
     if (-not $env:AUBO_V4_PORT) { $env:AUBO_V4_PORT = [string]$localConnection.Port }
     if (-not $env:AUBO_V4_USERNAME -and -not $env:AUBO_V4_PASSWORD) {
@@ -21,6 +31,7 @@ if (Test-Path -LiteralPath $ConnectionFile) {
     }
 }
 if ($CheckLocalConfig) {
+    $credentialPresent = [bool]($env:AUBO_V4_USERNAME -and $env:AUBO_V4_PASSWORD)
     $calibrationExists = $false
     if ($CalibrationFile) {
         & wsl.exe -d $Distro --exec /usr/bin/test -f $CalibrationFile
@@ -31,9 +42,11 @@ if ($CheckLocalConfig) {
         ConnectionFile = $ConnectionFile
         ConnectionFileExists = (Test-Path -LiteralPath $ConnectionFile)
         CalibrationFile = $CalibrationFile
+        CalibrationSource = $calibrationSource
         CalibrationFileExistsInDistro = $calibrationExists
-        CredentialPresent = ($null -ne $localConnection.Credential)
+        CredentialPresent = $credentialPresent
     } | ConvertTo-Json -Compress
+    if (-not $calibrationExists -or -not $credentialPresent) { exit 2 }
     exit 0
 }
 if (-not $CalibrationFile) {
@@ -51,7 +64,9 @@ foreach ($path in @($ProjectPath, $CalibrationFile)) {
         throw 'Use an absolute WSL path without spaces or shell metacharacters.'
     }
 }
-$localProject = Split-Path $PSScriptRoot -Parent
+& wsl.exe -d $Distro --exec /usr/bin/test -f $CalibrationFile
+if ($LASTEXITCODE -ne 0) { throw "Calibration file not found in ${Distro}: $CalibrationFile" }
+Write-Output "Calibration: $CalibrationFile ($calibrationSource)"
 $runName = 'session_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '_workstation'
 $logDirectory = Join-Path $localProject ('debug/' + $runName)
 New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null

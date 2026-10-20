@@ -31,14 +31,16 @@ def main() -> None:
     with socket.create_connection((args.host, args.port), timeout=5) as sock:
         sock.settimeout(None)
         master, slave = os.openpty()
-        tty.setraw(slave)
         slave_name = os.ttyname(slave)
-        os.symlink(slave_name, args.link)
-        print(f"PTY_READY={args.link} -> {slave_name}", flush=True)
         selector = selectors.DefaultSelector()
-        selector.register(sock, selectors.EVENT_READ)
-        selector.register(master, selectors.EVENT_READ)
         try:
+            tty.setraw(slave)
+            selector.register(sock, selectors.EVENT_READ)
+            selector.register(master, selectors.EVENT_READ)
+            os.symlink(slave_name, args.link)
+            # Readiness must be inside the cleanup scope: the supervisor can
+            # terminate immediately after receiving it during a quick restart.
+            print(f"PTY_READY={args.link} -> {slave_name}", flush=True)
             while True:
                 for key, _ in selector.select(timeout=0.1):
                     if key.fileobj is sock:

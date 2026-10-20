@@ -56,6 +56,10 @@ class TransformConfiguration:
     timestamp_future_tolerance_s: float = 0.05
     quaternion_norm_tolerance: float = 0.05
     fixed_pose_tare_enabled: bool = False
+    # Full workstation manager captures the current base-frame load on Prepare
+    # and feeds /traction/corrected_wrench to the controller. Do not apply the
+    # older sensor-frame tare (and its old-pose gate) a second time in that mode.
+    session_managed_tare: bool = False
     force_bias_sensor_n: Vector3 = (0.0, 0.0, 0.0)
     force_sensor_sign: Vector3 = (1.0, 1.0, 1.0)
     torque_bias_sensor_nm: Vector3 = (0.0, 0.0, 0.0)
@@ -211,12 +215,15 @@ class WrenchTransformCore:
         """Initialize the transform cache with a fully validated configuration."""
         self._configuration = configuration
         self._validate_configuration()
+        self._use_fixed_tare = (
+            configuration.fixed_pose_tare_enabled and not configuration.session_managed_tare
+        )
         self._force_sensor_sign = _force_sensor_sign(configuration.force_sensor_sign)
         self._tare_q_base_flange = (
             _normalize_quaternion(
                 configuration.tare_q_base_flange, configuration.quaternion_norm_tolerance
             )
-            if configuration.fixed_pose_tare_enabled
+            if self._use_fixed_tare
             else None
         )
         self._sensor: _SensorSample | None = None
@@ -312,33 +319,44 @@ class WrenchTransformCore:
             return str(error)
         return None
 
-    def output_if_fresh(self, now_monotonic_s: float) -> TransformedWrench | None:
-        """Return a result only if calibration gate and both inputs are fresh."""
+    def output_block_reason(self, now_monotonic_s: float) -> str:
+        """Explain missing output without disguising a pose gate as a cable timeout."""
         config = self._configuration
         try:
             now = _finite_float(now_monotonic_s)
         except ValueError:
-            return None
+            return "INVALID_CLOCK"
         if not config.mounting_verified or not config.pose_frame_verified:
-            return None
-        if self._sensor is None or self._pose is None:
-            return None
+            return "MOUNTING_OR_FRAME_NOT_VERIFIED"
+        if self._sensor is None:
+            return "NO_VALID_SENSOR_SAMPLE"
+        if self._pose is None:
+            return "NO_VALID_POSE_SAMPLE"
         sensor_age = now - self._sensor.received_monotonic_s
         pose_age = now - self._pose.received_monotonic_s
         if sensor_age < 0.0 or pose_age < 0.0:
-            return None
-        if sensor_age > config.sensor_timeout_s or pose_age > config.pose_timeout_s:
-            return None
+            return "CLOCK_MOVED_BACKWARDS"
+        if sensor_age > config.sensor_timeout_s:
+            return "SENSOR_SAMPLE_STALE"
+        if pose_age > config.pose_timeout_s:
+            return "POSE_SAMPLE_STALE"
         if (
-            config.fixed_pose_tare_enabled
+            self._use_fixed_tare
             and self._tare_q_base_flange is not None
             and _quaternion_angle_rad(self._pose.q_base_flange, self._tare_q_base_flange)
             > config.tare_pose_tolerance_rad
         ):
+            return "FIXED_TARE_ORIENTATION_MISMATCH"
+        return ""
+
+    def output_if_fresh(self, now_monotonic_s: float) -> TransformedWrench | None:
+        """Return a result only if calibration gate and both inputs are fresh."""
+        if self.output_block_reason(now_monotonic_s):
             return None
+        config = self._configuration
         force_sensor = self._sensor.force_sensor
         torque_sensor = self._sensor.torque_sensor
-        if config.fixed_pose_tare_enabled:
+        if self._use_fixed_tare:
             force_sensor = _subtract(force_sensor, _vector3(config.force_bias_sensor_n))
             torque_sensor = _subtract(torque_sensor, _vector3(config.torque_bias_sensor_nm))
         force_sensor = _multiply_components(force_sensor, self._force_sensor_sign)
@@ -394,6 +412,9 @@ class AuboWrenchTransformNode(Node):
             fixed_pose_tare_enabled=bool(
                 self.declare_parameter("fixed_pose_tare_enabled", False).value
             ),
+            session_managed_tare=bool(
+                self.declare_parameter("session_managed_tare", False).value
+            ),
             force_bias_sensor_n=tuple(
                 self.declare_parameter("force_bias_sensor_n", [0.0, 0.0, 0.0]).value
             ),  # type: ignore[arg-type]
@@ -411,7 +432,13 @@ class AuboWrenchTransformNode(Node):
             ),
         )
         self._core = WrenchTransformCore(configuration)
+        self.get_logger().info(
+            "Tare owner: traction_manager current-pose initial calibration"
+            if configuration.session_managed_tare
+            else "Tare owner: configured fixed sensor tare"
+        )
         self._last_rejection = ""
+        self._last_output_block = ""
         self._last_published_stamp: Stamp | None = None
         raw_wrench_topic = str(
             self.declare_parameter("raw_wrench_topic", "/aubo/kwr75/raw_wrench").value
@@ -448,7 +475,15 @@ class AuboWrenchTransformNode(Node):
         self._record_rejection("pose", reason)
 
     def _publish_if_fresh(self) -> None:
-        result = self._core.output_if_fresh(time.monotonic())
+        now = time.monotonic()
+        blocked = self._core.output_block_reason(now)
+        if blocked != self._last_output_block:
+            if blocked:
+                self.get_logger().warning(f"Wrench output suspended: {blocked}")
+            else:
+                self.get_logger().info("Wrench output resumed with fresh sensor and pose data")
+            self._last_output_block = blocked
+        result = self._core.output_if_fresh(now)
         if result is None or result.stamp == self._last_published_stamp:
             return
         output = WrenchStamped()
@@ -475,7 +510,7 @@ def main(args: Sequence[str] | None = None) -> None:
         rclpy.spin(node)
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

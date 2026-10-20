@@ -256,3 +256,50 @@ def test_fixed_pose_tare_rejects_invalid_configuration(overrides):
 def pytest_approx(values):
     """Avoid a pytest runtime dependency inside the bridge module itself."""
     return pytest.approx(values, abs=1e-12)
+
+
+def test_recorded_pose_does_not_silence_session_managed_wrench():
+    """Regression: 20 Oct hand drag reached 0.0359 rad from the *old* tare."""
+    options = dict(
+        fixed_pose_tare_enabled=True,
+        tare_q_base_flange=(-0.3319807820, -0.5099078170, 0.7850861323, 0.1158557012),
+        tare_pose_tolerance_rad=0.03,
+        force_bias_sensor_n=(-2.98652, 13.09922, 1.40692),
+    )
+    recorded_pose = _pose(
+        quaternion=(-0.3407960066, -0.4961931284, 0.7907836653, 0.1109579012))
+    old = _core(**options)
+    _accept_both(old, pose=recorded_pose)
+    assert old.output_block_reason(10.01) == 'FIXED_TARE_ORIENTATION_MISMATCH'
+    assert old.output_if_fresh(10.01) is None
+
+    current = _core(**options, session_managed_tare=True)
+    _accept_both(current, pose=recorded_pose)
+    result = current.output_if_fresh(10.01)
+    assert result is not None
+    assert current.output_block_reason(10.01) == ''
+    q = current._pose.q_base_flange
+    # The manager owns the baseline: no second subtraction of the old offset.
+    assert result.force_base == pytest.approx(module.rotate_vector(q, (1.0, 2.0, 3.0)))
+    assert current.output_if_fresh(10.3) is None
+    assert current.output_block_reason(10.3) == 'SENSOR_SAMPLE_STALE'
+
+
+def test_session_baseline_keeps_base_gravity_and_external_force_separate():
+    """Current-pose base baseline cancels gravity across small pose changes."""
+    core = _core(fixed_pose_tare_enabled=True, session_managed_tare=True,
+                 force_bias_sensor_n=(9.0, 8.0, 7.0))
+    gravity_base = (0.0, 0.0, -13.5)
+    external_base = (2.0, -1.0, 3.0)
+    _accept_both(core, sensor=_sensor(force=gravity_base))
+    baseline = core.output_if_fresh(10.01).force_base
+    for angle in (0.02, 0.035903, 0.05):
+        q = (0.0, math.sin(angle / 2.0), 0.0, math.cos(angle / 2.0))
+        inverse = (0.0, -q[1], 0.0, q[3])
+        total = tuple(a + b for a, b in zip(gravity_base, external_base))
+        raw = module.rotate_vector(inverse, total)
+        _accept_both(core, sensor=_sensor(force=raw), pose=_pose(quaternion=q))
+        output = core.output_if_fresh(10.01)
+        assert output is not None
+        corrected = tuple(a - b for a, b in zip(output.force_base, baseline))
+        assert corrected == pytest.approx(external_base)

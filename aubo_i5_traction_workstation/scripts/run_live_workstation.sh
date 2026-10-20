@@ -79,7 +79,7 @@ launch robot "$BIN/aubo_v4_driver/lib/aubo_v4_driver/aubo_v4_stepwise_node" \
 launch sensor "$BIN/aubo_kwr75_sensor/lib/aubo_kwr75_sensor/kwr75_sensor_node" \
   --ros-args -p serial_path:=/tmp/kwr75d-bridge-tty
 launch wrench "$BIN/fr_traction/lib/fr_traction/aubo_wrench_transform_node.py" \
-  --ros-args --params-file "$PROFILE"
+  --ros-args --params-file "$PROFILE" -p session_managed_tare:=true
 CONFIG="$PROJECT_DIR/ros2_overlay/src/fr_traction/config/traction_params.yaml"
 launch controller "$BIN/fr_traction/lib/fr_traction/traction_controller_node" \
   --ros-args -r __node:=traction_controller --params-file "$CONFIG" --params-file "$PROFILE"
@@ -87,7 +87,33 @@ launch manager "$BIN/fr_traction/lib/fr_traction/traction_manager_node" \
   --ros-args -r __node:=traction_manager --params-file "$CONFIG" --params-file "$PROFILE"
 export AUBO_RUNTIME_LOG_DIR="$SESSION_DIR"
 launch web bash run_workstation.sh --web-only
-printf 'Workstation supervisor started; no traction session started. Logs: %s\n' "$SESSION_DIR"
+printf 'Waiting for live robot, sensor and traction readiness. Logs: %s\n' "$SESSION_DIR"
+python3 - "$SESSION_DIR/startup_health.json" <<'PY'
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+deadline = time.monotonic() + 45.0
+last = {}
+while time.monotonic() < deadline:
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:8082/api/health', timeout=1) as response:
+            last = json.load(response)
+        if (all(last.get(key) is True for key in ('ok', 'robot_connected', 'traction_connected'))
+                and last.get('state') == 'READY'):
+            Path(sys.argv[1]).write_text(json.dumps(last, indent=2) + '\n')
+            print('Workstation READY: http://127.0.0.1:8082/ ; no traction session started.', flush=True)
+            break
+    except (OSError, ValueError, urllib.error.URLError) as error:
+        last = {'startup_error': str(error)}
+    time.sleep(0.2)
+else:
+    Path(sys.argv[1]).write_text(json.dumps(last, indent=2) + '\n')
+    raise SystemExit(f'Workstation did not become READY within 45 seconds: {last}')
+PY
 # A failed component must not leave an apparently healthy partial workstation.
 set +e
 wait -n "${pids[@]}"

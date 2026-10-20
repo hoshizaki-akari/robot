@@ -28,4 +28,7 @@ New-Item -ItemType Directory -Path $directory -Force | Out-Null
     CalibrationFile = $CalibrationFile
     Credential = $Credential
 } | Export-Clixml -LiteralPath $ConnectionFile
+$localProject = Split-Path $PSScriptRoot -Parent
+$calibrationReference = Join-Path $localProject 'config/live_calibration.local.path'
+Set-Content -LiteralPath $calibrationReference -Value $CalibrationFile -Encoding Ascii
 Write-Output 'Local AUBO connection saved. Start from WSL with: bash run_workstation.sh --live'

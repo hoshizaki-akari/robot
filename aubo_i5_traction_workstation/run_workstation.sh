@@ -8,7 +8,6 @@ if [[ -z "$mode" ]]; then
   if [[ "${AUBO_TRACTION_ENABLED:-false}" == true ]]; then mode=--live; else mode=--web-only; fi
 fi
 if [[ "$mode" == --restart-live ]]; then
-  bash "$PROJECT_DIR/scripts/stop_live_workstation.sh"
   restart=true
   mode=--live
 fi
@@ -23,7 +22,13 @@ if [[ "$mode" == --live ]]; then
   powershell="$(command -v powershell.exe || true)"
   powershell="${powershell:-/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe}"
   arguments=(-NoProfile -ExecutionPolicy Bypass -File "$launcher")
-  if $restart; then arguments+=(-WaitForPreviousShutdown); fi
+  if $restart; then
+    # Validate before stopping a working instance. The second invocation uses
+    # the same project-local reference and Windows credential file.
+    "$powershell" "${arguments[@]}" -CheckLocalConfig
+    bash "$PROJECT_DIR/scripts/stop_live_workstation.sh"
+    arguments+=(-WaitForPreviousShutdown)
+  fi
   exec "$powershell" "${arguments[@]}"
 fi
 if [[ "$mode" != --web-only ]]; then

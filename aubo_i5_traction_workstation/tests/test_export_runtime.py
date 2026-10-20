@@ -43,6 +43,7 @@ def test_session_zip_contains_fault_and_stop_feedback_without_page_clicks(tmp_pa
         assert json.loads(archive.read('runtime_evidence.json'))['sample_count'] == 2
         assert len(archive.read('operations.csv').decode('utf-8-sig').splitlines()) == 1
         assert 'driver_events.log' in archive.namelist()
+        assert 'component_events.log' in archive.namelist()
 
 
 def test_driver_events_are_filtered_to_the_session_timestamp(tmp_path, monkeypatch):
@@ -81,3 +82,17 @@ def test_old_session_missing_feedback_is_explicit_not_reconstructed(tmp_path):
         evidence = json.loads(archive.read('runtime_evidence.json'))
         assert evidence['sample_count'] == 0
         assert evidence['first_capture_unix_s'] is None
+
+
+def test_wrench_gate_reason_is_exported_separately_from_driver(tmp_path):
+    directory = tmp_path / 'debug/session_test_workstation'
+    directory.mkdir(parents=True)
+    directory.joinpath('wrench.log').write_text(
+        '[WARN] [1792478110.005] [wrench]: Wrench output suspended: POSE_SAMPLE_STALE\n'
+        '[WARN] [1792478210.005] [wrench]: another session\n', encoding='utf-8')
+    with patch.object(app, 'ROOT', tmp_path):
+        assert app._driver_events_in_session(1792478100, 1792478120) == ''
+        events = app._driver_events_in_session(
+            1792478100, 1792478120, ('wrench.log', 'sensor.log', 'manager.log'))
+    assert 'POSE_SAMPLE_STALE' in events
+    assert 'another session' not in events

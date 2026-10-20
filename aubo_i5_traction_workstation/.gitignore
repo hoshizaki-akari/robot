@@ -18,3 +18,5 @@ ros2_overlay/src/fairino_description/
 /ros2_overlay/src/fr_controllers/
 /ros2_overlay/reference/
 /docs/
+/config/live_calibration.local.path
+/config/commissioning.local.yaml

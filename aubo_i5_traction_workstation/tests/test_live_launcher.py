@@ -60,6 +60,20 @@ class LiveLauncherTest(unittest.TestCase):
         self.assertIn('flock -n 9', script)
         self.assertIn('wait -n', script)
 
+    def test_full_stack_uses_the_current_session_baseline(self):
+        script = SCRIPT.read_text(encoding='utf-8')
+        self.assertIn('--params-file "$PROFILE" -p session_managed_tare:=true', script)
+        config = (ROOT / 'ros2_overlay/src/fr_traction/config/traction_params.yaml').read_text()
+        self.assertIn('wrench_topic: /traction/corrected_wrench', config)
+
+    def test_direct_entry_and_restart_check_before_stopping(self):
+        entry = ROOT / 'start_workstation.sh'
+        subprocess.run(['bash', '-n', str(entry)], check=True, capture_output=True)
+        self.assertIn('run_workstation.sh" --restart-live', entry.read_text())
+        launcher = (ROOT / 'run_workstation.sh').read_text()
+        self.assertLess(launcher.index('"${arguments[@]}" -CheckLocalConfig'),
+                        launcher.index('bash "$PROJECT_DIR/scripts/stop_live_workstation.sh"'))
+
     def test_windows_background_is_explicit_and_hidden(self):
         script = (ROOT / 'scripts' / 'start_live_workstation.ps1').read_text(encoding='utf-8')
         self.assertIn('[switch]$Background', script)
