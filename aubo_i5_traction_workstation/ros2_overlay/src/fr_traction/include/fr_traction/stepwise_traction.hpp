@@ -5,6 +5,30 @@
 
 namespace fr_traction
 {
+// Raw-force Schmitt trigger: release has no filter tail; small residual force
+// cannot restart motion until a deliberate input crosses the start threshold.
+class DragReleaseGate
+{
+public:
+  void reset() {active_ = false;}
+  bool update(double force_n, double start_n, double release_n)
+  {
+    if (!std::isfinite(force_n) || !std::isfinite(start_n) ||
+      !std::isfinite(release_n) || release_n < 0.0 || start_n <= release_n)
+    {
+      active_ = false;
+    } else if (active_) {
+      if (force_n <= release_n) {active_ = false;}
+    } else if (force_n >= start_n) {
+      active_ = true;
+    }
+    return active_;
+  }
+
+private:
+  bool active_{false};
+};
+
 inline Vec3 responsive_drag_force(
   FirstOrderLowPass & filter, Vec3 & previous, const Vec3 & sample,
   double dt_s, double deadband_n)
@@ -73,7 +97,7 @@ inline ControllerOutput stepwise_traction_output(
       !std::isfinite(config.drag_deadband_n) || config.drag_deadband_n < 0.0 ||
       !std::isfinite(config.drag_maximum_speed_mps) || config.drag_maximum_speed_mps <= 0.0 ||
       config.drag_maximum_speed_mps > 0.200 ||
-      !std::isfinite(config.drag_minimum_speed_mps) || config.drag_minimum_speed_mps <= 0.0 ||
+      !std::isfinite(config.drag_minimum_speed_mps) || config.drag_minimum_speed_mps < 0.0 ||
       config.drag_maximum_speed_mps < config.drag_minimum_speed_mps ||
       !std::isfinite(config.drag_gain_mps_per_n) || config.drag_gain_mps_per_n <= 0.0)
     {

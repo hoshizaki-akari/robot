@@ -38,6 +38,7 @@ struct StepwiseTransport::Impl
   std::uint64_t last_submitted_id{0};
   std::deque<TransportResult> results;
   TransportSample latest;
+  double previous_dispatch_at{0.0};
   vendor::JointVelcAccParam cached_joint_velocity{}, cached_joint_acceleration{};
   bool joint_profile_cached{false};
   std::atomic<bool> invalidate_follow_profile{true};
@@ -249,8 +250,16 @@ struct StepwiseTransport::Impl
         orientation.z = current.command.orientation[2];
         orientation.w = current.command.orientation[3];
         vendor::wayPoint_S target{};
-        const int ik = send->robotServiceRobotIk(
-          current.seed.data(), position, orientation, target);
+        const double ik_started = steady_seconds();
+        int ik = vendor::ErrnoSucc;
+        if (current.command.hold_position) {
+          // Hold exactly the sampled joints. Re-solving a Cartesian hold pose
+          // can introduce a branch/roundoff correction on an already moving arm.
+          std::copy(current.seed.begin(), current.seed.end(), target.jointpos);
+        } else {
+          ik = send->robotServiceRobotIk(current.seed.data(), position, orientation, target);
+        }
+        const double ik_duration = steady_seconds() - ik_started;
         double maximum_joint_delta = 0.0;
         std::size_t maximum_joint_index = 0;
         std::string ik_failure;
@@ -277,6 +286,8 @@ struct StepwiseTransport::Impl
         {
           std::lock_guard<std::mutex> lock(mutex);
           latest.last_ik_result = ik;
+          latest.ik_duration_s = ik_duration;
+          latest.maximum_ik_duration_s = std::max(latest.maximum_ik_duration_s, ik_duration);
           latest.last_ik_max_joint_delta_rad = maximum_joint_delta;
           latest.last_ik_joint_index = ik == vendor::ErrnoSucc ? maximum_joint_index + 1 : 0;
           latest.last_ik_failure = ik_failure;
@@ -300,13 +311,23 @@ struct StepwiseTransport::Impl
             std::lock_guard<std::mutex> lock(mutex);
             ever_dispatched = true;
           }
+          const double dispatch_at = steady_seconds();
           const int code = current.command.follow_joint_mode ?
             send->robotServiceFollowModeJointMove(target.jointpos) :
             send->robotServiceLineMove(target, false);
+          const double motion_duration = steady_seconds() - dispatch_at;
           reply.success = code == vendor::ErrnoSucc;
           {
             std::lock_guard<std::mutex> lock(mutex);
             ++latest.motion_ack_count;
+            latest.motion_call_duration_s = motion_duration;
+            latest.maximum_motion_call_duration_s = std::max(
+              latest.maximum_motion_call_duration_s, motion_duration);
+            latest.dispatch_interval_s = previous_dispatch_at > 0.0 ?
+              dispatch_at - previous_dispatch_at : 0.0;
+            latest.maximum_dispatch_interval_s = std::max(
+              latest.maximum_dispatch_interval_s, latest.dispatch_interval_s);
+            previous_dispatch_at = current.command.hold_position ? 0.0 : dispatch_at;
             latest.last_command_id = current.command.id;
             latest.requested_speed_mps = current.command.speed_mps;
             latest.follow_joint_mode = current.command.follow_joint_mode;
@@ -330,6 +351,7 @@ struct StepwiseTransport::Impl
   {
     while (!shutdown) {
       std::uint64_t epoch;
+      bool sender_quiescent;
       {
         std::unique_lock<std::mutex> lock(mutex);
         changed.wait(lock, [this]() {return shutdown || stop_job.has_value();});
@@ -337,31 +359,40 @@ struct StepwiseTransport::Impl
         epoch = *stop_job;
         stop_job.reset();
         stop_in_progress = true;
+        sender_quiescent = !busy && !job.has_value();
       }
       TransportResult reply;
       reply.epoch = epoch;
       reply.stop = true;
       try {
-        const int first = stop->robotMoveFastStop();
-        // A dispatch can pass its cancellation check just before the first
-        // stop. Wait for that request to finish, then issue a final stop.
-        // Never acknowledge stop while an older send could still start late.
-        bool quiescent;
-        {
-          std::unique_lock<std::mutex> lock(mutex);
-          quiescent = changed.wait_for(
-            lock, std::chrono::seconds(2),
-            [this]() {return !busy || shutdown;});
-        }
-        if (!quiescent || shutdown) {
-          reply.detail = "stop unconfirmed: earlier SDK send has not quiesced";
+        if (options.single_stop_when_quiescent && sender_quiescent) {
+          // Intent was revoked before this lock snapshot. No older send can
+          // race this stop, so a second stop on another session is redundant.
+          const int code = send->robotMoveFastStop();
+          reply.success = code == vendor::ErrnoSucc;
+          reply.detail = "quiescent stop SDK result " + std::to_string(code);
         } else {
-          // Quiescent sender session gives the final stop the same request
-          // ordering as the earlier LineMove. Firmware queue-clearing semantics
-          // still need the explicit hardware checkpoint; ACK is not physical stop.
-          const int last = send->robotMoveFastStop();
-          reply.success = first == vendor::ErrnoSucc && last == vendor::ErrnoSucc;
-          reply.detail = "stop SDK results " + std::to_string(first) + "," + std::to_string(last);
+          const int first = stop->robotMoveFastStop();
+          // A dispatch can pass its cancellation check just before the first
+          // stop. Wait for that request to finish, then issue a final stop.
+          // Never acknowledge stop while an older send could still start late.
+          bool quiescent;
+          {
+            std::unique_lock<std::mutex> lock(mutex);
+            quiescent = changed.wait_for(
+              lock, std::chrono::seconds(2),
+              [this]() {return !busy || shutdown;});
+          }
+          if (!quiescent || shutdown) {
+            reply.detail = "stop unconfirmed: earlier SDK send has not quiesced";
+          } else {
+            // Quiescent sender session gives the final stop the same request
+            // ordering as the earlier LineMove. Firmware queue-clearing semantics
+            // still need the explicit hardware checkpoint; ACK is not physical stop.
+            const int last = send->robotMoveFastStop();
+            reply.success = first == vendor::ErrnoSucc && last == vendor::ErrnoSucc;
+            reply.detail = "stop SDK results " + std::to_string(first) + "," + std::to_string(last);
+          }
         }
       } catch (const std::exception & exception) {
         reply.detail = std::string("stop SDK exception: ") + exception.what();
@@ -587,6 +618,7 @@ void StepwiseTransport::cancel_and_stop(std::uint64_t epoch)
   std::lock_guard<std::mutex> lock(impl_->mutex);
   impl_->allowed = false;
   impl_->allowed_epoch = std::max(epoch, impl_->allowed_epoch.load());
+  impl_->previous_dispatch_at = 0.0;
   impl_->job.reset();
   impl_->stop_job = impl_->allowed_epoch.load();
   impl_->changed.notify_all();

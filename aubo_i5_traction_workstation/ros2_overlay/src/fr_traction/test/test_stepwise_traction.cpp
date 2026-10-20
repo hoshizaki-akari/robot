@@ -39,6 +39,40 @@ TEST(StepwiseResponse, DirectionChangeHasNoOldAxisFilterTail)
   EXPECT_DOUBLE_EQ(ft::norm(released), 0);
 }
 
+TEST(StepwiseResponse, ReleaseGateRejectsRecordedNoiseAndDoesNotRearmInHysteresisBand)
+{
+  ft::DragReleaseGate gate;
+  for (double f : {0.0, 0.14, 0.16, 0.22, 0.5, 0.64}) {
+    EXPECT_FALSE(gate.update(f, 0.65, 0.35));
+  }
+  EXPECT_TRUE(gate.update(5.5, 0.65, 0.35));
+  EXPECT_TRUE(gate.update(0.5, 0.65, 0.35));
+  EXPECT_FALSE(gate.update(0.35, 0.65, 0.35));
+  EXPECT_FALSE(gate.update(0.6, 0.65, 0.35));
+  EXPECT_TRUE(gate.update(0.65, 0.65, 0.35));
+  EXPECT_FALSE(gate.update(std::numeric_limits<double>::quiet_NaN(), 0.65, 0.35));
+}
+
+TEST(StepwiseResponse, ZeroFloorIsContinuousAndStillLightAtFiveNewtons)
+{
+  auto config = verified();
+  config.drag_deadband_n = 0.35;
+  config.drag_gain_mps_per_n = 0.008;
+  config.drag_response_scale = 4.0;
+  config.drag_minimum_speed_mps = 0.0;
+  config.drag_maximum_speed_mps = 0.15;
+  for (auto axis : {ft::Vec3{1, 0, 0}, ft::Vec3{0, -1, 0}, ft::Vec3{0, 0, 1}}) {
+    auto near = ft::stepwise_traction_output(
+      config, ft::ControlMode::DRAGGING, {}, 0,
+      axis * 0.35001);
+    ASSERT_TRUE(near.valid);
+    EXPECT_LT(ft::norm(near.linear_velocity), 0.000001);
+    auto strong =
+      ft::stepwise_traction_output(config, ft::ControlMode::DRAGGING, {}, 0, axis * 5.5);
+    EXPECT_NEAR(ft::norm(strong.linear_velocity), 0.15, 1e-12);
+  }
+}
+
 TEST(StepwiseResponse, FourfoldLowForceGainAndForceModesUsePracticalSpeeds)
 {
   auto config = verified();

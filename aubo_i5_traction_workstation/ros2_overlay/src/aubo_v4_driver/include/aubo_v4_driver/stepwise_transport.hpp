@@ -22,6 +22,7 @@ struct TransportOptions
   double state_poll_interval_s{0.1};
   bool allow_follow_mode{false};
   bool fixed_follow_profile{false};
+  bool single_stop_when_quiescent{false};
   double follow_joint_speed_radps{0.2}, follow_joint_acceleration_radps2{0.5};
 };
 struct TransportSample
@@ -39,6 +40,9 @@ struct TransportSample
   std::size_t last_ik_joint_index{0};
   std::string last_ik_failure;
   double query_duration_s{0.0};
+  double ik_duration_s{0.0}, motion_call_duration_s{0.0};
+  double dispatch_interval_s{0.0}, maximum_dispatch_interval_s{0.0};
+  double maximum_ik_duration_s{0.0}, maximum_motion_call_duration_s{0.0};
   std::string last_telemetry_failure;
   bool follow_joint_mode{false};
   std::uint64_t follow_profile_updates{0};

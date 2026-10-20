@@ -33,6 +33,7 @@ namespace aubo_v4_test_sdk
     bool bad_profile_readback {false};
     bool block_profile {false}, profile_entered {false}, release_profile {false};
     int follow_move_count {0};
+    std::array<double, 6> last_follow_target {};
     aubo_robot_namespace::JointVelcAccParam joint_velocity {}, joint_acceleration {};
     std::size_t login_index {0};
     std::vector < int > login_results {aubo_robot_namespace::ErrnoSucc};
@@ -86,6 +87,7 @@ namespace aubo_v4_test_sdk
       bad_profile_readback = false;
       block_profile = profile_entered = release_profile = false;
       follow_move_count = 0;
+      last_follow_target.fill(0.0);
       joint_velocity = {};
       joint_acceleration = {};
       login_index = 0;
@@ -381,11 +383,12 @@ public:
     int robotServiceSetNoArrivalAhead() {return 0;}
     int robotServiceSetArrivalAheadTimeMode(double) {return 0;}
 
-    int robotServiceFollowModeJointMove(double *)
+    int robotServiceFollowModeJointMove(double * target)
     {
       State & s = state();
       std::unique_lock < std::mutex > lock(s.mutex);
       ++s.follow_move_count;
+      for (unsigned i = 0; i < 6; ++i) {s.last_follow_target[i] = target[i];}
       s.line_move_entered = true;
       s.notify("follow_move_enter");
       s.changed.wait(lock, [&s]() {return !s.block_line_move || s.release_line_move;});

@@ -77,7 +77,7 @@ public:
       !std::isfinite(stepwise_config_.drag_maximum_speed_mps) ||
       stepwise_config_.drag_maximum_speed_mps > 0.200 ||
       !std::isfinite(stepwise_config_.drag_minimum_speed_mps) ||
-      stepwise_config_.drag_minimum_speed_mps <= 0.0 ||
+      stepwise_config_.drag_minimum_speed_mps < 0.0 ||
       stepwise_config_.drag_maximum_speed_mps < stepwise_config_.drag_minimum_speed_mps))
     {
       throw std::invalid_argument("invalid stepwise drag response parameters");
@@ -110,6 +110,15 @@ public:
     drag_start_force_n_ = declare_parameter("drag_start_force_n", 1.0);
     drag_release_force_n_ = declare_parameter("drag_release_force_n", 0.6);
     drag_release_confirm_s_ = declare_parameter("drag_release_confirm_s", 0.15);
+    stepwise_drag_release_gate_enabled_ = declare_parameter(
+      "stepwise_drag_release_gate_enabled",
+      false);
+    if (stepwise_drag_release_gate_enabled_ &&
+      (!std::isfinite(drag_start_force_n_) || !std::isfinite(drag_release_force_n_) ||
+      drag_release_force_n_ < 0.0 || drag_start_force_n_ <= drag_release_force_n_))
+    {
+      throw std::invalid_argument("drag start threshold must exceed the release threshold");
+    }
     drag_gain_mps_per_n_ = declare_parameter("drag_gain_mps_per_n", 0.00625);
     drag_max_speed_mps_ = declare_parameter("drag_max_speed_mps", 0.050);
     drag_max_acceleration_mps2_ = declare_parameter(
@@ -330,6 +339,8 @@ private:
       command_.mode != msg::TractionCommand::DRAG)
     {
       drag_force_filter_.reset();
+      drag_release_gate_.reset();
+      previous_drag_filtered_ = {};
     }
     command_ = message;
     last_command_at_ = now();
@@ -420,6 +431,9 @@ private:
 
   void publish_zero()
   {
+    drag_release_gate_.reset();
+    drag_force_filter_.reset();
+    previous_drag_filtered_ = {};
     publish_output(ControllerOutput{});
   }
 
@@ -481,9 +495,18 @@ private:
       publish_health(false);
       return;
     }
+    Vec3 drag_input = latest_wrench_;
+    if (mode == ControlMode::DRAGGING && stepwise_backend_ &&
+      stepwise_drag_release_gate_enabled_ &&
+      !drag_release_gate_.update(norm(drag_input), drag_start_force_n_, drag_release_force_n_))
+    {
+      drag_input = {};
+      drag_force_filter_.reset();
+      previous_drag_filtered_ = {};
+    }
     const Vec3 filtered_wrench = mode == ControlMode::DRAGGING ?
       (stepwise_backend_ ? responsive_drag_force(
-        drag_force_filter_, previous_drag_filtered_, latest_wrench_, dt_s,
+        drag_force_filter_, previous_drag_filtered_, drag_input, dt_s,
         stepwise_config_.drag_deadband_n) : drag_force_filter_.update(latest_wrench_, dt_s)) :
       force_filter_.update(latest_wrench_, dt_s);
     Vec3 controller_wrench = filtered_wrench;
@@ -664,6 +687,8 @@ private:
   FirstOrderLowPass drag_force_filter_;
   TractionControllerCore core_;
   bool stepwise_backend_{false};
+  bool stepwise_drag_release_gate_enabled_{false};
+  DragReleaseGate drag_release_gate_;
   Vec3 previous_drag_filtered_;
   StepwiseTractionConfig stepwise_config_;
   std::chrono::steady_clock::time_point last_ee_steady_at_{};

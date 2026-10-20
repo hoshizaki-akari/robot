@@ -509,6 +509,7 @@ void StepwiseScheduler::acknowledge_stop(std::uint64_t epoch, bool success, doub
   if (!success) {
     state_ = StepwiseState::FAULT;
     reason_ = "stop acknowledgement failed";
+    fault_reason_ = reason_;
     return;
   }
   stop_acknowledged_ = true;

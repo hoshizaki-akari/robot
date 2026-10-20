@@ -407,12 +407,50 @@ TEST_F(StepwiseTransportTest, FollowCachesProfilesAndAcceptsMeasuredHold)
   value.id = 3;
   value.hold_position = true;
   value.start = value.target;
-  ASSERT_TRUE(transport.submit(value, seed));
+  const std::array<double, 6> measured_joints{0.12, -0.11, 0.18, 0.03, -0.02, 0.01};
+  const int ik_before_hold = ik_call_count();
+  ASSERT_TRUE(transport.submit(value, measured_joints));
   const auto held = wait_for_motion_result(transport, 1s);
   ASSERT_TRUE(held);
   EXPECT_TRUE(held->success);
+  EXPECT_EQ(ik_call_count(), ik_before_hold);
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    EXPECT_EQ(state.last_follow_target, measured_joints);
+  }
   EXPECT_EQ(transport.sample().follow_profile_updates, 1U);
   EXPECT_EQ(stop_count(), 0);
+}
+
+TEST_F(StepwiseTransportTest, IdleSenderStopsOnceWithoutTreatingSecondStopErrorAsSuccess)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.single_stop_when_quiescent = true;
+  aubo_v4_test_sdk::set_stop_results({0, 10007});
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  transport.cancel_and_stop(1);
+  const auto stopped = wait_for_stop_result(transport, 1s);
+  ASSERT_TRUE(stopped);
+  EXPECT_TRUE(stopped->success);
+  EXPECT_EQ(stop_count(), 1);
+  EXPECT_EQ(stopped->detail, "quiescent stop SDK result 0");
+}
+
+TEST_F(StepwiseTransportTest, SingleQuiescentStopFailureRemainsAFailure)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.single_stop_when_quiescent = true;
+  aubo_v4_test_sdk::set_stop_results({10007});
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  transport.cancel_and_stop(1);
+  const auto stopped = wait_for_stop_result(transport, 1s);
+  ASSERT_TRUE(stopped);
+  EXPECT_FALSE(stopped->success);
 }
 
 TEST_F(StepwiseTransportTest, SlowStateGetterDoesNotHideCompletedDiagnosis)
@@ -479,6 +517,7 @@ TEST_F(StepwiseTransportTest, FollowStopCannotBeConfirmedBeforeSenderQuiesces)
   StepwiseTransport transport;
   auto settings = options();
   settings.allow_follow_mode = true;
+  settings.single_stop_when_quiescent = true;
   std::string error;
   ASSERT_TRUE(transport.connect(settings, error));
   {

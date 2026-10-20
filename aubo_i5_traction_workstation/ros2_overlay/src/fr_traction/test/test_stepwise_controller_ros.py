@@ -609,28 +609,31 @@ def test_production_response_tuning_reversal_and_both_force_modes(ros_runtime):
     root = Path(__file__).resolve().parents[4]
     child = ControllerProcess(verified=True, extra_parameters=[
         '--params-file', str(root / 'config/response_tuning.yaml'),
-        '-p', 'stepwise_drag_gain_mps_per_n:=0.080',
-        '-p', 'stepwise_drag_deadband_n:=0.15',
     ]).start()
     harness = ControllerHarness(ros_runtime, child)
     try:
         harness.wait_until(lambda: bool(harness.health), timeout_s=5.0)
-        for force in ((0.25, 0.0, 0.0), (-0.25, 0.0, 0.0),
-                      (0.0, 0.25, 0.0), (0.0, 0.0, -0.25)):
+        for force in ((0.8, 0.0, 0.0), (-0.8, 0.0, 0.0),
+                      (0.0, 0.8, 0.0), (0.0, 0.0, -0.8)):
             mark = harness.mark()
             harness.configure(TractionCommand.DRAG, 0.0, force)
 
             def follows(message):
                 values = (message.linear.x, message.linear.y, message.linear.z)
-                return all(abs(v - 0.128 * f) < 0.001 for v, f in zip(values, force))
+                return all(abs(v - 0.018 * f) < 0.001 for v, f in zip(values, force))
 
             harness.wait_for_stable_output(mark, follows, timeout_s=2.0)
         mark = harness.mark()
         harness.configure(TractionCommand.DRAG, 0.0, (5.5, 0.0, 0.0))
         harness.wait_for_stable_output(mark, lambda msg: abs(msg.linear.x - 0.150) < 0.001)
         mark = harness.mark()
-        harness.configure(TractionCommand.DRAG, 0.0, (0.0, 0.0, 0.0))
+        harness.configure(TractionCommand.DRAG, 0.0, (0.30, 0.0, 0.0))
         harness.wait_for_stable_output(mark, lambda msg: _norm(msg) <= ZERO_EPSILON)
+        # Recorded residual force must not re-arm the released drag session.
+        for residual in (0.14, 0.16, 0.22, 0.50, 0.64):
+            mark = harness.mark()
+            harness.configure(TractionCommand.DRAG, 0.0, (residual, 0.0, 0.0))
+            harness.wait_for_stable_output(mark, lambda msg: _norm(msg) <= ZERO_EPSILON)
         for mode in (TractionCommand.POSITIONING, TractionCommand.TRACTION):
             mark = harness.mark()
             harness.configure(mode, 10.0, (4.0, 0.0, 0.0))

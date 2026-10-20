@@ -244,6 +244,7 @@ public:
       options.state_poll_interval_s = declare_parameter("state_poll_interval_s", 0.1);
       options.allow_follow_mode = enable_follow_drag_ || enable_follow_traction_;
       options.fixed_follow_profile = fixed_follow_profile;
+      options.single_stop_when_quiescent = declare_parameter("single_stop_when_quiescent", false);
       options.follow_joint_speed_radps = 0.2 * follow_response_scale;
       options.follow_joint_acceleration_radps2 = 0.5 * follow_response_scale;
       transport_ = std::make_unique<av::StepwiseTransport>();
@@ -302,7 +303,7 @@ private:
     const auto sample = transport_->sample();
     while (const auto result = transport_->take_result()) {
       last_sdk_result_ = result->detail;
-      if (!result->stop && !result->success) {
+      if (!result->success) {
         last_motion_failure_ = result->detail;
       }
       const auto time = av::steady_seconds();
@@ -555,6 +556,12 @@ private:
       add("diagnosis_result", std::to_string(sample.diagnosis_result));
       add("state_result", std::to_string(sample.state_result));
       add("query_duration_s", std::to_string(sample.query_duration_s));
+      add("ik_duration_s", std::to_string(sample.ik_duration_s));
+      add("motion_call_duration_s", std::to_string(sample.motion_call_duration_s));
+      add("dispatch_interval_s", std::to_string(sample.dispatch_interval_s));
+      add("maximum_dispatch_interval_s", std::to_string(sample.maximum_dispatch_interval_s));
+      add("maximum_ik_duration_s", std::to_string(sample.maximum_ik_duration_s));
+      add("maximum_motion_call_duration_s", std::to_string(sample.maximum_motion_call_duration_s));
       add("telemetry_error", sample.error);
       add("last_telemetry_failure", sample.last_telemetry_failure);
       add("follow_joint_mode", sample.follow_joint_mode ? "1" : "0");
