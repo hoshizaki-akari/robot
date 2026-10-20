@@ -46,6 +46,9 @@ struct StepwiseConfig
   double arrival_tolerance_m{0.00005};
   double quiet_speed_mps{0.0002};
   unsigned int confirmation_frames{3};
+  double follow_update_interval_s{0.1};
+  double follow_horizon_s{0.15};
+  bool follow_hold_enabled{false};
 };
 
 struct StepwiseFeedback
@@ -69,6 +72,7 @@ struct StepwiseCommand
   std::array<double, 4> orientation{};
   double speed_mps{0.002};
   bool follow_joint_mode{false};
+  bool hold_position{false};
 };
 
 enum class StepwiseState

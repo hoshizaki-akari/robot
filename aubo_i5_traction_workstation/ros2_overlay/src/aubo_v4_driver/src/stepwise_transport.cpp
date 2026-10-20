@@ -38,6 +38,9 @@ struct StepwiseTransport::Impl
   std::uint64_t last_submitted_id{0};
   std::deque<TransportResult> results;
   TransportSample latest;
+  vendor::JointVelcAccParam cached_joint_velocity{}, cached_joint_acceleration{};
+  bool joint_profile_cached{false};
+  std::atomic<bool> invalidate_follow_profile{true};
 
   // These getters report this SDK session's profile, not measured physical speed.
   bool apply_profile(double speed)
@@ -63,8 +66,13 @@ struct StepwiseTransport::Impl
 
   bool apply_follow_profile(const Job & current, const vendor::wayPoint_S & target)
   {
-    if (!current.command.follow_joint_mode) {return send->robotServiceSetNoArrivalAhead() == 0;}
+    if (!current.command.follow_joint_mode) {
+      joint_profile_cached = false;
+      return send->robotServiceSetNoArrivalAhead() == 0;
+    }
     if (!options.allow_follow_mode) {return false;}
+    if (invalidate_follow_profile.exchange(false)) {joint_profile_cached = false;}
+    if (current.command.hold_position) {return joint_profile_cached;}
     double squared = 0.0;
     for (unsigned i = 0; i < 3; ++i) {
       const double delta = current.command.target[i] - current.command.start[i];
@@ -73,11 +81,23 @@ struct StepwiseTransport::Impl
     const double length = std::sqrt(squared);
     if (!std::isfinite(length) || length <= 0.0) {return false;}
     vendor::JointVelcAccParam velocity{}, acceleration{}, got_velocity{}, got_acceleration{};
+    bool unchanged = joint_profile_cached;
     for (unsigned i = 0; i < 6; ++i) {
       const double ratio = std::abs(target.jointpos[i] - current.seed[i]) / length;
-      velocity.jointPara[i] = std::clamp(ratio * current.command.speed_mps, 0.0001, 0.2);
-      acceleration.jointPara[i] = std::clamp(ratio * options.fast_acceleration_mps2, 0.001, 0.5);
+      // Keep low-speed force regulation proportional. Cache only small (5%)
+      // IK/profile changes, rather than rounding tiny velocities up to a large
+      // bucket that would unexpectedly accelerate near-target regulation.
+      velocity.jointPara[i] = std::clamp(
+        ratio * current.command.speed_mps, 0.0001, options.follow_joint_speed_radps);
+      acceleration.jointPara[i] = std::clamp(
+        ratio * options.fast_acceleration_mps2, 0.001, options.follow_joint_acceleration_radps2);
+      unchanged = unchanged &&
+        std::abs(velocity.jointPara[i] - cached_joint_velocity.jointPara[i]) <=
+        0.05 * velocity.jointPara[i] &&
+        std::abs(acceleration.jointPara[i] - cached_joint_acceleration.jointPara[i]) <=
+        0.05 * acceleration.jointPara[i];
     }
+    if (unchanged) {return true;}
     if (send->robotServiceSetGlobalMoveJointMaxVelc(velocity) != 0 ||
       send->robotServiceSetGlobalMoveJointMaxAcc(acceleration) != 0 ||
       send->robotServiceSetArrivalAheadTimeMode(0.05) != 0) {return false;}
@@ -89,6 +109,15 @@ struct StepwiseTransport::Impl
         std::abs(got_velocity.jointPara[i] - velocity.jointPara[i]) > 1e-9 ||
         std::abs(got_acceleration.jointPara[i] - acceleration.jointPara[i]) > 1e-9) {return false;}
     }
+    cached_joint_velocity = velocity;
+    cached_joint_acceleration = acceleration;
+    joint_profile_cached = true;
+    std::lock_guard<std::mutex> lock(mutex);
+    ++latest.follow_profile_updates;
+    latest.follow_joint_speed_max_radps = *std::max_element(
+      velocity.jointPara, velocity.jointPara + 6);
+    latest.follow_joint_acceleration_max_radps2 = *std::max_element(
+      acceleration.jointPara, acceleration.jointPara + 6);
     return true;
   }
 
@@ -253,7 +282,9 @@ struct StepwiseTransport::Impl
           reply.detail = ik_failure;
         } else if (!allowed || current.command.epoch != allowed_epoch || shutdown) {
           reply.detail = "stepwise command cancelled before dispatch";
-        } else if (!apply_profile(current.command.speed_mps)) {
+        } else if (!current.command.follow_joint_mode &&
+          !apply_profile(current.command.speed_mps))
+        {
           reply.detail = "stepwise SDK speed profile readback failed";
         } else if (!apply_follow_profile(current, target)) {
           reply.detail = "motion mode/joint profile rejected";
@@ -354,8 +385,6 @@ struct StepwiseTransport::Impl
       try {
         diagnosis_rc = read->robotServiceGetRobotDiagnosisInfo(raw);
         diagnosis_time = steady_seconds();
-        state_rc = read->robotServiceGetRobotCurrentState(state);
-        state_time = steady_seconds();
       } catch (...) {
         // Mark unavailable, never substitute a healthy/stopped sample.
       }
@@ -373,22 +402,33 @@ struct StepwiseTransport::Impl
       d.robot_current_alarm = raw.robotCurrentAlarm;
       d.tool_io_error = raw.toolIoError;
       std::string reason;
-      const bool good = diagnosis_rc == vendor::ErrnoSucc &&
-        state_rc == vendor::ErrnoSucc && diagnosis_is_healthy(d, &reason);
+      const bool good = diagnosis_rc == vendor::ErrnoSucc && diagnosis_is_healthy(d, &reason);
       {
         std::lock_guard<std::mutex> lock(mutex);
         latest.diagnosis_ok = good;
         latest.diagnosis_result = diagnosis_rc;
-        latest.state_result = state_rc;
-        latest.query_duration_s = steady_seconds() - query_started_at;
-        latest.feedback.healthy = good;
-        latest.feedback.stopped = state_rc == vendor::ErrnoSucc && state == vendor::RobotStopped;
         if (diagnosis_rc == vendor::ErrnoSucc) {latest.diagnosis_at = diagnosis_time;}
-        if (state_rc == vendor::ErrnoSucc) {latest.robot_state_at = state_time;}
         latest.error = good ? std::string{} : "telemetry unavailable or unhealthy: " + reason;
         if (!good) {
           latest.last_telemetry_failure = latest.error + " diagnosis_rc=" +
-            std::to_string(diagnosis_rc) + " state_rc=" + std::to_string(state_rc);
+            std::to_string(diagnosis_rc);
+        }
+      }
+      // Publish diagnosis immediately. A slow subsequent state getter must
+      // not hide an already completed, fresh diagnosis from the control tick.
+      try {
+        state_rc = read->robotServiceGetRobotCurrentState(state);
+        state_time = steady_seconds();
+      } catch (...) {}
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        latest.state_result = state_rc;
+        latest.query_duration_s = steady_seconds() - query_started_at;
+        latest.feedback.stopped = state_rc == vendor::ErrnoSucc && state == vendor::RobotStopped;
+        if (state_rc == vendor::ErrnoSucc) {latest.robot_state_at = state_time;}
+        if (state_rc != vendor::ErrnoSucc) {
+          latest.error = "robot state query failed: " + std::to_string(state_rc);
+          latest.last_telemetry_failure = latest.error;
         }
       }
       std::unique_lock<std::mutex> lock(mutex);
@@ -411,7 +451,12 @@ bool StepwiseTransport::connect(const TransportOptions & options, std::string & 
     !std::isfinite(options.acceleration_mps2) || options.acceleration_mps2 <= 0.0 ||
     options.acceleration_mps2 > 0.02 || !std::isfinite(options.maximum_joint_step_rad) ||
     !std::isfinite(options.fast_acceleration_mps2) || options.fast_acceleration_mps2 <= 0.0 ||
-    options.fast_acceleration_mps2 > 0.05 ||
+    options.fast_acceleration_mps2 > 0.5 ||
+    !std::isfinite(options.follow_joint_speed_radps) || options.follow_joint_speed_radps <= 0.0 ||
+    options.follow_joint_speed_radps > 1.0 ||
+    !std::isfinite(options.follow_joint_acceleration_radps2) ||
+    options.follow_joint_acceleration_radps2 <= 0.0 ||
+    options.follow_joint_acceleration_radps2 > 5.0 ||
     options.maximum_joint_step_rad <= 0.0 || options.maximum_joint_step_rad > 0.1 ||
     !std::isfinite(options.maximum_step_m) || options.maximum_step_m <= 0.0 ||
     options.maximum_step_m > 0.005 || !std::isfinite(options.state_poll_interval_s) ||
@@ -477,7 +522,8 @@ TransportSample StepwiseTransport::sample() const
 {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   auto value = impl_->latest;
-  value.feedback.healthy = value.diagnosis_ok && impl_->pose_valid;
+  value.feedback.healthy = value.diagnosis_ok && value.state_result == vendor::ErrnoSucc &&
+    impl_->pose_valid;
   return value;
 }
 bool StepwiseTransport::submit(const StepwiseCommand & command, const std::array<double, 6> & seed)
@@ -485,6 +531,7 @@ bool StepwiseTransport::submit(const StepwiseCommand & command, const std::array
   std::lock_guard<std::mutex> lock(impl_->mutex);
   if (impl_->shutdown || impl_->busy || impl_->job || impl_->stop_job ||
     (command.follow_joint_mode && !impl_->options.allow_follow_mode) ||
+    (command.hold_position && !command.follow_joint_mode) ||
     !std::isfinite(command.speed_mps) || command.speed_mps <= 0.0 ||
     command.speed_mps > impl_->options.speed_mps ||
     impl_->stop_in_progress || !impl_->sender.joinable() ||
@@ -509,7 +556,9 @@ bool StepwiseTransport::submit(const StepwiseCommand & command, const std::array
       return false;
     }
   }
-  if (!std::isfinite(squared_step) || squared_step <= 0.0 ||
+  if (!std::isfinite(squared_step) ||
+    (squared_step <= 0.0 && !command.hold_position) ||
+    (command.hold_position && squared_step > 1e-20) ||
     squared_step > impl_->options.maximum_step_m * impl_->options.maximum_step_m * (1.0 + 1e-9) ||
     !std::isfinite(quaternion_norm) || std::abs(quaternion_norm - 1.0) > 1e-3) {return false;}
   impl_->last_submitted_id = command.id;
@@ -522,6 +571,7 @@ bool StepwiseTransport::submit(const StepwiseCommand & command, const std::array
 void StepwiseTransport::cancel_and_stop(std::uint64_t epoch)
 {
   impl_->allowed = false;
+  impl_->invalidate_follow_profile = true;
   std::lock_guard<std::mutex> lock(impl_->mutex);
   impl_->allowed = false;
   impl_->allowed_epoch = std::max(epoch, impl_->allowed_epoch.load());

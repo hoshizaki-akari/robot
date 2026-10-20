@@ -83,12 +83,14 @@ bool wait_for_diagnosis(StepwiseTransport & transport, std::chrono::milliseconds
   std::size_t seen = 0;
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (std::chrono::steady_clock::now() < deadline) {
-    if (transport.sample().diagnosis_ok) {return true;}
+    const auto sample = transport.sample();
+    if (sample.diagnosis_ok && sample.state_result == 0) {return true;}
     const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
       deadline - std::chrono::steady_clock::now());
     aubo_v4_test_sdk::wait_for_event(seen, std::min(remaining, 50ms));
   }
-  return transport.sample().diagnosis_ok;
+  const auto sample = transport.sample();
+  return sample.diagnosis_ok && sample.state_result == 0;
 }
 
 std::optional<TransportResult> wait_for_motion_result(
@@ -378,6 +380,67 @@ TEST_F(StepwiseTransportTest, DisabledFollowCannotReachSdk)
   value.follow_joint_mode = true;
   EXPECT_FALSE(transport.submit(value, seed));
   EXPECT_EQ(ik_call_count(), 0);
+}
+
+TEST_F(StepwiseTransportTest, FollowCachesProfilesAndAcceptsMeasuredHold)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = true;
+  settings.speed_mps = 0.05;
+  settings.maximum_step_m = 0.005;
+  settings.fast_acceleration_mps2 = 0.20;
+  settings.follow_joint_speed_radps = 0.8;
+  settings.follow_joint_acceleration_radps2 = 2.0;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  auto value = command(1, 1);
+  value.follow_joint_mode = true;
+  for (unsigned id = 1; id <= 2; ++id) {
+    value.id = id;
+    ASSERT_TRUE(transport.submit(value, seed));
+    const auto result = wait_for_motion_result(transport, 1s);
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(result->success);
+  }
+  EXPECT_EQ(transport.sample().follow_profile_updates, 1U);
+  value.id = 3;
+  value.hold_position = true;
+  value.start = value.target;
+  ASSERT_TRUE(transport.submit(value, seed));
+  const auto held = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(held);
+  EXPECT_TRUE(held->success);
+  EXPECT_EQ(transport.sample().follow_profile_updates, 1U);
+  EXPECT_EQ(stop_count(), 0);
+}
+
+TEST_F(StepwiseTransportTest, SlowStateGetterDoesNotHideCompletedDiagnosis)
+{
+  auto & state = aubo_v4_test_sdk::state();
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.block_state = true;
+  }
+  StepwiseTransport transport;
+  ASSERT_TRUE(connect(transport));
+  bool entered;
+  {
+    std::unique_lock<std::mutex> lock(state.mutex);
+    entered = state.changed.wait_for(lock, 1s, [&state]() {return state.state_entered;});
+  }
+  const auto during = transport.sample();
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.release_state = true;
+    state.changed.notify_all();
+  }
+  EXPECT_TRUE(entered);
+  EXPECT_TRUE(during.diagnosis_ok);
+  EXPECT_GT(during.diagnosis_at, 0.0);
+  EXPECT_DOUBLE_EQ(during.robot_state_at, 0.0);
+  EXPECT_FALSE(during.feedback.healthy);
+  EXPECT_TRUE(wait_for_diagnosis(transport, 1s));
 }
 
 TEST_F(StepwiseTransportTest, FollowStopCannotBeConfirmedBeforeSenderQuiesces)

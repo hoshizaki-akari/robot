@@ -5,6 +5,23 @@
 
 namespace fr_traction
 {
+inline Vec3 responsive_drag_force(
+  FirstOrderLowPass & filter, Vec3 & previous, const Vec3 & sample,
+  double dt_s, double deadband_n)
+{
+  const double magnitude = norm(sample), old_magnitude = norm(previous);
+  if (magnitude <= deadband_n ||
+    (magnitude > deadband_n && old_magnitude > deadband_n &&
+    dot(sample, previous) < 0.5 * magnitude * old_magnitude))
+  {
+    // A deliberate >=60-degree direction change must not carry an old-axis
+    // filter tail through the reversal. Near-zero input also releases now.
+    filter.reset();
+  }
+  previous = filter.update(sample, dt_s);
+  return previous;
+}
+
 struct StepwiseTractionConfig
 {
   bool force_polarity_verified{false}, drag_axes_verified{false};
@@ -17,6 +34,7 @@ struct StepwiseTractionConfig
   double drag_deadband_n{1.0}, drag_gain_mps_per_n{0.001};
   double drag_maximum_speed_mps{0.002};
   double drag_minimum_speed_mps{0.0012};
+  double drag_response_scale{1.0};
   Vec3 drag_signs{1.0, 1.0, 1.0};
   Vec3 drag_axis_mask{1.0, 1.0, 1.0};
 };
@@ -61,6 +79,9 @@ inline ControllerOutput stepwise_traction_output(
     {
       return result;
     }
+    if (!std::isfinite(config.drag_response_scale) || config.drag_response_scale <= 0.0) {
+      return result;
+    }
     const Vec3 masked_wrench{
       wrench.x * config.drag_axis_mask.x,
       wrench.y * config.drag_axis_mask.y,
@@ -69,7 +90,7 @@ inline ControllerOutput stepwise_traction_output(
     if (!std::isfinite(force)) {return result;}
     if (force > config.drag_deadband_n) {
       const double speed = std::clamp(
-        config.drag_gain_mps_per_n * (force - config.drag_deadband_n),
+        config.drag_response_scale * config.drag_gain_mps_per_n * (force - config.drag_deadband_n),
         config.drag_minimum_speed_mps, config.drag_maximum_speed_mps);
       result.linear_velocity = {
         config.drag_signs.x * masked_wrench.x * speed / force,

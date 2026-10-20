@@ -24,6 +24,43 @@ TEST(StepwiseTraction, UnverifiedForceCannotMove)
   }
 }
 
+TEST(StepwiseResponse, DirectionChangeHasNoOldAxisFilterTail)
+{
+  ft::FirstOrderLowPass filter(12.0);
+  ft::Vec3 previous;
+  const auto x = ft::responsive_drag_force(filter, previous, {5, 0, 0}, 0.01, 0.15);
+  EXPECT_GT(x.x, 0);
+  const auto y = ft::responsive_drag_force(filter, previous, {0, 5, 0}, 0.01, 0.15);
+  EXPECT_DOUBLE_EQ(y.x, 0);
+  EXPECT_GT(y.y, 0);
+  const auto opposite = ft::responsive_drag_force(filter, previous, {0, -5, 0}, 0.01, 0.15);
+  EXPECT_LT(opposite.y, 0);
+  const auto released = ft::responsive_drag_force(filter, previous, {}, 0.01, 0.15);
+  EXPECT_DOUBLE_EQ(ft::norm(released), 0);
+}
+
+TEST(StepwiseResponse, FourfoldLowForceGainAndForceModesUsePracticalSpeeds)
+{
+  auto config = verified();
+  config.drag_deadband_n = 0.15;
+  config.drag_gain_mps_per_n = 0.080;
+  config.drag_maximum_speed_mps = 0.050;
+  const auto before = ft::stepwise_traction_output(
+    config, ft::ControlMode::DRAGGING, {}, 0, {0.25, 0, 0});
+  config.drag_response_scale = 4.0;
+  const auto after = ft::stepwise_traction_output(
+    config, ft::ControlMode::DRAGGING, {}, 0, {0.25, 0, 0});
+  EXPECT_NEAR(ft::norm(after.linear_velocity), 4 * ft::norm(before.linear_velocity), 1e-12);
+  config.force_gain_mps_per_n = 0.004;
+  config.maximum_speed_mps = 0.020;
+  config.force_deadband_n = 0.15;
+  for (auto mode : {ft::ControlMode::TRACTION, ft::ControlMode::POSITIONING}) {
+    const auto out = ft::stepwise_traction_output(config, mode, {1, 0, 0}, 10, {4, 0, 0});
+    ASSERT_TRUE(out.valid);
+    EXPECT_NEAR(ft::norm(out.linear_velocity), 0.020, 1e-12);
+  }
+}
+
 TEST(StepwiseTraction, ResponsiveDragDoesNotAccelerateForceModes)
 {
   auto config = verified();

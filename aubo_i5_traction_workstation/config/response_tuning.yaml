@@ -1,0 +1,20 @@
+# Response knobs for this AUBO-only workstation. Adjust here, then restart.
+aubo_v4_state_node:
+  ros__parameters:
+    enable_follow_traction: true
+    # Reversal no longer waits for a complete stop at an obsolete endpoint.
+    follow_update_interval_s: 0.03
+    follow_horizon_s: 0.08
+    follow_hold_enabled: true
+    # Original joint profile caps 0.2 rad/s and 0.5 rad/s2 multiplied by four.
+    follow_response_scale: 4.0
+    fast_line_acceleration_mps2: 0.20
+    # Diagnosis queries have their own budget; waypoint freshness stays 0.5 s.
+    telemetry_timeout_s: 1.2
+traction_controller:
+  ros__parameters:
+    # Low-force input gain is four times the previous response, before saturation.
+    drag_response_scale: 4.0
+    # Previous fallback 0.0002 m/s/N kept both modes near 1.2 mm/s.
+    stepwise_force_gain_mps_per_n: 0.004
+    stepwise_minimum_command_speed_mps: 0.0005

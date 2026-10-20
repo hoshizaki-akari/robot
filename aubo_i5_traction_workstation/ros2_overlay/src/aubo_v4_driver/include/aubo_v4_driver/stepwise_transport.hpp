@@ -21,6 +21,7 @@ struct TransportOptions
   double maximum_step_m{0.0005};
   double state_poll_interval_s{0.1};
   bool allow_follow_mode{false};
+  double follow_joint_speed_radps{0.2}, follow_joint_acceleration_radps2{0.5};
 };
 struct TransportSample
 {
@@ -39,6 +40,8 @@ struct TransportSample
   double query_duration_s{0.0};
   std::string last_telemetry_failure;
   bool follow_joint_mode{false};
+  std::uint64_t follow_profile_updates{0};
+  double follow_joint_speed_max_radps{0.0}, follow_joint_acceleration_max_radps2{0.0};
   std::string error;
 };
 struct TransportResult

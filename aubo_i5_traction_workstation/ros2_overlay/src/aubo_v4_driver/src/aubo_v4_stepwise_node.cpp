@@ -55,6 +55,15 @@ public:
     const bool connect_hardware = declare_parameter<bool>("connect_hardware", false);
     enable_motion_ = declare_parameter<bool>("enable_motion_interface", false);
     enable_follow_drag_ = declare_parameter<bool>("enable_follow_drag", false);
+    enable_follow_traction_ = declare_parameter<bool>("enable_follow_traction", false);
+    telemetry_timeout_s_ = declare_parameter("telemetry_timeout_s", 0.5);
+    const double follow_response_scale = declare_parameter("follow_response_scale", 1.0);
+    if (!std::isfinite(telemetry_timeout_s_) || telemetry_timeout_s_ <= 0.0 ||
+      !std::isfinite(follow_response_scale) || follow_response_scale < 1.0 ||
+      follow_response_scale > 5.0)
+    {
+      throw std::invalid_argument("invalid telemetry timeout or follow response scale");
+    }
     av::StepwiseConfig config;
     config.maximum_step_m = declare_parameter("maximum_step_m", 0.0005);
     config.maximum_speed_mps = declare_parameter("maximum_speed_mps", 0.050);
@@ -66,6 +75,9 @@ public:
     config.settling_time_s = declare_parameter("settling_time_s", 0.1);
     config.arrival_tolerance_m = declare_parameter("arrival_tolerance_m", 0.00005);
     config.quiet_speed_mps = declare_parameter("quiet_speed_mps", 0.0002);
+    config.follow_update_interval_s = declare_parameter("follow_update_interval_s", 0.1);
+    config.follow_horizon_s = declare_parameter("follow_horizon_s", 0.15);
+    config.follow_hold_enabled = declare_parameter("follow_hold_enabled", false);
     if (config.maximum_step_m > 0.005 || config.maximum_speed_mps > 0.050 ||
       config.horizon_s > 0.5 || config.feedback_timeout_s > 1.0)
     {
@@ -136,10 +148,17 @@ public:
           return;
         }
         if (session_enabled_) {
-          if (enable_follow_drag_ && scheduler_->state() == av::StepwiseState::READY) {
+          if ((enable_follow_drag_ || enable_follow_traction_) &&
+          scheduler_->state() == av::StepwiseState::READY)
+          {
             if (time - mode_at_ > config_.command_timeout_s) {return;}
             scheduler_->set_follow_mode(
-              last_command_mode_ == fr_traction::msg::TractionCommand::DRAG, time);
+              (enable_follow_drag_ &&
+              last_command_mode_ == fr_traction::msg::TractionCommand::DRAG) ||
+              (enable_follow_traction_ &&
+              last_command_mode_ >= fr_traction::msg::TractionCommand::PRETENSION &&
+              last_command_mode_ <= fr_traction::msg::TractionCommand::POSITIONING &&
+              last_command_mode_ != fr_traction::msg::TractionCommand::DRAG), time);
           }
           scheduler_->set_velocity({message->linear.x, message->linear.y, message->linear.z}, time);
         }
@@ -218,7 +237,9 @@ public:
       options.acceleration_mps2 = declare_parameter("line_acceleration_mps2", 0.01);
       options.fast_acceleration_mps2 = declare_parameter("fast_line_acceleration_mps2", 0.01);
       options.state_poll_interval_s = declare_parameter("state_poll_interval_s", 0.1);
-      options.allow_follow_mode = enable_follow_drag_;
+      options.allow_follow_mode = enable_follow_drag_ || enable_follow_traction_;
+      options.follow_joint_speed_radps = 0.2 * follow_response_scale;
+      options.follow_joint_acceleration_radps2 = 0.5 * follow_response_scale;
       transport_ = std::make_unique<av::StepwiseTransport>();
       connected_ = transport_->connect(options, connection_error_);
     } else {
@@ -290,8 +311,8 @@ private:
     if (sample.feedback.sequence > 0) {
       auto feedback = sample.feedback;
       feedback.healthy = feedback.healthy &&
-        time - sample.diagnosis_at <= config_.feedback_timeout_s &&
-        time - sample.robot_state_at <= config_.feedback_timeout_s;
+        time - sample.diagnosis_at <= telemetry_timeout_s_ &&
+        time - sample.robot_state_at <= telemetry_timeout_s_;
       feedback.stopped = feedback.stopped && sample.robot_state_at >= state_fence_at_;
       if (session_enabled_ && !feedback.healthy) {
         scheduler_->request_stop(time, "unhealthy or stale SDK diagnosis/state", true);
@@ -334,7 +355,7 @@ private:
       if (auto command = scheduler_->take_command(av::steady_seconds())) {
         // Keep the original session orientation even across internal zero/
         // watchdog pauses; measured IK error must not become the next target.
-        command->orientation = session_orientation_;
+        if (!command->hold_position) {command->orientation = session_orientation_;}
         double squared_travel = 0.0;
         for (std::size_t index = 0; index < 3; ++index) {
           const double delta = command->target[index] - session_origin_[index];
@@ -413,8 +434,8 @@ private:
       const auto sample = transport_->sample();
       healthy = sample.feedback.healthy &&
         time - sample.feedback.received_at <= config_.feedback_timeout_s &&
-        time - sample.diagnosis_at <= config_.feedback_timeout_s &&
-        time - sample.robot_state_at <= config_.feedback_timeout_s && !scheduler_->fault_pending();
+        time - sample.diagnosis_at <= telemetry_timeout_s_ &&
+        time - sample.robot_state_at <= telemetry_timeout_s_ && !scheduler_->fault_pending();
       health_failure.clear();
       const auto append = [&health_failure](const std::string & reason) {
           if (!health_failure.empty()) {health_failure += "; ";}
@@ -426,10 +447,10 @@ private:
       if (time - sample.feedback.received_at > config_.feedback_timeout_s) {
         append("waypoint stale");
       }
-      if (time - sample.diagnosis_at > config_.feedback_timeout_s) {
+      if (time - sample.diagnosis_at > telemetry_timeout_s_) {
         append("diagnosis stale");
       }
-      if (time - sample.robot_state_at > config_.feedback_timeout_s) {
+      if (time - sample.robot_state_at > telemetry_timeout_s_) {
         append("robot state stale");
       }
       if (scheduler_->fault_pending()) {append("motion fault: " + scheduler_->fault_reason());}
@@ -499,6 +520,11 @@ private:
     add("arrival_tolerance_m", std::to_string(config_.arrival_tolerance_m));
     add("maximum_speed_mps", std::to_string(config_.maximum_speed_mps));
     add("enable_follow_drag", enable_follow_drag_ ? "1" : "0");
+    add("enable_follow_traction", enable_follow_traction_ ? "1" : "0");
+    add("follow_update_interval_s", std::to_string(config_.follow_update_interval_s));
+    add("follow_horizon_s", std::to_string(config_.follow_horizon_s));
+    add("follow_hold_enabled", config_.follow_hold_enabled ? "1" : "0");
+    add("telemetry_timeout_s", std::to_string(telemetry_timeout_s_));
     add("session_limit_reached", session_limit_reached_ ? "1" : "0");
     add("session_limit_handoff_error", session_limit_handoff_error_);
     add("maximum_session_travel_m", std::to_string(maximum_session_travel_));
@@ -525,6 +551,11 @@ private:
       add("telemetry_error", sample.error);
       add("last_telemetry_failure", sample.last_telemetry_failure);
       add("follow_joint_mode", sample.follow_joint_mode ? "1" : "0");
+      add("follow_profile_updates", std::to_string(sample.follow_profile_updates));
+      add("follow_joint_speed_max_radps", std::to_string(sample.follow_joint_speed_max_radps));
+      add(
+        "follow_joint_acceleration_max_radps2",
+        std::to_string(sample.follow_joint_acceleration_max_radps2));
     }
     add("maximum_tick_gap_s", std::to_string(maximum_tick_gap_s_));
     diagnostic_msgs::msg::DiagnosticArray array;
@@ -547,6 +578,8 @@ private:
   std::string session_limit_handoff_error_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture session_limit_future_;
   bool enable_follow_drag_{false};
+  bool enable_follow_traction_{false};
+  double telemetry_timeout_s_{0.5};
   unsigned last_command_mode_{0};
   double mode_at_{0.0};
   std::string connection_error_, last_sdk_result_, last_motion_failure_, pose_frame_;

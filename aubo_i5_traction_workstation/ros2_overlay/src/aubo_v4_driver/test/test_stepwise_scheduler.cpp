@@ -213,6 +213,79 @@ TEST(StepwiseFollow, IdleBeforeFirstForceDoesNotConsumeProgressTimeout)
   EXPECT_TRUE(scheduler.fault_pending());
 }
 
+TEST(StepwiseFollowResponse, ReversalViaZeroUsesMeasuredHoldWithoutFastStop)
+{
+  StepwiseConfig config;
+  config.maximum_step_m = 0.005;
+  config.maximum_speed_mps = 0.050;
+  config.follow_update_interval_s = 0.03;
+  config.follow_horizon_s = 0.08;
+  config.follow_hold_enabled = true;
+  StepwiseScheduler scheduler(config);
+  arm(scheduler);
+  ASSERT_TRUE(scheduler.set_follow_mode(true, 0));
+  const auto first = send(scheduler, {0.05, 0, 0});
+  acknowledge(scheduler, first);
+  scheduler.set_feedback(feedback(2, 0.05, false, 0.02, {0.001, 0, 0}), 0.05);
+  scheduler.set_velocity({}, 0.05);
+  const auto hold = scheduler.take_command(0.051);
+  ASSERT_TRUE(hold);
+  EXPECT_TRUE(hold->hold_position);
+  EXPECT_EQ(hold->target, hold->start);
+  EXPECT_FALSE(scheduler.take_stop_request());
+  scheduler.acknowledge(hold->id, hold->epoch, true, 0.06);
+  scheduler.set_feedback(feedback(3, 0.09, false, 0.01, {0.0011, 0, 0}), 0.09);
+  scheduler.set_velocity({-0.05, 0, 0}, 0.09);
+  const auto reverse = scheduler.take_command(0.091);
+  ASSERT_TRUE(reverse);
+  EXPECT_LT(reverse->target[0], reverse->start[0]);
+  EXPECT_FALSE(reverse->hold_position);
+  EXPECT_FALSE(scheduler.take_stop_request());
+}
+
+TEST(StepwiseFollowResponse, HoldSettlesOnceAndCanRestartOnAnotherAxis)
+{
+  StepwiseConfig config;
+  config.follow_hold_enabled = true;
+  config.follow_update_interval_s = 0.03;
+  StepwiseScheduler scheduler(config);
+  arm(scheduler);
+  scheduler.set_follow_mode(true, 0);
+  auto command = send(scheduler, {0.002, 0, 0});
+  acknowledge(scheduler, command);
+  scheduler.set_feedback(feedback(2, 0.05), 0.05);
+  scheduler.set_velocity({}, 0.05);
+  auto hold = scheduler.take_command(0.051);
+  ASSERT_TRUE(hold);
+  scheduler.acknowledge(hold->id, hold->epoch, true, 0.06);
+  for (unsigned i = 3; i <= 9; ++i) {
+    const double t = 0.06 + (i - 2) * 0.03;
+    scheduler.set_feedback(feedback(i, t), t);
+    scheduler.set_velocity({}, t);
+    EXPECT_FALSE(scheduler.take_command(t));
+  }
+  EXPECT_TRUE(scheduler.motion_idle(0.27));
+  scheduler.set_velocity({0, 0.002, 0}, 0.28);
+  const auto y = scheduler.take_command(0.28);
+  ASSERT_TRUE(y);
+  EXPECT_GT(y->target[1], y->start[1]);
+}
+
+TEST(StepwiseFollowResponse, SubArrivalToleranceContinuousForceStepIsNotDiscarded)
+{
+  StepwiseConfig config;
+  config.maximum_step_m = 0.005;
+  config.arrival_tolerance_m = 0.0002;
+  config.follow_horizon_s = 0.08;
+  config.follow_update_interval_s = 0.03;
+  StepwiseScheduler scheduler(config);
+  arm(scheduler);
+  scheduler.set_follow_mode(true, 0);
+  const auto command = send(scheduler, {0.0005, 0, 0});
+  EXPECT_GT(command.target[0], 0);
+  EXPECT_NEAR(command.target[0], 0.00004, 1e-12);
+}
+
 TEST(SessionStopHandoff, RejectedAndMissingRepliesCannotBecomeNormalCompletion)
 {
   using aubo_v4_driver::StopHandoff;

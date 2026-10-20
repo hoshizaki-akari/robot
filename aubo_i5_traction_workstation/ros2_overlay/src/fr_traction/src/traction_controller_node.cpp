@@ -63,6 +63,7 @@ public:
       "stepwise_minimum_command_speed_mps", 0.0012);
     stepwise_config_.drag_deadband_n = declare_parameter("stepwise_drag_deadband_n", 1.0);
     stepwise_config_.drag_gain_mps_per_n = declare_parameter("stepwise_drag_gain_mps_per_n", 0.001);
+    stepwise_config_.drag_response_scale = declare_parameter("drag_response_scale", 1.0);
     stepwise_config_.drag_maximum_speed_mps = declare_parameter(
       "stepwise_drag_maximum_speed_mps", 0.002);
     stepwise_config_.drag_minimum_speed_mps = declare_parameter(
@@ -71,6 +72,8 @@ public:
       stepwise_config_.drag_deadband_n < 0.0 ||
       !std::isfinite(stepwise_config_.drag_gain_mps_per_n) ||
       stepwise_config_.drag_gain_mps_per_n <= 0.0 ||
+      !std::isfinite(stepwise_config_.drag_response_scale) ||
+      stepwise_config_.drag_response_scale <= 0.0 ||
       !std::isfinite(stepwise_config_.drag_maximum_speed_mps) ||
       stepwise_config_.drag_maximum_speed_mps > 0.050 ||
       !std::isfinite(stepwise_config_.drag_minimum_speed_mps) ||
@@ -479,7 +482,9 @@ private:
       return;
     }
     const Vec3 filtered_wrench = mode == ControlMode::DRAGGING ?
-      drag_force_filter_.update(latest_wrench_, dt_s) :
+      (stepwise_backend_ ? responsive_drag_force(
+        drag_force_filter_, previous_drag_filtered_, latest_wrench_, dt_s,
+        stepwise_config_.drag_deadband_n) : drag_force_filter_.update(latest_wrench_, dt_s)) :
       force_filter_.update(latest_wrench_, dt_s);
     Vec3 controller_wrench = filtered_wrench;
     if (mode == ControlMode::DRAGGING) {
@@ -659,6 +664,7 @@ private:
   FirstOrderLowPass drag_force_filter_;
   TractionControllerCore core_;
   bool stepwise_backend_{false};
+  Vec3 previous_drag_filtered_;
   StepwiseTractionConfig stepwise_config_;
   std::chrono::steady_clock::time_point last_ee_steady_at_{};
 

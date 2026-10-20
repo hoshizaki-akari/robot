@@ -602,3 +602,36 @@ def test_unverified_calibration_keeps_active_mode_zero_and_unhealthy(unverified_
         mark, lambda message: _norm(message) <= ZERO_EPSILON, timeout_s=3.0
     )
     unverified_controller.wait_for_stable_health(mark, False, timeout_s=3.0)
+
+
+def test_production_response_tuning_reversal_and_both_force_modes(ros_runtime):
+    """Exercise deployed gain knobs through real ROS controller wiring, no SDK."""
+    root = Path(__file__).resolve().parents[4]
+    child = ControllerProcess(verified=True, extra_parameters=[
+        '--params-file', str(root / 'config/response_tuning.yaml'),
+        '-p', 'stepwise_drag_gain_mps_per_n:=0.080',
+        '-p', 'stepwise_drag_deadband_n:=0.15',
+        '-p', 'stepwise_drag_maximum_speed_mps:=0.050',
+    ]).start()
+    harness = ControllerHarness(ros_runtime, child)
+    try:
+        harness.wait_until(lambda: bool(harness.health), timeout_s=5.0)
+        for force in ((0.25, 0.0, 0.0), (-0.25, 0.0, 0.0),
+                      (0.0, 0.25, 0.0), (0.0, 0.0, -0.25)):
+            mark = harness.mark()
+            harness.configure(TractionCommand.DRAG, 0.0, force)
+
+            def follows(message):
+                values = (message.linear.x, message.linear.y, message.linear.z)
+                return all(abs(v - 0.128 * f) < 0.001 for v, f in zip(values, force))
+
+            harness.wait_for_stable_output(mark, follows, timeout_s=2.0)
+        mark = harness.mark()
+        harness.configure(TractionCommand.DRAG, 0.0, (0.0, 0.0, 0.0))
+        harness.wait_for_stable_output(mark, lambda msg: _norm(msg) <= ZERO_EPSILON)
+        for mode in (TractionCommand.POSITIONING, TractionCommand.TRACTION):
+            mark = harness.mark()
+            harness.configure(mode, 10.0, (4.0, 0.0, 0.0))
+            harness.wait_for_stable_output(mark, lambda msg: msg.linear.x > 0.015)
+    finally:
+        harness.close()

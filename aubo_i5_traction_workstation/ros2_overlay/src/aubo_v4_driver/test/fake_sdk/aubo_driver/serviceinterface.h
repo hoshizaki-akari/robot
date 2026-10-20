@@ -54,6 +54,7 @@ namespace aubo_v4_test_sdk
     aubo_robot_namespace::RobotWorkMode work_mode {aubo_robot_namespace::RobotModeReal};
     int diagnosis_result {aubo_robot_namespace::ErrnoSucc};
     int state_result {aubo_robot_namespace::ErrnoSucc};
+    bool block_state {false}, state_entered {false}, release_state {false};
     aubo_robot_namespace::RobotDiagnosis diagnosis {};
     aubo_robot_namespace::RobotState robot_state {aubo_robot_namespace::RobotStopped};
     RealTimeRoadPointCallback waypoint_callback {nullptr};
@@ -107,6 +108,7 @@ namespace aubo_v4_test_sdk
       work_mode = aubo_robot_namespace::RobotModeReal;
       diagnosis_result = aubo_robot_namespace::ErrnoSucc;
       state_result = aubo_robot_namespace::ErrnoSucc;
+      block_state = state_entered = release_state = false;
       diagnosis = {};
       diagnosis.armPowerStatus = true;
       robot_state = aubo_robot_namespace::RobotStopped;
@@ -478,7 +480,10 @@ public:
     int robotServiceGetRobotCurrentState(aubo_robot_namespace::RobotState & value)
     {
       State & s = state();
-      std::lock_guard < std::mutex > lock(s.mutex);
+      std::unique_lock < std::mutex > lock(s.mutex);
+      s.state_entered = true;
+      s.notify("robot_state_enter");
+      s.changed.wait(lock, [&s]() {return !s.block_state || s.release_state;});
       value = s.robot_state;
       s.notify("robot_state");
       return s.state_result;
