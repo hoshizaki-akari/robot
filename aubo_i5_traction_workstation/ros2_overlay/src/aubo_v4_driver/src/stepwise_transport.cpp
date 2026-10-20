@@ -320,7 +320,9 @@ struct StepwiseTransport::Impl
           !apply_profile(current.command.speed_mps))
         {
           reply.detail = "stepwise SDK speed profile readback failed";
-        } else if (!apply_follow_profile(current, target)) {
+        } else if (!(current.command.hold_position && options.brake_on_hold) &&
+          !apply_follow_profile(current, target))
+        {
           reply.detail = "motion mode/joint profile rejected";
         } else if (!allowed || current.command.epoch != allowed_epoch || shutdown) {
           reply.detail = "stepwise command cancelled during profile update";
@@ -332,9 +334,12 @@ struct StepwiseTransport::Impl
             ever_dispatched = true;
           }
           const double dispatch_at = steady_seconds();
-          const int code = current.command.follow_joint_mode ?
+          const bool braking_hold = current.command.hold_position && options.brake_on_hold;
+          const int code =
+            braking_hold ? send->robotMoveFastStop() : current.command.follow_joint_mode ?
             send->robotServiceFollowModeJointMove(target.jointpos) :
             send->robotServiceLineMove(target, false);
+          if (braking_hold) {invalidate_follow_profile = true;}
           const double motion_duration = steady_seconds() - dispatch_at;
           reply.success = code == vendor::ErrnoSucc;
           {
@@ -349,10 +354,11 @@ struct StepwiseTransport::Impl
               latest.maximum_dispatch_interval_s, latest.dispatch_interval_s);
             previous_dispatch_at = current.command.hold_position ? 0.0 : dispatch_at;
             latest.last_command_id = current.command.id;
-            latest.requested_speed_mps = current.command.speed_mps;
+            latest.requested_speed_mps = braking_hold ? 0.0 : current.command.speed_mps;
             latest.follow_joint_mode = current.command.follow_joint_mode;
           }
           reply.detail = std::string(
+            braking_hold ? "hold brake SDK result " :
             current.command.follow_joint_mode ?
             "FollowModeJointMove SDK result " : "ordinary LineMove SDK result ") + std::to_string(
             code);

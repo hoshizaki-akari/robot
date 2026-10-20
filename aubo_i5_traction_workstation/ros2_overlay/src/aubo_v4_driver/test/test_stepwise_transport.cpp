@@ -489,6 +489,45 @@ TEST_F(StepwiseTransportTest, SingleQuiescentStopFailureRemainsAFailure)
   EXPECT_FALSE(stopped->success);
 }
 
+TEST_F(StepwiseTransportTest, ReleaseBrakesWithoutSendingAnyOldJointTarget)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = true;
+  settings.fixed_follow_profile = true;
+  settings.brake_on_hold = true;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  auto target = command(1, 1);
+  target.follow_joint_mode = true;
+  ASSERT_TRUE(transport.submit(target, seed));
+  const auto moved = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(moved);
+  ASSERT_TRUE(moved->success);
+  target.id = 2;
+  target.hold_position = true;
+  target.start = target.target;
+  ASSERT_TRUE(submit_when_available(transport, target, 500ms));
+  const auto held = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(held);
+  ASSERT_TRUE(held->success);
+  EXPECT_EQ(held->detail, "hold brake SDK result 0");
+  EXPECT_EQ(stop_count(), 1);
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    EXPECT_EQ(state.follow_move_count, 1);
+  }
+  target.id = 3;
+  target.hold_position = false;
+  target.start[0] -= 0.0002;
+  ASSERT_TRUE(submit_when_available(transport, target, 500ms));
+  const auto resumed = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(resumed);
+  EXPECT_TRUE(resumed->success);
+  EXPECT_EQ(transport.sample().follow_profile_updates, 2U);
+}
+
 TEST_F(StepwiseTransportTest, SlowStateGetterDoesNotHideCompletedDiagnosis)
 {
   auto & state = aubo_v4_test_sdk::state();

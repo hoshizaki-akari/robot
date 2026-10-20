@@ -10,30 +10,36 @@ aubo_v4_state_node:
     fixed_follow_profile: true
     single_stop_when_quiescent: true
     subdivide_follow_joint_steps: true
-    maximum_speed_mps: 0.150
+    brake_on_hold: true
+    maximum_speed_mps: 0.200
     session_orientation_tolerance_rad: 0.10
-    # Original joint profile caps 0.2 rad/s and 0.5 rad/s2 multiplied by four.
-    follow_response_scale: 4.0
+    # Use the supported profile range, while force maps to paced target speed.
+    follow_response_scale: 5.0
     fast_line_acceleration_mps2: 0.20
     # Diagnosis queries have their own budget; waypoint freshness stays 0.5 s.
     telemetry_timeout_s: 1.2
 traction_controller:
   ros__parameters:
     # Gain multiplier and speed ceiling remain independently adjustable.
-    drag_response_scale: 4.0
+    drag_response_scale: 1.0
     # Separate residual/noise release from deliberate input; not a force ceiling.
     stepwise_drag_release_gate_enabled: true
     drag_start_force_n: 0.65
     drag_release_force_n: 0.35
     stepwise_drag_deadband_n: 0.35
-    # Still reaches 150 mm/s at about 5 N; does not saturate at sub-newton noise.
-    stepwise_drag_gain_mps_per_n: 0.008
+    # Linear 10 mm/s/N above release deadband; saturates near 20.35 N, not 5 N.
+    stepwise_drag_gain_mps_per_n: 0.010
     stepwise_drag_minimum_speed_mps: 0.0
-    drag_max_speed_mps: 0.150
-    stepwise_drag_maximum_speed_mps: 0.150
+    drag_max_speed_mps: 0.200
+    stepwise_drag_maximum_speed_mps: 0.200
     # Previous fallback 0.0002 m/s/N kept both modes near 1.2 mm/s.
     stepwise_force_gain_mps_per_n: 0.010
     stepwise_force_deadband_n: 0.15
     stepwise_minimum_command_speed_mps: 0.0
     stepwise_force_soft_transition_n: 0.25
     stepwise_velocity_ramp_enabled: true
+traction_manager:
+  ros__parameters:
+    stop_on_load_release: true
+    load_release_force_n: 1.2
+    load_release_confirm_s: 0.25

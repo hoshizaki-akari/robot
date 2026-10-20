@@ -85,7 +85,8 @@ launch controller "$BIN/fr_traction/lib/fr_traction/traction_controller_node" \
   --ros-args -r __node:=traction_controller --params-file "$CONFIG" --params-file "$PROFILE" \
   --params-file "$PROJECT_DIR/config/response_tuning.yaml"
 launch manager "$BIN/fr_traction/lib/fr_traction/traction_manager_node" \
-  --ros-args -r __node:=traction_manager --params-file "$CONFIG" --params-file "$PROFILE"
+  --ros-args -r __node:=traction_manager --params-file "$CONFIG" --params-file "$PROFILE" \
+  --params-file "$PROJECT_DIR/config/response_tuning.yaml"
 export AUBO_RUNTIME_LOG_DIR="$SESSION_DIR"
 launch web bash run_workstation.sh --web-only
 printf 'Waiting for live robot, sensor and traction readiness. Logs: %s\n' "$SESSION_DIR"

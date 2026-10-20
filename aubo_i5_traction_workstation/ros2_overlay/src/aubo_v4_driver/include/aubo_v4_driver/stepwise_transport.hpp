@@ -24,6 +24,7 @@ struct TransportOptions
   bool fixed_follow_profile{false};
   bool single_stop_when_quiescent{false};
   bool subdivide_follow_joint_steps{false};
+  bool brake_on_hold{false};
   double follow_joint_speed_radps{0.2}, follow_joint_acceleration_radps2{0.5};
 };
 struct TransportSample

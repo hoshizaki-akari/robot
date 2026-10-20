@@ -5,6 +5,31 @@
 
 namespace fr_traction
 {
+// Arm only after a load was established. Persistent unloading ends the run,
+// rather than allowing a large target-minus-zero error to seek a lost load.
+class LoadReleaseDetector
+{
+public:
+  void reset() {armed_ = released_ = false; low_time_ = 0.0;}
+  bool update(double force, double target, double dt, double threshold, double confirm_s)
+  {
+    if (released_) {return true;}
+    if (!std::isfinite(force) || !std::isfinite(target) || target <= 0.0 ||
+      !std::isfinite(dt) || dt <= 0.0 || dt > 0.25 ||
+      !std::isfinite(threshold) || threshold <= 0.0 ||
+      !std::isfinite(confirm_s) || confirm_s <= 0.0) {low_time_ = 0.0; return false;}
+    const double release = std::min(threshold, 0.25 * target);
+    if (force >= std::max(2.0 * release, 0.4 * target)) {armed_ = true;}
+    low_time_ = armed_ && force <= release ? low_time_ + dt : 0.0;
+    released_ = low_time_ >= confirm_s;
+    return released_;
+  }
+
+private:
+  bool armed_{false}, released_{false};
+  double low_time_{0.0};
+};
+
 // Raw-force Schmitt trigger: release has no filter tail; small residual force
 // cannot restart motion until a deliberate input crosses the start threshold.
 class DragReleaseGate

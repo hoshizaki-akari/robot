@@ -24,6 +24,26 @@ TEST(StepwiseTraction, UnverifiedForceCannotMove)
   }
 }
 
+TEST(StepwiseResponse, ReleasedLoadMustNotSeekTargetAgainUntilNewRun)
+{
+  ft::LoadReleaseDetector detector;
+  for (unsigned i = 0; i < 100; ++i) {
+    EXPECT_FALSE(detector.update(0.7, 14.0, 0.01, 1.2, 0.25));
+  }
+  EXPECT_FALSE(detector.update(12.0, 14.0, 0.01, 1.2, 0.25));
+  for (unsigned i = 0; i < 15; ++i) {
+    EXPECT_FALSE(detector.update(0.8, 14.0, 0.01, 1.2, 0.25));
+  }
+  EXPECT_FALSE(detector.update(3.0, 14.0, 0.01, 1.2, 0.25));
+  for (unsigned i = 0; i < 30; ++i) {
+    detector.update(0.8, 14.0, 0.01, 1.2, 0.25);
+  }
+  EXPECT_TRUE(detector.update(0.8, 14.0, 0.01, 1.2, 0.25));
+  EXPECT_TRUE(detector.update(10.0, 14.0, 0.01, 1.2, 0.25));
+  detector.reset();
+  EXPECT_FALSE(detector.update(0.8, 14.0, 0.01, 1.2, 0.25));
+}
+
 TEST(StepwiseResponse, ForceApproachIsFasterButContinuousAtHoldBand)
 {
   auto config = verified();

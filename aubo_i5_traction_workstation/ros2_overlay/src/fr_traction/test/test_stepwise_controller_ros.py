@@ -12,6 +12,7 @@ import rclpy
 from geometry_msgs.msg import Twist, WrenchStamped
 from fr_traction.msg import EndEffectorState, PositionControlDiagnostics, TractionCommand
 from rclpy.node import Node
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool
 
@@ -122,6 +123,8 @@ class ControllerHarness:
         """Create the isolated test node around one owned controller process."""
         self.controller = controller
         self.node = Node("stepwise_controller_ros_test", context=runtime)
+        self.executor = SingleThreadedExecutor(context=runtime)
+        self.executor.add_node(self.node)
         input_qos = _reliable_qos()
         output_qos = _reliable_qos()
         health_qos = _reliable_qos(depth=1, transient_local=True)
@@ -168,7 +171,9 @@ class ControllerHarness:
     def close(self):
         """Stop the child and release this test node."""
         self.controller.stop()
+        self.executor.remove_node(self.node)
         self.node.destroy_node()
+        self.executor.shutdown()
 
     def configure(
         self,
@@ -245,7 +250,7 @@ class ControllerHarness:
                 raise AssertionError("controller subprocess exited during test")
             self.publish_inputs()
             remaining = max(0.0, deadline - time.monotonic())
-            rclpy.spin_once(self.node, timeout_sec=min(0.02, remaining))
+            self.executor.spin_once(timeout_sec=min(0.02, remaining))
             if predicate():
                 return
         raise AssertionError("timed out waiting for fresh controller state")
@@ -308,11 +313,11 @@ def ros_runtime():
         "ROS_LOCALHOST_ONLY": "1",
         "RMW_IMPLEMENTATION": "rmw_cyclonedds_cpp",
     })
-    if not rclpy.ok():
-        rclpy.init(args=None)
-    yield rclpy.get_default_context()
-    if rclpy.ok():
-        rclpy.shutdown()
+    context = rclpy.context.Context()
+    rclpy.init(args=None, context=context, domain_id=int(DOMAIN_ID))
+    yield context
+    if context.ok():
+        rclpy.shutdown(context=context)
 
 
 @pytest.fixture
@@ -620,12 +625,14 @@ def test_production_response_tuning_reversal_and_both_force_modes(ros_runtime):
 
             def follows(message):
                 values = (message.linear.x, message.linear.y, message.linear.z)
-                return all(abs(v - 0.018 * f) < 0.001 for v, f in zip(values, force))
+                return all(abs(v - 0.005625 * f) < 0.0001 for v, f in zip(values, force))
 
             harness.wait_for_stable_output(mark, follows, timeout_s=2.0)
-        mark = harness.mark()
-        harness.configure(TractionCommand.DRAG, 0.0, (5.5, 0.0, 0.0))
-        harness.wait_for_stable_output(mark, lambda msg: abs(msg.linear.x - 0.150) < 0.001)
+        for force in (3.0, 5.0, 10.0, 15.0, 20.0, 25.0):
+            mark = harness.mark()
+            harness.configure(TractionCommand.DRAG, 0.0, (force, 0.0, 0.0))
+            expected = min(0.2, 0.01 * (force - 0.35))
+            harness.wait_for_stable_output(mark, lambda msg: abs(msg.linear.x - expected) < 0.001)
         mark = harness.mark()
         harness.configure(TractionCommand.DRAG, 0.0, (0.30, 0.0, 0.0))
         harness.wait_for_stable_output(mark, lambda msg: _norm(msg) <= ZERO_EPSILON)

@@ -245,6 +245,7 @@ public:
       options.allow_follow_mode = enable_follow_drag_ || enable_follow_traction_;
       options.fixed_follow_profile = fixed_follow_profile;
       options.single_stop_when_quiescent = declare_parameter("single_stop_when_quiescent", false);
+      options.brake_on_hold = declare_parameter("brake_on_hold", false);
       options.subdivide_follow_joint_steps =
         declare_parameter("subdivide_follow_joint_steps", false);
       options.follow_joint_speed_radps = 0.2 * follow_response_scale;
