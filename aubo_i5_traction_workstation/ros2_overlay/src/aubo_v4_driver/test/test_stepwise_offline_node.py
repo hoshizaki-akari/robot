@@ -13,7 +13,7 @@ from controller_manager_msgs.srv import SwitchController
 from diagnostic_msgs.msg import DiagnosticArray
 from fr_traction.msg import EndEffectorState
 from geometry_msgs.msg import Twist
-from rclpy.qos import DurabilityPolicy, QoSProfile
+from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
@@ -51,6 +51,7 @@ def test_offline_node_refuses_motion_and_publishes_no_fake_pose(monkeypatch):
     process = subprocess.Popen([
         os.environ["AUBO_STEPWISE_EXECUTABLE"], "--ros-args",
         "-p", "connect_hardware:=false", "-p", "enable_motion_interface:=true",
+        "-p", "maximum_speed_mps:=0.05", "-p", "maximum_session_travel_m:=0.0",
     ], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     rclpy.init()
     node = rclpy.create_node("stepwise_explicit_offline_test")
@@ -63,7 +64,8 @@ def test_offline_node_refuses_motion_and_publishes_no_fake_pose(monkeypatch):
                 seen["diagnostic"] = status
 
     subscriptions = [
-        node.create_subscription(DiagnosticArray, "/diagnostics", diagnostic, qos),
+        node.create_subscription(
+            DiagnosticArray, "/diagnostics", diagnostic, qos_profile_sensor_data),
         node.create_subscription(
             Bool, "/controller_manager/healthy", lambda x: seen.update(healthy=x.data), qos),
         node.create_subscription(
@@ -93,6 +95,10 @@ def test_offline_node_refuses_motion_and_publishes_no_fake_pose(monkeypatch):
         assert seen["idle"] is False
         assert seen["identity"] == ""
         assert "OFFLINE" in seen["diagnostic"].message
+        values = {item.key: item.value for item in seen["diagnostic"].values}
+        assert float(values["maximum_speed_mps"]) == 0.05
+        assert float(values["maximum_session_travel_m"]) == 0.0
+        assert "OFFLINE" in values["last_hardware_health_failure"]
         assert switch.wait_for_service(timeout_sec=2)
         request = SwitchController.Request()
         request.start_controllers = ["cartesian_velocity_controller"]

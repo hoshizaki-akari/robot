@@ -29,12 +29,14 @@ traction_controller:
     stepwise_drag_axis_mask: [1.0, 1.0, 1.0]
     # AUBO stepwise drag response; independent of the FR5 streaming parameters.
     # Match FR5's 0.15 N force deadband; make sub-newton hand input respond
-    # sooner while preserving the AUBO-specific 30 mm/s drag ceiling.
+    # sooner. Task speed ceilings match the original FR5 workstation.
     stepwise_drag_deadband_n: 0.15
-    # 0.25 N -> 6 mm/s, 0.5 N -> 21 mm/s, >=0.65 N -> 30 mm/s.
-    stepwise_drag_gain_mps_per_n: 0.060
+    # 0.25 N -> 8 mm/s, 0.5 N -> 28 mm/s, >=0.775 N -> 50 mm/s.
+    stepwise_drag_gain_mps_per_n: 0.080
     stepwise_drag_minimum_speed_mps: 0.005
-    stepwise_drag_maximum_speed_mps: 0.030
+    stepwise_drag_maximum_speed_mps: 0.050
+    stepwise_maximum_speed_mps: 0.020
+    stepwise_force_deadband_n: 0.15
     # Never reuse the FR5 tool-Z inversion on the AUBO i5.
     traction_sign_x: 1.0
     traction_sign_y: 1.0
@@ -135,6 +137,7 @@ traction_manager:
     # A single spike does not stop motion. The measured rope tension must stay
     # above 150 N continuously for 0.2 s before a hard-overforce stop is latched.
     hard_overforce_n: 150.0
+    drag_hard_overforce_n: 150.0
     hard_overforce_confirm_s: 0.20
     # Two-stage stale-data handling is retained from the baseline as an
     # initial guard; AUBO feedback timing must be measured before release.

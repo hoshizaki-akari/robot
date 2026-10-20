@@ -57,7 +57,7 @@ public:
     enable_follow_drag_ = declare_parameter<bool>("enable_follow_drag", false);
     av::StepwiseConfig config;
     config.maximum_step_m = declare_parameter("maximum_step_m", 0.0005);
-    config.maximum_speed_mps = declare_parameter("maximum_speed_mps", 0.030);
+    config.maximum_speed_mps = declare_parameter("maximum_speed_mps", 0.050);
     config.horizon_s = declare_parameter("planning_horizon_s", 0.1);
     config.feedback_timeout_s = declare_parameter("feedback_timeout_s", 0.5);
     config.command_timeout_s = declare_parameter("command_timeout_s", 0.25);
@@ -66,7 +66,7 @@ public:
     config.settling_time_s = declare_parameter("settling_time_s", 0.1);
     config.arrival_tolerance_m = declare_parameter("arrival_tolerance_m", 0.00005);
     config.quiet_speed_mps = declare_parameter("quiet_speed_mps", 0.0002);
-    if (config.maximum_step_m > 0.005 || config.maximum_speed_mps > 0.030 ||
+    if (config.maximum_step_m > 0.005 || config.maximum_speed_mps > 0.050 ||
       config.horizon_s > 0.5 || config.feedback_timeout_s > 1.0)
     {
       throw std::invalid_argument("stepwise prototype step/speed/timing limits exceeded");
@@ -74,11 +74,10 @@ public:
     config_ = config;
     scheduler_ = std::make_unique<av::StepwiseScheduler>(config_);
     pose_frame_ = declare_parameter<std::string>("pose_frame_id", "base_link");
-    maximum_session_travel_ = declare_parameter("maximum_session_travel_m", 0.5);
-    if (!std::isfinite(maximum_session_travel_) || maximum_session_travel_ <= 0.0 ||
-      maximum_session_travel_ > 0.5)
-    {
-      throw std::invalid_argument("maximum_session_travel_m must be in (0,0.5]");
+    maximum_session_travel_ = declare_parameter("maximum_session_travel_m", 0.0);
+    if (!std::isfinite(maximum_session_travel_) || maximum_session_travel_ < 0.0) {
+      throw std::invalid_argument(
+              "maximum_session_travel_m must be nonnegative; zero disables the session bubble");
     }
     session_orientation_tolerance_rad_ = declare_parameter(
       "session_orientation_tolerance_rad", 0.03);
@@ -112,8 +111,7 @@ public:
       "/aubo_i5/stepwise_phase", rclcpp::QoS(
         1).transient_local());
     diagnostic_pub_ = create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
-      "/diagnostics", rclcpp::QoS(
-        1).transient_local());
+      "/diagnostics", rclcpp::SensorDataQoS());
     session_limit_client_ = create_client<std_srvs::srv::Trigger>("/traction/session_limit_stop");
     mode_sub_ = create_subscription<fr_traction::msg::TractionCommand>(
       "/traction/command", rclcpp::QoS(1).reliable(),
@@ -339,7 +337,7 @@ private:
           const double delta = command->target[index] - session_origin_[index];
           squared_travel += delta * delta;
         }
-        if (std::sqrt(squared_travel) > maximum_session_travel_) {
+        if (maximum_session_travel_ > 0.0 && std::sqrt(squared_travel) > maximum_session_travel_) {
           session_enabled_ = false;
           session_limit_reached_ = true;
           scheduler_->request_stop(
@@ -407,13 +405,39 @@ private:
   void publish_status(double time)
   {
     bool healthy = false;
+    std::string health_failure = connection_error_;
     if (connected_) {
       const auto sample = transport_->sample();
       healthy = sample.feedback.healthy &&
         time - sample.feedback.received_at <= config_.feedback_timeout_s &&
         time - sample.diagnosis_at <= config_.feedback_timeout_s &&
         time - sample.robot_state_at <= config_.feedback_timeout_s && !scheduler_->fault_pending();
+      health_failure.clear();
+      const auto append = [&health_failure](const std::string & reason) {
+          if (!health_failure.empty()) {health_failure += "; ";}
+          health_failure += reason;
+        };
+      if (!sample.feedback.healthy) {
+        append("SDK pose/diagnosis unhealthy: " + sample.error);
+      }
+      if (time - sample.feedback.received_at > config_.feedback_timeout_s) {
+        append("waypoint stale");
+      }
+      if (time - sample.diagnosis_at > config_.feedback_timeout_s) {
+        append("diagnosis stale");
+      }
+      if (time - sample.robot_state_at > config_.feedback_timeout_s) {
+        append("robot state stale");
+      }
+      if (scheduler_->fault_pending()) {append("motion fault: " + scheduler_->fault_reason());}
     }
+    const bool health_changed = !health_status_published_ || healthy != published_healthy_;
+    if (!healthy && health_changed) {
+      last_health_failure_ = health_failure;
+      RCLCPP_ERROR(get_logger(), "AUBO hardware health lost: %s", health_failure.c_str());
+    }
+    health_status_published_ = true;
+    published_healthy_ = healthy;
     std_msgs::msg::Bool health;
     health.data = healthy;
     health_pub_->publish(health);
@@ -433,6 +457,12 @@ private:
     std_msgs::msg::String phase;
     phase.data = state_name(scheduler_->state());
     phase_pub_->publish(phase);
+    // Hardware health is still published every tick; bounded diagnostic traffic
+    // avoids flooding the Python bridge with a large reliable DDS sample.
+    if (!health_changed && phase.data == last_diagnostic_phase_ &&
+      time - last_diagnostic_at_ < 0.1) {return;}
+    last_diagnostic_at_ = time;
+    last_diagnostic_phase_ = phase.data;
     diagnostic_msgs::msg::DiagnosticStatus status;
     status.name = "aubo_v4_driver/state";
     status.hardware_id = "AUBOPE V4 stepwise";
@@ -458,6 +488,8 @@ private:
     add("epoch", std::to_string(scheduler_->epoch()));
     add("last_sdk_result", last_sdk_result_);
     add("fault_reason", scheduler_->fault_reason());
+    add("health_failure_reason", health_failure);
+    add("last_hardware_health_failure", last_health_failure_);
     add("planning_horizon_s", std::to_string(config_.horizon_s));
     add("maximum_step_m", std::to_string(config_.maximum_step_m));
     add("arrival_tolerance_m", std::to_string(config_.arrival_tolerance_m));
@@ -497,6 +529,9 @@ private:
   std::unique_ptr<av::StepwiseScheduler> scheduler_;
   std::unique_ptr<av::StepwiseTransport> transport_;
   bool connected_{false}, enable_motion_{false}, session_enabled_{false};
+  bool health_status_published_{false}, published_healthy_{false};
+  double last_diagnostic_at_{0.0};
+  std::string last_diagnostic_phase_, last_health_failure_;
   bool session_limit_reached_{false};
   bool session_limit_handoff_pending_{false};
   double session_limit_deadline_{0.0};
@@ -511,7 +546,7 @@ private:
   std::uint64_t intent_sequence_{0}, resume_after_intent_{0}, published_sequence_{0};
   double intent_at_{0.0}, state_fence_at_{0.0};
   double last_tick_at_{0.0}, maximum_tick_gap_s_{0.0};
-  double maximum_session_travel_{0.5};
+  double maximum_session_travel_{0.0};
   double session_orientation_tolerance_rad_{0.03};
   std::array<double, 3> session_origin_{};
   std::array<double, 4> session_orientation_{0, 0, 0, 1};

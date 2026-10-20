@@ -45,8 +45,8 @@ def generate_launch_description():
                 "maximum_step_m": 0.005,
                 "planning_horizon_s": 0.5,
                 "arrival_tolerance_m": 0.0002,
-                "maximum_speed_mps": 0.030,
-                "maximum_session_travel_m": 0.5,
+                "maximum_speed_mps": 0.050,
+                "maximum_session_travel_m": 0.0,
                 "session_orientation_tolerance_rad": 0.03,
             }],
         ),
@@ -74,7 +74,6 @@ def generate_launch_description():
                 "stepwise_drag_axes_verified": boolean("drag_axes_verified"),
                 "stepwise_axis_sign": ParameterValue(
                     LaunchConfiguration("axis_sign"), value_type=float),
-                "stepwise_maximum_speed_mps": 0.002,
                 "stepwise_drag_axis_mask": ParameterValue(LaunchConfiguration("drag_axis_mask")),
             }],
         ),
@@ -84,9 +83,6 @@ def generate_launch_description():
             parameters=[config, {
                 "aubo_port_verified": boolean("aubo_port_verified"),
                 "require_measured_motion_idle": True,
-                "return_speed_mps": 0.002,
-                "direction_correction_max_speed_mps": 0.002,
-                "validated_target_max_n": 5.0,
             }],
         ),
     ])

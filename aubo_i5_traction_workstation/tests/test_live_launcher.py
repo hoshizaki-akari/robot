@@ -4,6 +4,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,6 +12,16 @@ SCRIPT = ROOT / 'scripts' / 'run_live_workstation.sh'
 
 
 class LiveLauncherTest(unittest.TestCase):
+    def test_mirrored_network_datagrams_stay_below_mtu(self):
+        config = ROOT / 'config' / 'cyclonedds_local.xml'
+        namespace = {'c': 'https://cdds.io/config'}
+        general = ET.parse(config).find('c:Domain/c:General', namespace)
+        maximum = int(general.find('c:MaxMessageSize', namespace).text.rstrip('B'))
+        fragment = int(general.find('c:FragmentSize', namespace).text.rstrip('B'))
+        self.assertLessEqual(maximum + 28, 1500)
+        self.assertLess(fragment, maximum)
+        self.assertIn('export CYCLONEDDS_URI=', SCRIPT.read_text(encoding='utf-8'))
+
     def test_shell_syntax(self):
         subprocess.run(['bash', '-n', str(SCRIPT)], check=True, capture_output=True)
 

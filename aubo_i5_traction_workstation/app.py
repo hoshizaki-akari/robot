@@ -8,6 +8,7 @@ import csv
 import io
 import json
 import os
+import re
 import signal
 import tempfile
 import threading
@@ -460,6 +461,31 @@ def export_latest() -> Response:
     )
 
 
+def _driver_events_in_session(started: float, ended: float) -> str:
+    directory = os.environ.get("AUBO_RUNTIME_LOG_DIR")
+    debug_root = (ROOT / "debug").resolve()
+    candidates = set(debug_root.glob("session_*_workstation/robot.log"))
+    if directory:
+        candidates.add(Path(directory) / "robot.log")
+    events = []
+    for candidate in sorted(candidates):
+        log_path = candidate.resolve()
+        try:
+            relative = log_path.relative_to(debug_root)
+            selected = []
+            with log_path.open(encoding="utf-8", errors="replace") as stream:
+                for line in stream:
+                    stamp = re.search(r"\[(\d{10}\.\d+)\]", line)
+                    if stamp and started - 1.0 <= float(stamp.group(1)) <= ended:
+                        selected.append(line)
+            if selected:
+                events.append(f"[driver log: {relative.as_posix()}]\n")
+                events.extend(selected)
+        except (ValueError, OSError):
+            continue
+    return "".join(events)
+
+
 @app.get("/api/traction/export/session/{session_id}")
 def export_session(session_id: str) -> FileResponse:
     if not session_id.startswith("session_") or not session_id[8:].isdigit():
@@ -487,6 +513,7 @@ def export_session(session_id: str) -> FileResponse:
     started = _stamp_value(summary.get("start_time"))
     ended = _stamp_value(summary.get("end_time"))
     runtime_rows = runtime_recorder.rows_between(started, ended + 10.0)
+    driver_events = _driver_events_in_session(started, ended + 10.0)
     evidence = {
         "format_version": 1,
         "source": "periodic real ROS bridge snapshots, not reconstructed commands",
@@ -495,6 +522,7 @@ def export_session(session_id: str) -> FileResponse:
         "session_end_unix_s": ended,
         "post_session_context_s": 10.0,
         "sample_count": len(runtime_rows),
+        "driver_events_available": bool(driver_events),
         "first_capture_unix_s": runtime_rows[0]["timestamp_wall"] if runtime_rows else None,
         "last_capture_unix_s": runtime_rows[-1]["timestamp_wall"] if runtime_rows else None,
         "recording_status_at_export": dict(runtime_recording_status),
@@ -543,6 +571,7 @@ def export_session(session_id: str) -> FileResponse:
             "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in runtime_rows),
         )
         archive.writestr("runtime_evidence.json", json.dumps(evidence, ensure_ascii=False, indent=2))
+        archive.writestr("driver_events.log", driver_events)
         archive.writestr(
             "README.txt",
             "traction.csv：从初始校准到结束的完整时序数据，包含目标力、总张力、"
@@ -552,6 +581,7 @@ def export_session(session_id: str) -> FileResponse:
             "runtime_feedback.jsonl：约10Hz真实运行快照，包括身份验证标志、关节实测值、"
             "数据年龄、驱动阶段、motion_idle、力和末端位置；包含结束后最多10秒上下文。\n"
             "runtime_evidence.json：记录覆盖范围及导出时记录器状态；空记录不是停稳证明。\n"
+            "driver_events.log：本次会话期间驱动健康检查失败等事件；空文件表示没有捕获到对应事件。\n"
             "traction.csv中的command/velocity_cmd为命令；ee_v*_mps、ee_w*_radps为实测。\n"
             "历史旧记录可能没有新增反馈文件或列；请勿据此推断其已经验收通过。\n",
         )

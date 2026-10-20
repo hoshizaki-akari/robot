@@ -54,7 +54,7 @@ TEST(StepwiseTraction, ResponsiveDragDoesNotAccelerateForceModes)
         ft::stepwise_traction_output(
           config, mode, {1, 0, 0}, 20, {}).linear_velocity), 0.002);
   }
-  config.drag_maximum_speed_mps = 0.031;
+  config.drag_maximum_speed_mps = 0.051;
   EXPECT_FALSE(
     ft::stepwise_traction_output(
       config, ft::ControlMode::DRAGGING, {}, 0, {2, 0, 0}).valid);
@@ -91,9 +91,9 @@ TEST(StepwiseTraction, LightDragImprovesLowForceOnAllAxesWithinRaisedCeiling)
 {
   auto config = verified();
   config.drag_deadband_n = 0.15;
-  config.drag_gain_mps_per_n = 0.060;
+  config.drag_gain_mps_per_n = 0.080;
   config.drag_minimum_speed_mps = 0.005;
-  config.drag_maximum_speed_mps = 0.030;
+  config.drag_maximum_speed_mps = 0.050;
   for (const auto & axis : {
     ft::Vec3{1, 0, 0}, ft::Vec3{-1, 0, 0}, ft::Vec3{0, 1, 0},
     ft::Vec3{0, -1, 0}, ft::Vec3{0, 0, 1}, ft::Vec3{0, 0, -1}})
@@ -103,14 +103,14 @@ TEST(StepwiseTraction, LightDragImprovesLowForceOnAllAxesWithinRaisedCeiling)
         config, ft::ControlMode::DRAGGING, {}, 0, axis * force);
       ASSERT_TRUE(output.valid);
       const double expected = force <= 0.15 ? 0.0 :
-        std::clamp(0.060 * (force - 0.15), 0.005, 0.030);
+        std::clamp(0.080 * (force - 0.15), 0.005, 0.050);
       EXPECT_NEAR(ft::norm(output.linear_velocity), expected, 1e-12);
       if (expected > 0.0) {EXPECT_GT(ft::dot(output.linear_velocity, axis), 0.0);}
     }
   }
   const auto light_push = ft::stepwise_traction_output(
     config, ft::ControlMode::DRAGGING, {}, 0, {0.25, 0.0, 0.0});
-  EXPECT_NEAR(ft::norm(light_push.linear_velocity), 0.006, 1e-12);
+  EXPECT_NEAR(ft::norm(light_push.linear_velocity), 0.008, 1e-12);
 }
 
 TEST(StepwiseTraction, UnverifiedDragCannotMove)
@@ -288,10 +288,14 @@ TEST(StepwiseTraction, SmallErrorProducesResolvableStepNotSilentStall)
 }
 TEST(StepwiseTraction, CombinedSpeedIsNormBounded)
 {
-  const auto out = ft::stepwise_traction_output(
-    verified(), ft::ControlMode::TRACTION, {1, 0, 0}, 100, {}, {0, 1, 1});
-  EXPECT_TRUE(out.valid);
-  EXPECT_LE(ft::norm(out.linear_velocity), 0.002 + 1e-12);
+  for (const double ceiling : {0.002, 0.020}) {
+    auto config = verified();
+    config.maximum_speed_mps = ceiling;
+    const auto out = ft::stepwise_traction_output(
+      config, ft::ControlMode::TRACTION, {1, 0, 0}, 100, {}, {0, 1, 1});
+    EXPECT_TRUE(out.valid);
+    EXPECT_LE(ft::norm(out.linear_velocity), ceiling + 1e-12);
+  }
 }
 TEST(StepwiseTraction, ReleasingIsLateralOrReturnOnly)
 {

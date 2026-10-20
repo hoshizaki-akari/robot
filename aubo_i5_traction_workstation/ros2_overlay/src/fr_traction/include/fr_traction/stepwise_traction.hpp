@@ -31,7 +31,7 @@ inline ControllerOutput stepwise_traction_output(
   if (mode == ControlMode::DISABLED) {result.valid = true; return result;}
   if (!finite(wrench) || !finite(lateral_velocity) || !std::isfinite(target_force_n) ||
     target_force_n < 0.0 || !std::isfinite(config.maximum_speed_mps) ||
-    config.maximum_speed_mps <= 0.0 || config.maximum_speed_mps > 0.005 ||
+    config.maximum_speed_mps <= 0.0 || config.maximum_speed_mps > 0.020 ||
     !std::isfinite(config.minimum_command_speed_mps) || config.minimum_command_speed_mps <= 0.0 ||
     config.minimum_command_speed_mps > config.maximum_speed_mps)
   {
@@ -54,7 +54,7 @@ inline ControllerOutput stepwise_traction_output(
       (config.drag_axis_mask.x + config.drag_axis_mask.y + config.drag_axis_mask.z < 1.0) ||
       !std::isfinite(config.drag_deadband_n) || config.drag_deadband_n < 0.0 ||
       !std::isfinite(config.drag_maximum_speed_mps) || config.drag_maximum_speed_mps <= 0.0 ||
-      config.drag_maximum_speed_mps > 0.030 ||
+      config.drag_maximum_speed_mps > 0.050 ||
       !std::isfinite(config.drag_minimum_speed_mps) || config.drag_minimum_speed_mps <= 0.0 ||
       config.drag_maximum_speed_mps < config.drag_minimum_speed_mps ||
       !std::isfinite(config.drag_gain_mps_per_n) || config.drag_gain_mps_per_n <= 0.0)

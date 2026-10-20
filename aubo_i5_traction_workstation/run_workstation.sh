@@ -1,9 +1,29 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-# The web server only subscribes to the isolated AUBO ROS graph. It never
-# starts the controller or opens a vendor SDK connection by itself.
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+mode="${1:-}"
+restart=false
+if [[ -z "$mode" ]]; then
+  if [[ "${AUBO_TRACTION_ENABLED:-false}" == true ]]; then mode=--live; else mode=--web-only; fi
+fi
+if [[ "$mode" == --restart-live ]]; then
+  bash "$PROJECT_DIR/scripts/stop_live_workstation.sh"
+  restart=true
+  mode=--live
+fi
+if [[ "$mode" == --live ]]; then
+  launcher="$(wslpath -w "$PROJECT_DIR/scripts/start_live_workstation.ps1")"
+  powershell="$(command -v powershell.exe || true)"
+  powershell="${powershell:-/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe}"
+  arguments=(-NoProfile -ExecutionPolicy Bypass -File "$launcher")
+  if $restart; then arguments+=(-WaitForPreviousShutdown); fi
+  exec "$powershell" "${arguments[@]}"
+fi
+if [[ "$mode" != --web-only ]]; then
+  echo 'Usage: bash run_workstation.sh [--live|--restart-live|--web-only]' >&2
+  exit 2
+fi
 ROS_WS="$PROJECT_DIR/ros2_overlay"
 if [[ ! -f "$ROS_WS/install/setup.bash" ]]; then
   echo "AUBO ROS2 workspace is not built: $ROS_WS" >&2
@@ -24,7 +44,5 @@ export RMW_IMPLEMENTATION="${AUBO_RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 export ROS_LOCALHOST_ONLY="${AUBO_ROS_LOCALHOST_ONLY:-1}"
 WORKSTATION_PORT="${WORKSTATION_PORT:-8082}"
 cd "$PROJECT_DIR"
-echo "WEB-ONLY: this starts the browser UI, not the AUBO SDK driver or COM4 sensor bridge."
-echo "If the robot card says disconnected, that is expected in this mode."
-echo "Do not use AUBO_TRACTION_ENABLED as a hardware launcher; see README.md for the approved live-workstation checkpoint."
+echo "AUBO web component: http://127.0.0.1:$WORKSTATION_PORT/"
 exec python -m uvicorn app:app --host 127.0.0.1 --port "$WORKSTATION_PORT"

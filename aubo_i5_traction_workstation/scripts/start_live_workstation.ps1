@@ -1,17 +1,32 @@
 param(
     [string]$Distro = 'Ubuntu-22.04-F',
     [string]$ProjectPath = '/home/zhj/projects/aubo_i5_traction_ws/aubo_i5_traction_workstation',
-    [Parameter(Mandatory = $true)][string]$CalibrationFile,
-    [switch]$Background
+    [string]$CalibrationFile,
+    [string]$ConnectionFile = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'AuboTraction\connection.clixml'),
+    [switch]$Background,
+    [switch]$WaitForPreviousShutdown
 )
 
 $ErrorActionPreference = 'Stop'
 $shellExecutable = (Get-Process -Id $PID).Path
+if (Test-Path -LiteralPath $ConnectionFile) {
+    $localConnection = Import-Clixml -LiteralPath $ConnectionFile
+    if (-not $CalibrationFile) { $CalibrationFile = $localConnection.CalibrationFile }
+    if (-not $env:AUBO_V4_HOST) { $env:AUBO_V4_HOST = $localConnection.HostAddress }
+    if (-not $env:AUBO_V4_PORT) { $env:AUBO_V4_PORT = [string]$localConnection.Port }
+    if (-not $env:AUBO_V4_USERNAME -and -not $env:AUBO_V4_PASSWORD) {
+        $env:AUBO_V4_USERNAME = $localConnection.Credential.UserName
+        $env:AUBO_V4_PASSWORD = $localConnection.Credential.GetNetworkCredential().Password
+    }
+}
+if (-not $CalibrationFile) {
+    throw 'No local calibration configured. Run scripts/configure_live_connection.ps1 once.'
+}
 # Supply the already established SDK credentials through this process environment.
 # They are inherited, never written to command lines, logs, or the repository.
 foreach ($name in @('AUBO_V4_USERNAME', 'AUBO_V4_PASSWORD')) {
     if (-not [Environment]::GetEnvironmentVariable($name)) {
-        throw "Missing $name in this process environment. No hardware was started."
+        throw "Missing $name. Run scripts/configure_live_connection.ps1 once, or supply SDK credentials in the process environment."
     }
 }
 foreach ($path in @($ProjectPath, $CalibrationFile)) {
@@ -27,11 +42,23 @@ if ($Background) {
     $arguments = @('-NoProfile', '-File', ('"' + $PSCommandPath + '"'),
         '-Distro', ('"' + $Distro + '"'), '-ProjectPath', $ProjectPath,
         '-CalibrationFile', $CalibrationFile)
+    if ($WaitForPreviousShutdown) { $arguments += '-WaitForPreviousShutdown' }
     $process = Start-Process $shellExecutable -ArgumentList $arguments -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput (Join-Path $logDirectory 'supervisor_windows.log') `
         -RedirectStandardError (Join-Path $logDirectory 'supervisor_windows_error.log')
     Write-Output "Background supervisor PID=$($process.Id); launcher logs=$logDirectory"
     exit 0
+}
+if ($WaitForPreviousShutdown) {
+    # WSL releases its flock just before the previous Windows supervisor's
+    # finally block closes COM4. Wait for that close; never kill an unknown owner.
+    $shutdownDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (Get-NetTCPConnection -LocalPort 8082,18755 -State Listen -ErrorAction SilentlyContinue) {
+        if ([DateTime]::UtcNow -ge $shutdownDeadline) {
+            throw 'Previous workstation ports did not close within 15 seconds.'
+        }
+        Start-Sleep -Milliseconds 100
+    }
 }
 foreach ($port in @(8082, 18755)) {
     if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) {

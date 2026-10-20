@@ -1,9 +1,18 @@
 import math
+import time
 import unittest
+from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import patch
 
 from backend.ros_bridge import SERVICE_RESPONSE_TIMEOUT_S, STATE_NAMES, RosBridge
+
+
+def diagnostic_packet(status, source_age_s=0.0):
+    stamp = time.time() - source_age_s
+    header = SimpleNamespace(stamp=SimpleNamespace(
+        sec=int(stamp), nanosec=int((stamp - int(stamp)) * 1e9)))
+    return SimpleNamespace(header=header, status=[status])
 
 
 class FakeHeader:
@@ -61,13 +70,43 @@ class BridgeTest(unittest.TestCase):
             values=[SimpleNamespace(key="fail_closed", value="1")],
         )
         with patch("backend.ros_bridge.time.monotonic", return_value=10.0):
-            bridge._on_diagnostics(SimpleNamespace(status=[status]))
+            bridge._on_diagnostics(diagnostic_packet(status))
         with patch("backend.ros_bridge.time.monotonic", return_value=12.0):
             snapshot = bridge.snapshot()
         self.assertFalse(snapshot["robot"]["connected"])
-        self.assertEqual(2, snapshot["robot"]["diagnostic"]["level"])
-        self.assertEqual(status.message, snapshot["robot"]["diagnostic"]["message"])
+        self.assertFalse(snapshot["robot"]["diagnostic"]["valid"])
+        self.assertEqual(3, snapshot["robot"]["diagnostic"]["level"])
+        self.assertEqual(status.message, snapshot["robot"]["diagnostic"]["last_message"])
+        self.assertEqual("STALE_DRIVER_DIAGNOSTIC", snapshot["robot"]["diagnostic"]["message"])
         self.assertEqual(2000, snapshot["robot"]["diagnostic"]["data_age_ms"])
+
+    def test_stale_disabled_diagnostic_cannot_claim_current_motion_idle(self):
+        from types import SimpleNamespace
+
+        bridge = RosBridge()
+        status = SimpleNamespace(
+            name="aubo_v4_driver/state", level=b"\x00", message="disabled",
+            values=[SimpleNamespace(key="motion_idle", value="1")],
+        )
+        with patch("backend.ros_bridge.time.monotonic", return_value=10.0):
+            bridge._on_diagnostics(diagnostic_packet(status))
+        with patch("backend.ros_bridge.time.monotonic", return_value=12.0):
+            diagnostic = bridge.snapshot()["robot"]["diagnostic"]
+        self.assertFalse(diagnostic["valid"])
+        self.assertEqual({}, diagnostic["values"])
+        self.assertEqual("1", diagnostic["last_values"]["motion_idle"])
+
+    def test_delayed_diagnostic_source_cannot_claim_fresh_idle_on_receipt(self):
+        bridge = RosBridge()
+        status = SimpleNamespace(
+            name="aubo_v4_driver/state", level=b"\x00", message="disabled",
+            values=[SimpleNamespace(key="motion_idle", value="1")],
+        )
+        bridge._on_diagnostics(diagnostic_packet(status, source_age_s=10.0))
+        diagnostic = bridge.snapshot()["robot"]["diagnostic"]
+        self.assertFalse(diagnostic["valid"])
+        self.assertLess(diagnostic["data_age_ms"], 1000)
+        self.assertEqual({}, diagnostic["values"])
 
     def test_unverified_hardware_recovery_has_no_timeout_or_client(self):
         self.assertNotIn("hardware_emergency_recover", SERVICE_RESPONSE_TIMEOUT_S)
@@ -116,7 +155,7 @@ class BridgeTest(unittest.TestCase):
                 )
             ],
         )
-        bridge._on_diagnostics(SimpleNamespace(status=[fault]))
+        bridge._on_diagnostics(diagnostic_packet(fault))
 
         snapshot = bridge.snapshot()
         self.assertTrue(snapshot["robot"]["connected"])

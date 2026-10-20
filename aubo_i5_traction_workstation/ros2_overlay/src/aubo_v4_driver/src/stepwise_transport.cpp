@@ -149,6 +149,7 @@ struct StepwiseTransport::Impl
     if (!valid_pose_sample(pose, &invalid)) {
       self.pose_valid = false;
       self.latest.error = invalid;
+      self.latest.last_telemetry_failure = "invalid waypoint: " + invalid;
       self.latest.feedback.healthy = false;
       return;
     }
@@ -381,7 +382,7 @@ bool StepwiseTransport::connect(const TransportOptions & options, std::string & 
 {
   if (impl_->send || options.host.empty() || options.username.empty() || options.password.empty() ||
     options.port < 1 || options.port > 65535 || !std::isfinite(options.speed_mps) ||
-    options.speed_mps <= 0.0 || options.speed_mps > 0.030 ||
+    options.speed_mps <= 0.0 || options.speed_mps > 0.050 ||
     !std::isfinite(options.acceleration_mps2) || options.acceleration_mps2 <= 0.0 ||
     options.acceleration_mps2 > 0.02 || !std::isfinite(options.maximum_joint_step_rad) ||
     !std::isfinite(options.fast_acceleration_mps2) || options.fast_acceleration_mps2 <= 0.0 ||

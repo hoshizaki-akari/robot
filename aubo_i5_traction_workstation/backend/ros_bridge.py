@@ -112,7 +112,8 @@ class RosBridge:
             String, "/aubo_i5/driver_identity", self._on_driver_identity, qos
         )
         self._node.create_subscription(
-            DiagnosticArray, "/diagnostics", self._on_diagnostics, history_qos
+            DiagnosticArray, "/diagnostics", self._on_diagnostics,
+            rclpy.qos.qos_profile_sensor_data,
         )
         self._node.create_subscription(
             TractionStatus, "/traction/status", self._on_traction, qos
@@ -327,6 +328,10 @@ class RosBridge:
             }
 
     def _on_diagnostics(self, message: Any) -> None:
+        source_stamp = self._stamp_seconds(message)
+        source_age_ms = (
+            (time.time() - source_stamp) * 1000.0 if source_stamp > 0.0 else None
+        )
         for status in message.status:
             if status.name != "aubo_v4_driver/state":
                 continue
@@ -338,6 +343,7 @@ class RosBridge:
                     ),
                     "message": str(status.message),
                     "values": {item.key: item.value for item in status.values},
+                    "source_age_ms": source_age_ms,
                 }
                 self._last_diagnostic_at = time.monotonic()
 
@@ -350,6 +356,22 @@ class RosBridge:
                 None if self._last_diagnostic_at == 0
                 else int((now - self._last_diagnostic_at) * 1000)
             )
+            diagnostic["valid"] = (
+                diagnostic["data_age_ms"] is not None
+                and diagnostic["data_age_ms"] <= 1000
+            )
+            if diagnostic.get("source_age_ms") is not None:
+                diagnostic["source_age_ms"] += diagnostic["data_age_ms"] or 0
+            diagnostic["valid"] = bool(
+                diagnostic["valid"] and diagnostic.get("source_age_ms") is not None
+                and -50 <= diagnostic["source_age_ms"] <= 1000
+            )
+            if not diagnostic["valid"]:
+                diagnostic["last_message"] = diagnostic.get("message", "")
+                diagnostic["last_values"] = diagnostic.get("values", {})
+                diagnostic["message"] = "STALE_DRIVER_DIAGNOSTIC"
+                diagnostic["level"] = 3
+                diagnostic["values"] = {}
             traction = copy.deepcopy(self._traction)
             history = copy.deepcopy(self._history)
             joint_age_ms = (

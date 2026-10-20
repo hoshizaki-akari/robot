@@ -78,14 +78,39 @@ source ros2_overlay/install/setup.bash
 ros2 launch fr_traction aubo_i5_readonly.launch.py --show-args
 ```
 
-在完成 SDK 运行时、串口桥接和现场 CHECKPOINT 之前，不要把
-`start_robot:=true` 或 `start_sensor:=true` 作为牵引启动方式。现在它们仅
-用于只读数据检查，启动文件不会启动牵引控制器。独立网页可用
-`bash run_workstation.sh` 在本机 8082 端口查看，只读且不会自行连接机械臂；
-它启动后显示“设备未连接”是预期结果。设置 `AUBO_TRACTION_ENABLED=true`
-也不会启动 SDK 或 COM4 桥。真实硬件连接必须在现场 CHECKPOINT 完成后，
-通过 Windows `scripts/start_live_workstation.ps1` 一次性启动串口桥和 WSL
-硬件监督进程；不要在另一个窗口单独启动第二份 `run_workstation.sh`。
+完整工作站从 WSL 一条命令启动（机械臂、Windows COM4 桥、控制器、网页一起启动）：
+
+```bash
+cd /home/zhj/projects/aubo_i5_traction_ws/aubo_i5_traction_workstation
+bash run_workstation.sh --restart-live
+```
+
+打开 http://127.0.0.1:8082/ 。保留此终端，Ctrl+C 会退出完整监督进程。
+启动本身不发起牵引运动。停止可执行 `bash scripts/stop_live_workstation.sh`。
+不要使用 `fuser -k 8082/tcp` 管理完整工作站，它只会杀死网页组件。
+`--live` 启动，`--restart-live` 先停止本项目原实例再启动，`--web-only` 只启动网页。
+兼容原命令：设置 `AUBO_TRACTION_ENABLED=true` 后直接运行本脚本，也会走完整启动。
+
+本机连接信息保存在 Windows 当前用户的 `%LOCALAPPDATA%\AuboTraction\connection.clixml`，
+凭据由 Windows DPAPI 保护，不进入 Git。新电脑或修改 SDK 账号时，在 Windows PowerShell
+运行一次 `scripts/configure_live_connection.ps1 -HostAddress 192.168.1.40
+-CalibrationFile <已标定的WSL绝对路径>`，随后按提示输入本机 SDK 凭据。
+更换安装姿态时应使用对应的标定文件。
+
+本机有线网口同时保留 FR5 的 `192.168.58.10/24` 和 AUBO 的 `192.168.1.10/24`，
+AUBO 控制柜为 `192.168.1.40`，该专用网段不设置默认网关。
+
+当前工作站参数沿用原 FR5 的 100 N 目标力范围、150 N／0.2 s 超力停止、
+50 mm/s 拖拽速度上限和 20 mm/s 位置／恒力调节速度上限。拖拽死区为 0.15 N，
+低力增益为 0.080 m/s/N。早期联调的 0.5 m 会话球形边界已关闭；
+AUBO 驱动仍逐步求 IK、检查真实反馈并使用控制柜自身的运动约束。
+
+完整启动器自动加载 `config/cyclonedds_local.xml`，限制 DDS 报文大小和分片，
+解决本机 WSL 镜像网络下大诊断报文不同步的问题。额外启动只读 ROS 工具时也应设置：
+`export CYCLONEDDS_URI=file://$PWD/config/cyclonedds_local.xml`。
+诊断数据超过 1 秒会明确显示失效，不再将上轮旧状态冒充实时反馈。
+导出完整日志会附带本轮时间范围的 `driver_events.log`，保留具体 SDK/反馈故障原因。
+本轮验证记录见 `WORKSTATION_FIX_20261020.md`；真实推拉手感仍需网页操作验收。
 
 当前 V4 SDK 运行库依赖 `libprotobuf.so.9`。已从 Ubuntu 官方
 `libprotobuf9v5_2.6.1-1.3_amd64.deb` 单独提取到本机临时目录，并通过

@@ -42,6 +42,26 @@ def test_session_zip_contains_fault_and_stop_feedback_without_page_clicks(tmp_pa
         assert json.loads(archive.read('summary.json'))['operation_mode'] == mode
         assert json.loads(archive.read('runtime_evidence.json'))['sample_count'] == 2
         assert len(archive.read('operations.csv').decode('utf-8-sig').splitlines()) == 1
+        assert 'driver_events.log' in archive.namelist()
+
+
+def test_driver_events_are_filtered_to_the_session_timestamp(tmp_path, monkeypatch):
+    directory = tmp_path / 'debug' / 'session_old_workstation'
+    directory.mkdir(parents=True)
+    directory.joinpath('robot.log').write_text(
+        '[ERROR] [1792400663.003] [driver]: AUBO hardware health lost: diagnosis stale\n'
+        '[ERROR] [1792400763.003] [driver]: other session\n', encoding='utf-8')
+    current = tmp_path / 'debug' / 'session_new_workstation'
+    current.mkdir()
+    current.joinpath('robot.log').write_text(
+        '[ERROR] [1792400764.003] [driver]: new startup event\n', encoding='utf-8')
+    monkeypatch.setenv('AUBO_RUNTIME_LOG_DIR', str(current))
+    with patch.object(app, 'ROOT', tmp_path):
+        events = app._driver_events_in_session(1792400600, 1792400670)
+    assert 'diagnosis stale' in events
+    assert 'other session' not in events
+    assert 'new startup event' not in events
+    assert 'session_old_workstation/robot.log' in events
 
 
 def test_old_session_missing_feedback_is_explicit_not_reconstructed(tmp_path):

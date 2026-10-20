@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <!-- WSL mirrored loopback crosses the Windows network stack. Keep DDS
+           datagrams below Ethernet MTU, including RTPS/UDP/IP overhead. -->
+      <MaxMessageSize>1200B</MaxMessageSize>
+      <FragmentSize>1000B</FragmentSize>
+    </General>
+  </Domain>
+</CycloneDDS>

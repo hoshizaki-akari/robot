@@ -10,6 +10,7 @@ test -n "${AUBO_V4_PASSWORD:-}"
 mkdir -p "$SESSION_DIR"
 exec 9>"$PROJECT_DIR/debug/live_workstation.lock"
 flock -n 9 || { echo 'Another live workstation supervisor owns this checkout.' >&2; exit 2; }
+PID_FILE="$PROJECT_DIR/debug/live_workstation.pid"
 if pgrep -f '/aubo_v4_(stepwise|state)_node( |$)' >/dev/null; then
   echo 'An AUBO SDK owner is already running; refusing a duplicate connection.' >&2
   exit 2
@@ -25,6 +26,7 @@ export LD_LIBRARY_PATH="$PROTOBUF_DIR:$SDK_ROOT/lib/lib64/aubocontroller:$SDK_RO
 source /opt/ros/humble/setup.bash
 source "$PROJECT_DIR/ros2_overlay/install/setup.bash"
 export ROS_DOMAIN_ID=42 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_LOCALHOST_ONLY=1
+export CYCLONEDDS_URI="${CYCLONEDDS_URI:-file://$PROJECT_DIR/config/cyclonedds_local.xml}"
 export AUBO_TRACTION_ENABLED=true
 cd "$PROJECT_DIR"
 
@@ -56,6 +58,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+printf '%s\n' "$$" > "$PID_FILE"
 
 launch sensor_pty python3 scripts/kwr75_wsl_pty_bridge.py
 for attempt in {1..50}; do
@@ -68,7 +71,7 @@ BIN="$PROJECT_DIR/ros2_overlay/install"
 launch robot "$BIN/aubo_v4_driver/lib/aubo_v4_driver/aubo_v4_stepwise_node" \
   --ros-args -p connect_hardware:=true -p enable_motion_interface:=true \
   -p maximum_step_m:=0.005 -p planning_horizon_s:=0.5 -p arrival_tolerance_m:=0.0002 \
-  -p maximum_speed_mps:=0.030 -p maximum_session_travel_m:=0.5 \
+  -p maximum_speed_mps:=0.050 -p maximum_session_travel_m:=0.0 \
   -p session_orientation_tolerance_rad:=0.03 -p fast_line_acceleration_mps2:=0.05 \
   -p state_poll_interval_s:=0.1 -p enable_follow_drag:=true
 launch sensor "$BIN/aubo_kwr75_sensor/lib/aubo_kwr75_sensor/kwr75_sensor_node" \
@@ -80,7 +83,8 @@ launch controller "$BIN/fr_traction/lib/fr_traction/traction_controller_node" \
   --ros-args -r __node:=traction_controller --params-file "$CONFIG" --params-file "$PROFILE"
 launch manager "$BIN/fr_traction/lib/fr_traction/traction_manager_node" \
   --ros-args -r __node:=traction_manager --params-file "$CONFIG" --params-file "$PROFILE"
-launch web bash run_workstation.sh
+export AUBO_RUNTIME_LOG_DIR="$SESSION_DIR"
+launch web bash run_workstation.sh --web-only
 printf 'Workstation supervisor started; no traction session started. Logs: %s\n' "$SESSION_DIR"
 # A failed component must not leave an apparently healthy partial workstation.
 set +e

@@ -67,6 +67,7 @@ const REASON_LABELS = {
   WRENCH_TIMEOUT: '力数据超时',
   EE_STATE_TIMEOUT: '位置数据超时',
   ROS2_CONTROL_ERROR: '运动控制异常',
+  STALE_DRIVER_DIAGNOSTIC: '驱动诊断已过期，等待最新反馈',
   CALIBRATION_TOO_FEW_SAMPLES: '方向数据不足',
   LATERAL_FORCE_LIMIT: '横向力过大',
   LATERAL_FORCE: '横向力过大',
@@ -622,7 +623,7 @@ function handleState(state) {
       ? 'AUBO i5 联机调试：控制接口已启用，三种模式尚待完成真机验收。'
       : 'AUBO i5 状态页：运动未开放，等待安装方向标定和连续控制验收。';
     $('hardwareNotice').textContent = diagnostic?.level >= 2 && diagnostic?.message
-      ? `${modeNotice} 驱动故障：${diagnostic.message}` : modeNotice;
+      ? `${modeNotice} 驱动故障：${REASON_LABELS[diagnostic.message] || diagnostic.message}` : modeNotice;
     if (diagnostic?.values?.enable_follow_drag === '1') {
       $('hardwareNotice').textContent += ' 省力拖拽后端：原生 TRACKING（动态手感待验收）。';
     }
