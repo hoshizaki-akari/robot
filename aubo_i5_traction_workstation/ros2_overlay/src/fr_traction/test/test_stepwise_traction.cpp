@@ -24,24 +24,33 @@ TEST(StepwiseTraction, UnverifiedForceCannotMove)
   }
 }
 
-TEST(StepwiseResponse, ReleasedLoadMustNotSeekTargetAgainUntilNewRun)
+TEST(StepwiseResponse, SlackHoldResumesSameRunOnlyAfterSustainedFreshTension)
 {
-  ft::LoadReleaseDetector detector;
+  ft::TensionValidityGate gate;
+  EXPECT_TRUE(gate.update(12.0, 14.0, 0.01, 1.2, 1.8, 0.20));
   for (unsigned i = 0; i < 100; ++i) {
-    EXPECT_FALSE(detector.update(0.7, 14.0, 0.01, 1.2, 0.25));
+    EXPECT_FALSE(gate.update(0.7, 14.0, 0.01, 1.2, 1.8, 0.20));
+    EXPECT_FALSE(gate.update(1.5, 14.0, 0.01, 1.2, 1.8, 0.20));
   }
-  EXPECT_FALSE(detector.update(12.0, 14.0, 0.01, 1.2, 0.25));
-  for (unsigned i = 0; i < 15; ++i) {
-    EXPECT_FALSE(detector.update(0.8, 14.0, 0.01, 1.2, 0.25));
+  EXPECT_FALSE(gate.update(8.0, 14.0, 0.01, 1.2, 1.8, 0.20));
+  EXPECT_FALSE(gate.update(0.8, 14.0, 0.01, 1.2, 1.8, 0.20));
+  for (unsigned i = 0; i < 25; ++i) {
+    gate.update(3.0, 14.0, 0.01, 1.2, 1.8, 0.20);
   }
-  EXPECT_FALSE(detector.update(3.0, 14.0, 0.01, 1.2, 0.25));
-  for (unsigned i = 0; i < 30; ++i) {
-    detector.update(0.8, 14.0, 0.01, 1.2, 0.25);
+  EXPECT_TRUE(gate.update(3.0, 14.0, 0.01, 1.2, 1.8, 0.20));
+  EXPECT_TRUE(gate.update(1.5, 14.0, 0.01, 1.2, 1.8, 0.20));
+  EXPECT_FALSE(gate.update(0.8, 14.0, 0.01, 1.2, 1.8, 0.20));
+}
+
+TEST(StepwiseResponse, SlackThresholdScalesForOneNewtonTarget)
+{
+  ft::TensionValidityGate gate;
+  EXPECT_TRUE(gate.update(1.0, 1.0, 0.01, 1.2, 1.8, 0.20));
+  EXPECT_FALSE(gate.update(0.20, 1.0, 0.01, 1.2, 1.8, 0.20));
+  for (unsigned i = 0; i < 25; ++i) {
+    gate.update(0.5, 1.0, 0.01, 1.2, 1.8, 0.20);
   }
-  EXPECT_TRUE(detector.update(0.8, 14.0, 0.01, 1.2, 0.25));
-  EXPECT_TRUE(detector.update(10.0, 14.0, 0.01, 1.2, 0.25));
-  detector.reset();
-  EXPECT_FALSE(detector.update(0.8, 14.0, 0.01, 1.2, 0.25));
+  EXPECT_TRUE(gate.update(0.5, 1.0, 0.01, 1.2, 1.8, 0.20));
 }
 
 TEST(StepwiseResponse, ForceApproachIsFasterButContinuousAtHoldBand)

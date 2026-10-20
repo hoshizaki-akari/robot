@@ -453,12 +453,13 @@ def test_drag_limit_is_distinct_and_still_debounces_overforce(ros_runtime):
         harness.close()
 
 
-def test_constant_force_load_release_latches_stop_and_requires_explicit_restart(ros_runtime):
-    """A previously tensioned band going slack must not keep seeking the target."""
+def test_constant_force_slack_freezes_direction_and_automatically_resumes_same_run(ros_runtime):
+    """Slack is a zero-motion subcycle, not completion or a new start request."""
     child = ManagerProcess(extra_parameters=[
-        '-p', 'stop_on_load_release:=true',
-        '-p', 'load_release_force_n:=1.2',
-        '-p', 'load_release_confirm_s:=0.25',
+        '-p', 'constant_force_slack_hold_enabled:=true',
+        '-p', 'slack_release_force_n:=1.2',
+        '-p', 'slack_resume_force_n:=1.8',
+        '-p', 'slack_recovery_confirm_s:=0.20',
     ]).start()
     harness = ManagerHarness(ros_runtime, child)
     try:
@@ -472,23 +473,36 @@ def test_constant_force_load_release_latches_stop_and_requires_explicit_restart(
         assert harness.set_target_force(5.0).success
         assert harness.trigger('/traction/start').success
         harness.wait_status(TractionStatus.TRACTION)
-        harness.pump(duration_s=0.25)
-        harness.motion_idle = False
-        harness.wrench_force = (0.7, 0.0, 0.0)
-        harness.pump(duration_s=0.5)
-        assert harness.status_history[-1].state == TractionStatus.TRACTION
-        mark = harness.mark()
-        harness.motion_idle = True
-        harness.wait_status(TractionStatus.DIRECTION_LOCKED, after=mark)
-        assert harness.status_history[-1].stop_reason == 'CONSTANT_FORCE_LOAD_RELEASED'
-        harness.wrench_force = (3.0, 0.0, 0.0)
-        harness.pump(duration_s=0.4)
-        assert harness.status_history[-1].state == TractionStatus.DIRECTION_LOCKED
-        assert not harness.trigger('/traction/start').success
-        assert harness.set_target_force(5.0).success
-        mark = harness.mark()
-        assert harness.trigger('/traction/start').success
-        harness.wait_status(TractionStatus.TRACTION, after=mark)
+        harness.pump(duration_s=0.8)
+        assert harness.command_history[-1].mode == TractionCommand.TRACTION
+        for cycle in range(2):
+            for noise in ((0.0, 0.7, 0.0), (0.0, 0.0, -0.8), (0.5, -0.4, 0.3)):
+                harness.wrench_force = noise
+                harness.pump(duration_s=0.3)
+                status = harness.status_history[-1]
+                assert status.state == TractionStatus.TRACTION
+                assert status.target_force_n == 5.0
+                assert not status.stop_reason
+                assert status.direction_track_state == 4  # SENSOR_HOLD
+                assert not status.force_direction_valid
+                command = harness.command_history[-1]
+                assert command.mode == TractionCommand.RELEASING
+                assert abs(command.lateral_velocity_base.x) < 1e-12
+                assert abs(command.lateral_velocity_base.y) < 1e-12
+                assert abs(command.lateral_velocity_base.z) < 1e-12
+                assert command.locked_direction_base.x > 0.99
+            mark = len(harness.command_history)
+            harness.wrench_force = (3.0, 0.0, 0.0) if cycle == 0 else (0.0, 3.0, 0.0)
+            harness.wait_until(lambda: any(
+                cmd.mode == TractionCommand.TRACTION
+                for cmd in list(harness.command_history)[mark:]), timeout_s=3.0)
+            assert harness.status_history[-1].state == TractionStatus.TRACTION
+            assert harness.status_history[-1].target_force_n == 5.0
+            if cycle == 1:
+                assert harness.command_history[-1].locked_direction_base.y > 0.95
+        assert harness.trigger('/traction/stop').success
+        harness.pump(duration_s=0.15)
+        assert len(list(Path(child.data_directory).glob('session_*/traction.csv'))) == 1
     finally:
         harness.close()
 

@@ -105,11 +105,13 @@ public:
     // force-frame, stop and direction checkpoints have all passed.
     aubo_port_verified_ = declare_parameter("aubo_port_verified", false);
     require_measured_idle_ = declare_parameter("require_measured_motion_idle", false);
-    stop_on_load_release_ = declare_parameter("stop_on_load_release", false);
-    load_release_force_n_ = declare_parameter("load_release_force_n", 1.2);
-    load_release_confirm_s_ = declare_parameter("load_release_confirm_s", 0.25);
-    if (!std::isfinite(load_release_force_n_) || load_release_force_n_ <= 0.0 ||
-      !std::isfinite(load_release_confirm_s_) || load_release_confirm_s_ <= 0.0)
+    slack_hold_enabled_ = declare_parameter("constant_force_slack_hold_enabled", false);
+    slack_release_force_n_ = declare_parameter("slack_release_force_n", 1.2);
+    slack_resume_force_n_ = declare_parameter("slack_resume_force_n", 1.8);
+    slack_recovery_confirm_s_ = declare_parameter("slack_recovery_confirm_s", 0.20);
+    if (!std::isfinite(slack_release_force_n_) || slack_release_force_n_ <= 0.0 ||
+      !std::isfinite(slack_resume_force_n_) || slack_resume_force_n_ <= slack_release_force_n_ ||
+      !std::isfinite(slack_recovery_confirm_s_) || slack_recovery_confirm_s_ <= 0.0)
     {
       throw std::invalid_argument("invalid load release detection parameters");
     }
@@ -936,8 +938,7 @@ private:
         stop_reason_ = position_reached_ ? "POSITION_TRACTION_COMPLETED" :
           "POSITION_TRACTION_STOPPED";
       } else {
-        stop_reason_ =
-          load_release_pending_ ? "CONSTANT_FORCE_LOAD_RELEASED" : "CONSTANT_FORCE_STOPPED";
+        stop_reason_ = "CONSTANT_FORCE_STOPPED";
       }
       transition(TractionState::COMPLETED);
       finalize_session();
@@ -1723,8 +1724,8 @@ private:
             state_machine_.state() == TractionState::POSITION_HOLD &&
             operation_mode_ == OperationMode::POSITION_TRACTION;
           if (!resuming_position) {
-            load_release_detector_.reset();
-            load_release_pending_ = false;
+            tension_gate_.reset();
+            constant_force_slack_hold_ = false;
             session_start_position_ = latest_ee_position_;
             if (direction_estimator_) {direction_estimator_->reset();}
             if (direction_controller_) {direction_controller_->reset();}
@@ -1755,16 +1756,6 @@ private:
       case TractionState::PRETENSION: handle_pretension(current_time); break;
       case TractionState::CALIBRATING: handle_calibration(current_time); break;
       case TractionState::TRACTION:
-        if (stop_on_load_release_ && operation_mode_ == OperationMode::CONSTANT_FORCE &&
-          live_wrench() && load_release_detector_.update(
-            norm(latest_wrench_), target_force_n_, dt_s, load_release_force_n_,
-            load_release_confirm_s_))
-        {
-          load_release_pending_ = true;
-          auto response = std::make_shared<std_srvs::srv::Trigger::Response>();
-          handle_stop(response);
-          break;
-        }
         if (!motion_feedback_fresh()) {
           publish_disabled();
           break;
@@ -1799,6 +1790,39 @@ private:
             position_reached_started_at_.reset();
           }
           break;
+        }
+        if (slack_hold_enabled_) {
+          const bool tension_valid = live_wrench() && tension_gate_.update(
+            norm(latest_wrench_), target_force_n_, dt_s, slack_release_force_n_,
+            slack_resume_force_n_, slack_recovery_confirm_s_);
+          if (!tension_valid) {
+            if (!constant_force_slack_hold_) {
+              slack_hold_direction_ = active_direction();
+              if (direction_estimator_) {
+                direction_estimator_->set_locked_direction(slack_hold_direction_);
+              }
+              if (direction_controller_) {direction_controller_->reset();}
+              force_filter_.reset();
+              filtered_wrench_ = latest_wrench_;
+            }
+            constant_force_slack_hold_ = true;
+            // Residual force must never be normalized into a steering target.
+            direction_estimate_ =
+              direction_estimator_ ? direction_estimator_->update({}, dt_s) : DirectionEstimate{};
+            direction_estimate_.tracked_direction = slack_hold_direction_;
+            lateral_correction_result_ = {};
+            lateral_correction_velocity_base_ = {};
+            publish_command(
+              msg::TractionCommand::RELEASING, slack_hold_direction_,
+              current_command_target_n_);
+            break;
+          }
+          if (constant_force_slack_hold_) {
+            constant_force_slack_hold_ = false;
+            force_filter_.reset();
+            filtered_wrench_ = latest_wrench_;
+            current_command_target_n_ = std::clamp(norm(latest_wrench_), 0.0, target_force_n_);
+          }
         }
         update_direction_correction(dt_s);
         if (direction_estimate_.ambiguity_timed_out) {
@@ -2073,7 +2097,7 @@ private:
     status.locked_direction_base.y = locked_direction_.y;
     status.locked_direction_base.z = locked_direction_.z;
     Vec3 measured_direction;
-    status.force_direction_valid = normalize(
+    status.force_direction_valid = !constant_force_slack_hold_ && normalize(
       filtered_wrench_, measured_direction, pretension_detect_n_);
     status.measured_force_direction_base.x = measured_direction.x;
     status.measured_force_direction_base.y = measured_direction.y;
@@ -2115,12 +2139,11 @@ private:
           "请用 AUBO 示教器移动，张紧后保持法兰静止";
         break;
       case TractionState::CALIBRATING: status.message = "正在采集张紧方向，请保持法兰静止"; break;
-      case TractionState::DIRECTION_LOCKED:
-        status.message = load_release_pending_ ?
-          "负载已释放，本轮恒力牵引已停止；重新设置目标力并点击开始可启动新一轮" :
-          "方向已锁定；可以设置目标力并开始牵引"; break;
+      case TractionState::DIRECTION_LOCKED: status.message = "方向已锁定；可以设置目标力并开始牵引"; break;
       case TractionState::TRACTION:
-        status.message = operation_mode_ == OperationMode::POSITION_TRACTION ?
+        status.message = constant_force_slack_hold_ ?
+          "恒力牵引保持中：牵引带松弛，重新拉紧后自动继续；目标力保留" :
+          operation_mode_ == OperationMode::POSITION_TRACTION ?
           "位置牵引中，正在接近目标力" :
           (direction_correction_mode_name_ == "off" ?
           "恒力牵引中，正在沿已标定方向调节牵引力" : "恒力牵引中，正在自适应跟随受力方向");
@@ -2238,9 +2261,10 @@ private:
   bool ee_valid_ = false;
   bool controller_healthy_ = false;
   bool require_measured_idle_{false}, measured_motion_idle_{false};
-  bool stop_on_load_release_{false}, load_release_pending_{false};
-  double load_release_force_n_{1.2}, load_release_confirm_s_{0.25};
-  LoadReleaseDetector load_release_detector_;
+  bool slack_hold_enabled_{false}, constant_force_slack_hold_{false};
+  double slack_release_force_n_{1.2}, slack_resume_force_n_{1.8}, slack_recovery_confirm_s_{0.20};
+  TensionValidityGate tension_gate_;
+  Vec3 slack_hold_direction_;
   bool stop_completion_pending_{false};
   bool stop_cancelled_activation_{false};
   std::chrono::steady_clock::time_point stop_completion_started_at_{};

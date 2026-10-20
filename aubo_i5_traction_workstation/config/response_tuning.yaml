@@ -40,6 +40,7 @@ traction_controller:
     stepwise_velocity_ramp_enabled: true
 traction_manager:
   ros__parameters:
-    stop_on_load_release: true
-    load_release_force_n: 1.2
-    load_release_confirm_s: 0.25
+    constant_force_slack_hold_enabled: true
+    slack_release_force_n: 1.2
+    slack_resume_force_n: 1.8
+    slack_recovery_confirm_s: 0.20

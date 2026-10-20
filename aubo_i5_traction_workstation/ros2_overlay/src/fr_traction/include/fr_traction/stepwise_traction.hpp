@@ -5,29 +5,38 @@
 
 namespace fr_traction
 {
-// Arm only after a load was established. Persistent unloading ends the run,
-// rather than allowing a large target-minus-zero error to seek a lost load.
-class LoadReleaseDetector
+// Slack pauses motion but never completes the session. Require sustained fresh
+// tension to resume, not a large target-minus-zero force error.
+class TensionValidityGate
 {
 public:
-  void reset() {armed_ = released_ = false; low_time_ = 0.0;}
-  bool update(double force, double target, double dt, double threshold, double confirm_s)
+  void reset() {holding_ = false; recovery_time_ = 0.0;}
+  bool update(
+    double force, double target, double dt, double release_n, double resume_n,
+    double confirm_s)
   {
-    if (released_) {return true;}
     if (!std::isfinite(force) || !std::isfinite(target) || target <= 0.0 ||
       !std::isfinite(dt) || dt <= 0.0 || dt > 0.25 ||
-      !std::isfinite(threshold) || threshold <= 0.0 ||
-      !std::isfinite(confirm_s) || confirm_s <= 0.0) {low_time_ = 0.0; return false;}
-    const double release = std::min(threshold, 0.25 * target);
-    if (force >= std::max(2.0 * release, 0.4 * target)) {armed_ = true;}
-    low_time_ = armed_ && force <= release ? low_time_ + dt : 0.0;
-    released_ = low_time_ >= confirm_s;
-    return released_;
+      !std::isfinite(release_n) || release_n <= 0.0 ||
+      !std::isfinite(resume_n) || resume_n <= release_n ||
+      !std::isfinite(confirm_s) || confirm_s <= 0.0)
+    {
+      holding_ = true;
+      recovery_time_ = 0.0;
+      return false;
+    }
+    const double release = std::min(release_n, 0.25 * target);
+    const double resume = std::min(resume_n, 0.40 * target);
+    if (force <= release) {holding_ = true; recovery_time_ = 0.0;}
+    if (!holding_) {return true;}
+    recovery_time_ = force >= resume ? recovery_time_ + dt : 0.0;
+    if (recovery_time_ >= confirm_s) {holding_ = false; recovery_time_ = 0.0;}
+    return !holding_;
   }
 
 private:
-  bool armed_{false}, released_{false};
-  double low_time_{0.0};
+  bool holding_{false};
+  double recovery_time_{0.0};
 };
 
 // Raw-force Schmitt trigger: release has no filter tail; small residual force
