@@ -1,0 +1,47 @@
+===== TCP2CAN DRAG CANDIDATE =====
+date = 2026-10-21
+scope = AUBO assisted-drag execution and timestamp pairing only
+status = WAITING_TCP2CAN_HARDWARE_CHECKPOINT
+
+implementation:
+5 ms planned joint sample period; controller consumption NOT yet measured
+short buffer: low watermark 4 points, target 10 points (assumed 50 ms)
+buffer-aware vector batches, no wall-clock catch-up or uncertain-batch retry
+separate continuation feed for release deceleration without new scheduler jobs
+single scheduler mailbox accepts updates during background feed without busy fault
+finite/unit-quaternion/IK branch/FK/cartesian lead checks
+existing joint speed and acceleration bounds retained
+confirmed stop + empty buffer + mode leave before returning to legacy modes
+mode entry uncertainty and SDK exceptions stay latched until stop/recovery
+true timestamp sensor queue pairs only fresh real force and real pose samples
+web distinguishes selected candidate, active mode and uncertain/faulted mode
+original FR5 checkout untouched
+
+validation:
+both ROS packages compiled with installed V4 SDK
+fr_traction = 246 aggregate test-report entries; 0 failures; 27 skipped
+aubo_v4_driver = 199 aggregate test-report entries; 0 failures; 20 skipped
+these totals include CTest/lint reports, not independent hardware trials
+wrench pairing unit tests = 23 passed
+workstation Python checks = 68 passed; lint passed
+PowerShell AST parsing = passed
+JavaScript syntax = passed
+SDK-double tests = explicit unit-test boundaries, never operational feedback
+offline actual-node tests = SDK constructor guard, default/candidate cannot connect
+
+activation:
+default = bash start_workstation.sh (unchanged FollowMode backend)
+candidate = bash start_workstation.sh --tcp-can-drag
+startup alone does NOT enter TCP2CAN or send a trajectory
+real hardware modes changed this turn = none
+real movement requested this turn = none
+current live backend = not restarted/switched by this change
+
+checkpoint:
+verify real mode handover, buffer units, 5 ms consumption and stop/clear/leave
+then validate short positive/negative travel and release before free hand guidance
+physical smoothness/effort improvement = NOT YET VERIFIED
+
+design = docs/TCP_CAN_DRAG_CANDIDATE_20261021.md
+debug = debug/session_20261021_tcp_can_candidate/
+logs = build_final.log, tests_driver_final.log, tests.log, python_checks_final.log

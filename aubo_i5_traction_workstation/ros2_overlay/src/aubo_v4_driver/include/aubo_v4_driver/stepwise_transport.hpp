@@ -26,6 +26,7 @@ struct TransportOptions
   bool subdivide_follow_joint_steps{false};
   bool brake_on_hold{false};
   bool adaptive_follow_ik{false};
+  bool experimental_tcp_can_drag{false};
   double drag_release_prediction_s{0.0};
   double maximum_drag_step_m{0.005};
   double drag_intent_timeout_s{0.25};
@@ -74,6 +75,12 @@ struct TransportSample
   std::uint64_t drag_reference_reanchors{0}, drag_intent_refreshes{0};
   double drag_intent_age_s{0.0};
   std::uint64_t drag_superseded_commands{0};
+  bool tcp_can_active{false};
+  bool tcp_can_fault{false};
+  std::uint64_t tcp_can_batches{0}, tcp_can_points{0};
+  unsigned tcp_can_queued_points{0};
+  std::string tcp_can_status;
+  double tcp_can_cycle_duration_s{0.0}, tcp_can_send_duration_s{0.0};
   std::string error;
 };
 struct TransportResult

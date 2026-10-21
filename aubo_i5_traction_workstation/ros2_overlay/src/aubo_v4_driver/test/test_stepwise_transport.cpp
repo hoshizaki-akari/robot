@@ -185,6 +185,92 @@ TEST_F(StepwiseTransportTest, ConstructionAndDestructionCreateNoSdkObjects)
   EXPECT_EQ(constructor_count(), 0);
 }
 
+TEST_F(StepwiseTransportTest, ExperimentalTimedBatchHasNoFollowFallbackAndLeavesOnStop)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = settings.fixed_follow_profile = true;
+  settings.experimental_tcp_can_drag = true;
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.tcp_linear_test_kinematics = true;
+  }
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error)) << error;
+  auto measured = valid_waypoint();
+  measured.cartPos.position.x = 0.0998; // Match the explicitly selected algebra FK stub.
+  aubo_v4_test_sdk::emit_waypoint(measured);
+  std::size_t seen = 0;
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  while (!transport.sample().feedback.healthy && std::chrono::steady_clock::now() < deadline) {
+    aubo_v4_test_sdk::wait_for_event(seen, 10ms);
+  }
+  ASSERT_TRUE(transport.sample().feedback.healthy);
+  ASSERT_TRUE(transport.update_drag_intent({0.001, 0, 0}, 1, aubo_v4_driver::steady_seconds()));
+  auto value = command(1, 1);
+  value.assisted_drag = value.follow_joint_mode = value.cartesian_drag_reference = true;
+  ASSERT_TRUE(transport.submit(value, seed));
+  const auto sent = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(sent);
+  ASSERT_TRUE(sent->success) << sent->detail;
+  EXPECT_TRUE(transport.sample().tcp_can_active);
+  EXPECT_EQ(transport.sample().tcp_can_points, 10U);
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    EXPECT_EQ(state.tcp_enter_count, 1);
+    EXPECT_EQ(state.tcp_batch_count, 1);
+    EXPECT_EQ(state.follow_move_count, 0);
+    EXPECT_EQ(state.line_move_count, 0);
+  }
+  // With no new scheduler job, a zero intent must still produce the final
+  // deceleration batch. A regular job arriving during that feed is admitted to
+  // the single mailbox, not misreported as a failed/busy SDK motion.
+  ASSERT_TRUE(transport.update_drag_intent({}, 1, aubo_v4_driver::steady_seconds()));
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.block_ik = true;
+    state.release_ik = state.ik_entered = false;
+    state.diagnosis.macTargetPosDataSize = 24;
+  }
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::unique_lock<std::mutex> lock(state.mutex);
+    ASSERT_TRUE(state.changed.wait_for(lock, 1s, [&]() {return state.ik_entered;}));
+  }
+  value.id = 2;
+  ASSERT_TRUE(transport.submit(value, seed));
+  EXPECT_FALSE(transport.submit(value, seed));
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.release_ik = true;
+    state.changed.notify_all();
+  }
+  const auto queued = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(queued);
+  EXPECT_EQ(queued->id, 2U);
+  ASSERT_TRUE(queued->success) << queued->detail;
+  EXPECT_EQ(transport.sample().tcp_can_batches, 2U);
+  EXPECT_EQ(transport.sample().tcp_can_points, 16U);
+  EXPECT_EQ(transport.sample().motion_ack_count, 2U);
+  transport.cancel_and_stop(2);
+  const auto stopped = wait_for_stop_result(transport, 1s);
+  ASSERT_TRUE(stopped);
+  ASSERT_TRUE(stopped->success) << stopped->detail;
+  EXPECT_FALSE(transport.sample().tcp_can_active);
+  ASSERT_TRUE(submit_when_available(transport, command(3, 2), 500ms));
+  const auto ordinary = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(ordinary);
+  ASSERT_TRUE(ordinary->success);
+  auto & state = aubo_v4_test_sdk::state();
+  std::lock_guard<std::mutex> lock(state.mutex);
+  EXPECT_EQ(state.tcp_leave_count, 1);
+  EXPECT_EQ(state.line_move_count, 1);
+}
+
 TEST_F(StepwiseTransportTest, CommandSpeedIsAppliedAndReportedBeforeMotion)
 {
   StepwiseTransport transport;

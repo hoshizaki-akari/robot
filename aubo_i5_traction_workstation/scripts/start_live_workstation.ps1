@@ -6,7 +6,8 @@ param(
     [string]$SharedConnectionFile,
     [switch]$CheckLocalConfig,
     [switch]$Background,
-    [switch]$WaitForPreviousShutdown
+    [switch]$WaitForPreviousShutdown,
+    [switch]$ExperimentalTcpCanDrag
 )
 
 $ErrorActionPreference = 'Stop'
@@ -95,6 +96,7 @@ if ($Background) {
         '-Distro', ('"' + $Distro + '"'), '-ProjectPath', $ProjectPath,
         '-CalibrationFile', $CalibrationFile)
     if ($WaitForPreviousShutdown) { $arguments += '-WaitForPreviousShutdown' }
+    if ($ExperimentalTcpCanDrag) { $arguments += '-ExperimentalTcpCanDrag' }
     $process = Start-Process $shellExecutable -ArgumentList $arguments -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput (Join-Path $logDirectory 'supervisor_windows.log') `
         -RedirectStandardError (Join-Path $logDirectory 'supervisor_windows_error.log')
@@ -117,7 +119,8 @@ foreach ($port in @(8082, 18755)) {
         throw "Port $port is already owned. Stop the previous workstation first; no duplicate was started."
     }
 }
-$forwardNames = @('AUBO_V4_HOST', 'AUBO_V4_PORT', 'AUBO_V4_USERNAME', 'AUBO_V4_PASSWORD',
+$env:AUBO_TCP_CAN_DRAG = if ($ExperimentalTcpCanDrag) { '1' } else { '0' }
+$forwardNames = @('AUBO_V4_HOST', 'AUBO_V4_PORT', 'AUBO_V4_USERNAME', 'AUBO_V4_PASSWORD', 'AUBO_TCP_CAN_DRAG',
     'AUBO_V4_SDK_ROOT', 'AUBO_V4_PROTOBUF_DIR')
 $existingForward = @($env:WSLENV -split ':' | Where-Object { $_ })
 $env:WSLENV = (@($existingForward + $forwardNames) | Select-Object -Unique) -join ':'

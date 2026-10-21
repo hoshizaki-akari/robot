@@ -632,7 +632,13 @@ function handleState(state) {
       : 'AUBO i5 状态页：运动未开放，等待安装方向标定和连续控制验收。';
     $('hardwareNotice').textContent = diagnostic?.level >= 2 && diagnostic?.message
       ? `${modeNotice} 驱动故障：${REASON_LABELS[diagnostic.message] || diagnostic.message}` : modeNotice;
-    if (diagnostic?.values?.enable_follow_drag === '1') {
+    if (diagnostic?.values?.drag_execution_transport === 'tcp2can_experimental') {
+      $('hardwareNotice').textContent += diagnostic.values.tcp_can_fault === '1'
+        ? ' 省力拖拽后端：TCP2CAN 候选故障，等待复位及模式状态确认。'
+        : diagnostic.values.tcp_can_active === '1'
+        ? ' 省力拖拽后端：TCP2CAN 周期透传（试验模式已进入，手感待验收）。'
+        : ' 省力拖拽后端：TCP2CAN 周期透传候选（尚未进入透传模式）。';
+    } else if (diagnostic?.values?.enable_follow_drag === '1') {
       $('hardwareNotice').textContent += ' 省力拖拽后端：原生 TRACKING（动态手感待验收）。';
     }
     if (diagnostic?.values?.session_limit_reached === '1') {

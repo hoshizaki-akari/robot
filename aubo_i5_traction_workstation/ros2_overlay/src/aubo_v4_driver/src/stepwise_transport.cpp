@@ -11,6 +11,7 @@
 #include <thread>
 #include "aubo_v4_driver/state_validation.hpp"
 #include "aubo_v4_driver/aubo_drag_reference.hpp"
+#include "aubo_v4_driver/tcp_can_drag.hpp"
 
 namespace aubo_v4_driver
 {
@@ -28,8 +29,9 @@ struct StepwiseTransport::Impl
   bool send_connected{false}, read_connected{false}, stop_connected{false};
   TransportOptions options;
   mutable std::mutex mutex;
-  // Legacy synchronous RPCs must not compete with each other. Real-time
-  // waypoint callbacks do not acquire this lock; urgent stop remains separate.
+  // Legacy follow/line RPCs serialize normal queries. Experimental TCP2CAN
+  // keeps telemetry on the separate read session, away from its buffer feeder.
+  // Real-time callbacks and urgent stop remain separate in both modes.
   std::mutex request_mutex;
   std::atomic<bool> sender_waiting{false};
   std::condition_variable changed;
@@ -37,9 +39,11 @@ struct StepwiseTransport::Impl
   std::atomic<bool> shutdown{false}, allowed{false};
   std::atomic<std::uint64_t> allowed_epoch{0};
   bool busy{false}, stop_in_progress{false}, pose_valid{false};
+  bool continuation_busy{false};
   bool state_valid{false};
   std::atomic<bool> ever_dispatched{false};
   std::optional<Job> job;
+  std::optional<Job> last_stream_job;
   std::optional<std::uint64_t> stop_job;
   std::uint64_t last_submitted_id{0};
   std::deque<TransportResult> results;
@@ -58,6 +62,134 @@ struct StepwiseTransport::Impl
   vendor::JointVelcAccParam cached_joint_velocity{}, cached_joint_acceleration{};
   bool joint_profile_cached{false};
   std::atomic<bool> invalidate_follow_profile{true};
+  std::unique_ptr<TcpCanDragSession> tcp_can;
+
+  TcpCanIo tcp_can_io()
+  {
+    TcpCanIo io;
+    io.enter = [this]() {return send->robotServiceEnterTcp2CanbusMode();};
+    io.leave = [this]() {return send->robotServiceLeaveTcp2CanbusMode();};
+    io.queued_points = [this](unsigned & points) {
+        vendor::RobotDiagnosis diagnosis{};
+        if (send->robotServiceGetRobotDiagnosisInfo(diagnosis) != 0 ||
+          diagnosis.macTargetPosDataSize % 6 != 0) {return false;}
+        points = static_cast<unsigned>(diagnosis.macTargetPosDataSize / 6);
+        return true;
+      };
+    io.forward = [this](const std::array<double, 6> & joints, StreamPose & pose) {
+        vendor::wayPoint_S point{};
+        if (send->robotServiceRobotFk(joints.data(), 6, point) != 0) {return false;}
+        pose.joints = joints;
+        pose.position =
+        {point.cartPos.position.x, point.cartPos.position.y, point.cartPos.position.z};
+        pose.orientation =
+        {point.orientation.x, point.orientation.y, point.orientation.z, point.orientation.w};
+        return true;
+      };
+    io.inverse = [this, forward = io.forward](const StreamPose & request, StreamPose & solved) {
+        vendor::Pos position{};
+        position.x = request.position[0]; position.y = request.position[1];
+        position.z = request.position[2];
+        vendor::Ori orientation{};
+        orientation.x = request.orientation[0]; orientation.y = request.orientation[1];
+        orientation.z = request.orientation[2]; orientation.w = request.orientation[3];
+        vendor::wayPoint_S target{};
+        if (send->robotServiceRobotIk(request.joints.data(), position, orientation, target) != 0) {
+          return false;
+        }
+        std::array<double, 6> joints{};
+        std::copy(target.jointpos, target.jointpos + 6, joints.begin());
+        return forward(joints, solved);
+      };
+    io.send = [this](const std::vector<std::array<double, 6>> & points) {
+        std::vector<vendor::wayPoint_S> batch(points.size());
+        for (std::size_t i = 0; i < points.size(); ++i) {
+          std::copy(points[i].begin(), points[i].end(), batch[i].jointpos);
+        }
+        const double started = steady_seconds();
+        const int code = send->robotServiceSetRobotPosData2Canbus(batch);
+        std::lock_guard<std::mutex> lock(mutex);
+        latest.tcp_can_send_duration_s = steady_seconds() - started;
+        latest.motion_call_duration_s = latest.tcp_can_send_duration_s;
+        latest.maximum_motion_call_duration_s = std::max(
+          latest.maximum_motion_call_duration_s,
+          latest.motion_call_duration_s);
+        latest.dispatch_interval_s = previous_dispatch_at >
+          0 ? started - previous_dispatch_at : 0.0;
+        latest.maximum_dispatch_interval_s = std::max(
+          latest.maximum_dispatch_interval_s,
+          latest.dispatch_interval_s);
+        previous_dispatch_at = started;
+        return code;
+      };
+    return io;
+  }
+
+  TransportResult send_tcp_can_drag(const Job & current)
+  {
+    TransportResult reply;
+    reply.id = current.command.id; reply.epoch = current.command.epoch;
+    StreamPose measured;
+    std::array<double, 3> velocity{};
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (latest.tcp_can_fault) {
+        reply.detail = latest.tcp_can_status;
+        return reply;
+      }
+      measured.joints = latest.joints;
+      measured.position = latest.feedback.position;
+      measured.orientation = latest.feedback.orientation;
+      if (!tcp_can->active() && (!latest.feedback.stopped || latest.feedback.speed_mps > 0.0002)) {
+        reply.detail = "TCP2CAN entry requires measured standstill"; return reply;
+      }
+      if (drag_intent) {velocity = drag_intent->velocity;}
+    }
+    const auto authorized = [this, epoch = current.command.epoch]() {
+        std::lock_guard<std::mutex> lock(mutex);
+        const double time = steady_seconds();
+        return allowed && !shutdown && allowed_epoch == epoch && drag_intent &&
+               drag_intent->epoch == epoch && time >= drag_intent->received_at &&
+               time - drag_intent->received_at <= options.drag_intent_timeout_s &&
+               time - latest.feedback.received_at <= options.feedback_timeout_s &&
+               pose_valid && latest.diagnosis_ok && state_valid &&
+               (!options.adaptive_follow_ik || latest.kinematics_verified);
+      };
+    const double started = steady_seconds();
+    // Mode entry already changes controller ownership; even a rejected first
+    // batch must run the existing stop/leave path during teardown.
+    ever_dispatched = true;
+    const auto accepted = tcp_can->update(
+      measured, velocity, current.command.orientation, current.command.epoch,
+      started, authorized, tcp_can_io());
+    reply.success = accepted.success;
+    reply.detail = accepted.detail;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      latest.tcp_can_active = tcp_can->active();
+      latest.tcp_can_fault = tcp_can->faulted();
+      latest.tcp_can_batches = tcp_can->batches();
+      latest.tcp_can_points = tcp_can->points();
+      latest.tcp_can_queued_points = accepted.queued_points;
+      latest.tcp_can_status = accepted.detail;
+      latest.last_command_id = current.command.id;
+      latest.requested_speed_mps = std::hypot(velocity[0], velocity[1], velocity[2]);
+      latest.tcp_can_cycle_duration_s = steady_seconds() - started;
+      if (accepted.points_sent > 0) {++latest.motion_ack_count;}
+    }
+    return reply;
+  }
+
+  bool leave_tcp_can_after_stop()
+  {
+    if (!tcp_can) {return true;}
+    const bool left = tcp_can->leave_after_stop(tcp_can_io());
+    std::lock_guard<std::mutex> lock(mutex);
+    latest.tcp_can_active = tcp_can->active();
+    latest.tcp_can_fault = tcp_can->faulted();
+    latest.tcp_can_status = left ? "TCP2CAN left after stop" : "TCP2CAN leave rejected";
+    return left;
+  }
 
   // These getters report this SDK session's profile, not measured physical speed.
   bool apply_profile(double speed)
@@ -253,7 +385,9 @@ struct StepwiseTransport::Impl
     // All sender work has ended: this final stop cannot be overtaken by an
     // older motion dispatch. It is not a promise of bounded vendor latency.
     if (stop_connected && ever_dispatched) {
-      try {send->robotMoveFastStop();} catch (...) {}
+      try {
+        if (send->robotMoveFastStop() == 0) {leave_tcp_can_after_stop();}
+      } catch (...) {}
     }
     if (read_connected) {
       read->robotServiceRegisterRobotEventInfoCallback(nullptr, nullptr);
@@ -385,7 +519,7 @@ struct StepwiseTransport::Impl
     std::lock_guard<std::mutex> lock(mutex);
     // Publishing an ACK also releases the only sender slot atomically. A
     // tracking replacement may arrive immediately after the consumer sees it.
-    if (sender_finished) {busy = false;}
+    if (sender_finished) {busy = false; continuation_busy = false;}
     // Likewise, consuming a stop ACK must never leave a stale stopping flag
     // that rejects the next otherwise valid session command.
     if (value.stop) {stop_in_progress = false;}
@@ -405,13 +539,32 @@ struct StepwiseTransport::Impl
   {
     while (!shutdown) {
       Job current;
+      bool continuation = false;
       {
         std::unique_lock<std::mutex> lock(mutex);
-        changed.wait(lock, [this]() {return shutdown || job.has_value();});
+        if (tcp_can) {
+          // Keep producing bounded timed deceleration points after the single
+          // scheduler hold command; no unacknowledged fake scheduler jobs.
+          changed.wait_for(
+            lock, std::chrono::milliseconds(10), [this]() {
+              return shutdown || job.has_value();
+            });
+        } else {
+          changed.wait(lock, [this]() {return shutdown || job.has_value();});
+        }
         if (shutdown) {break;}
-        current = *job;
-        job.reset();
+        if (job) {
+          current = *job;
+          job.reset();
+          if (tcp_can && current.command.assisted_drag) {last_stream_job = current;}
+        } else if (tcp_can && latest.tcp_can_active && !latest.tcp_can_fault && allowed &&
+          last_stream_job)
+        {
+          current = *last_stream_job;
+          continuation = true;
+        } else {continue;}
         busy = true;
+        continuation_busy = continuation;
       }
       TransportResult reply;
       reply.id = current.command.id;
@@ -426,12 +579,31 @@ struct StepwiseTransport::Impl
               const double time = steady_seconds();
               return time - latest.diagnosis_at < 0.25 && time - latest.robot_state_at < 0.25;
             };
-          if (!current_telemetry()) {
+          if (!current_telemetry() && !(tcp_can && latest.tcp_can_active)) {
             changed.wait_for(lock, std::chrono::milliseconds(100), current_telemetry);
           }
         }
         std::unique_lock<std::mutex> request_lock(request_mutex);
         sender_waiting = false;
+        if (tcp_can && current.command.assisted_drag) {
+          auto streamed = send_tcp_can_drag(current);
+          if (continuation) {
+            std::lock_guard<std::mutex> lock(mutex);
+            busy = false;
+            continuation_busy = false;
+            if (!streamed.success) {
+              latest.tcp_can_fault = true;
+              latest.error = streamed.detail;
+            }
+          } else {result(std::move(streamed), true);}
+          changed.notify_all();
+          continue;
+        }
+        if (tcp_can && tcp_can->active()) {
+          reply.detail = "stop the TCP2CAN drag session before changing motion modes";
+          result(std::move(reply), true);
+          continue;
+        }
         vendor::Pos position{};
         position.x = current.command.target[0];
         position.y = current.command.target[1];
@@ -702,6 +874,16 @@ struct StepwiseTransport::Impl
       } catch (...) {
         reply.detail = "unknown motion SDK exception";
       }
+      if (continuation) {
+        std::lock_guard<std::mutex> lock(mutex);
+        busy = false;
+        continuation_busy = false;
+        latest.tcp_can_fault = true;
+        latest.error = reply.detail;
+        latest.tcp_can_status = reply.detail;
+        changed.notify_all();
+        continue;
+      }
       result(std::move(reply), true);
       changed.notify_all();
     }
@@ -779,6 +961,11 @@ struct StepwiseTransport::Impl
             }
           }
         }
+        if (reply.success) {
+          std::lock_guard<std::mutex> request_lock(request_mutex);
+          reply.success = leave_tcp_can_after_stop();
+          if (!reply.success) {reply.detail += "; TCP2CAN mode/buffer release unconfirmed";}
+        }
       } catch (const std::exception & exception) {
         reply.detail = std::string("stop SDK exception: ") + exception.what();
       } catch (...) {
@@ -793,7 +980,13 @@ struct StepwiseTransport::Impl
   {
     while (!shutdown) {
       // Yield normal queries to a queued motion; never block the ROS executor.
-      std::unique_lock<std::mutex> request_lock(request_mutex, std::try_to_lock);
+      bool streaming;
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        streaming = latest.tcp_can_active;
+      }
+      std::unique_lock<std::mutex> request_lock(request_mutex, std::defer_lock);
+      if (!streaming) {request_lock.try_lock();}
       bool telemetry_due;
       {
         std::lock_guard<std::mutex> lock(mutex);
@@ -801,7 +994,7 @@ struct StepwiseTransport::Impl
         telemetry_due = time - latest.diagnosis_at >= 0.25 ||
           time - latest.robot_state_at >= 0.25;
       }
-      if (!request_lock.owns_lock() || (sender_waiting && !telemetry_due)) {
+      if (!streaming && (!request_lock.owns_lock() || (sender_waiting && !telemetry_due))) {
         if (request_lock.owns_lock()) {request_lock.unlock();}
         std::unique_lock<std::mutex> lock(mutex);
         changed.wait_for(lock, std::chrono::milliseconds(5));
@@ -848,11 +1041,12 @@ struct StepwiseTransport::Impl
             std::to_string(diagnosis_rc);
         }
       }
-      request_lock.unlock();
+      if (request_lock.owns_lock()) {request_lock.unlock();}
       // Publish diagnosis immediately. A slow subsequent state getter must
       // not hide an already completed, fresh diagnosis from the control tick.
       {
-        std::unique_lock<std::mutex> state_lock(request_mutex);
+        std::unique_lock<std::mutex> state_lock(request_mutex, std::defer_lock);
+        if (!streaming) {state_lock.lock();}
         try {
           state_rc = read->robotServiceGetRobotCurrentState(state);
           state_time = steady_seconds();
@@ -949,6 +1143,19 @@ bool StepwiseTransport::connect(const TransportOptions & options, std::string & 
   }
   auto & self = *impl_;
   self.options = options;
+  if (options.experimental_tcp_can_drag) {
+    if (!options.allow_follow_mode || !options.fixed_follow_profile) {
+      error = "TCP2CAN candidate requires the independent drag configuration";
+      return false;
+    }
+    TcpCanConfig config;
+    config.maximum_speed_mps = options.speed_mps;
+    config.maximum_lead_m = options.maximum_drag_step_m;
+    config.maximum_ik_step_rad = options.maximum_joint_step_rad;
+    config.joint_speed_radps = options.follow_joint_speed_radps;
+    config.joint_acceleration_radps2 = options.follow_joint_acceleration_radps2;
+    self.tcp_can = std::make_unique<TcpCanDragSession>(config);
+  }
   try {
     self.send = std::make_unique<ServiceInterface>();
     self.read = std::make_unique<ServiceInterface>();
@@ -1023,15 +1230,20 @@ TransportSample StepwiseTransport::sample() const
 {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   auto value = impl_->latest;
+  if (value.tcp_can_fault) {value.error = value.tcp_can_status;}
   value.brake_on_hold = impl_->options.brake_on_hold;
   value.feedback.healthy = value.diagnosis_ok && impl_->state_valid &&
-    impl_->pose_valid && (!impl_->options.adaptive_follow_ik || value.kinematics_verified);
+    impl_->pose_valid && !value.tcp_can_fault &&
+    (!impl_->options.adaptive_follow_ik || value.kinematics_verified);
   return value;
 }
 bool StepwiseTransport::submit(const StepwiseCommand & command, const std::array<double, 6> & seed)
 {
   std::lock_guard<std::mutex> lock(impl_->mutex);
-  if (impl_->shutdown || impl_->busy || impl_->job || impl_->stop_job ||
+  const bool admissible_during_feed = impl_->continuation_busy && command.assisted_drag &&
+    command.epoch == impl_->allowed_epoch;
+  if (impl_->shutdown || (impl_->busy && !admissible_during_feed) || impl_->job ||
+    impl_->stop_job ||
     (command.follow_joint_mode && !impl_->options.allow_follow_mode) ||
     (command.hold_position && !command.follow_joint_mode) ||
     (command.assisted_drag && !command.follow_joint_mode) ||
@@ -1113,6 +1325,7 @@ void StepwiseTransport::cancel_and_stop(std::uint64_t epoch)
   impl_->allowed_epoch = std::max(epoch, impl_->allowed_epoch.load());
   impl_->previous_dispatch_at = 0.0;
   impl_->job.reset();
+  impl_->last_stream_job.reset();
   impl_->drag_intent.reset();
   impl_->stop_job = impl_->allowed_epoch.load();
   impl_->changed.notify_all();

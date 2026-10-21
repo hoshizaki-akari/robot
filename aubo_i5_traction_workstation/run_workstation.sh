@@ -3,6 +3,17 @@ set -eo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mode="${1:-}"
+experimental_tcp_can=false
+if [[ "${2:-}" == --tcp-can-drag && $# -eq 2 ]]; then
+  experimental_tcp_can=true
+elif [[ $# -gt 1 ]]; then
+  echo 'Unknown extra startup argument.' >&2
+  exit 2
+fi
+if $experimental_tcp_can && [[ "$mode" != --live && "$mode" != --restart-live ]]; then
+  echo '--tcp-can-drag is available only with the full live workstation.' >&2
+  exit 2
+fi
 restart=false
 if [[ -z "$mode" ]]; then
   if [[ "${AUBO_TRACTION_ENABLED:-false}" == true ]]; then mode=--live; else mode=--web-only; fi
@@ -22,6 +33,7 @@ if [[ "$mode" == --live ]]; then
   powershell="$(command -v powershell.exe || true)"
   powershell="${powershell:-/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe}"
   arguments=(-NoProfile -ExecutionPolicy Bypass -File "$launcher")
+  if $experimental_tcp_can; then arguments+=(-ExperimentalTcpCanDrag); fi
   if $restart; then
     # Validate before stopping a working instance. The second invocation uses
     # the same project-local reference and Windows credential file.

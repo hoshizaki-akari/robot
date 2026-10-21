@@ -81,6 +81,28 @@ class LiveLauncherTest(unittest.TestCase):
         self.assertEqual(script.count('-WindowStyle Hidden'), 2)
         self.assertNotIn('-ExecutionPolicy', script)
 
+    def test_stream_candidate_requires_explicit_entry_and_does_not_replace_default(self):
+        entry = (ROOT / 'start_workstation.sh').read_text()
+        dispatcher = (ROOT / 'run_workstation.sh').read_text()
+        windows = (ROOT / 'scripts/start_live_workstation.ps1').read_text()
+        live = SCRIPT.read_text()
+        self.assertIn('"$@"', entry)
+        self.assertIn('--tcp-can-drag', dispatcher)
+        self.assertIn('-ExperimentalTcpCanDrag', dispatcher)
+        self.assertIn('[switch]$ExperimentalTcpCanDrag', windows)
+        self.assertIn("'AUBO_TCP_CAN_DRAG'", windows)
+        self.assertIn('AUBO_TCP_CAN_DRAG:-0', live)
+        self.assertNotIn('experimental_tcp_can_drag: true', (ROOT / 'config/response_tuning.yaml').read_text())
+        self.assertIn('experimental_tcp_can_drag: true', (ROOT / 'config/tcp_can_drag.experimental.yaml').read_text())
+
+    def test_stream_flag_rejects_web_only_before_starting_any_component(self):
+        result = subprocess.run(
+            ['bash', str(ROOT / 'run_workstation.sh'), '--web-only', '--tcp-can-drag'],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('only with the full live workstation', result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -9,6 +9,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
 import rclpy
 from controller_manager_msgs.srv import SwitchController
 from diagnostic_msgs.msg import DiagnosticArray
@@ -49,7 +50,8 @@ def test_sdk_constructor_guard_negative_control():
     assert process.returncode == 91, process.stdout.decode(errors="replace")
 
 
-def test_offline_node_refuses_motion_and_publishes_no_fake_pose(monkeypatch):
+@pytest.mark.parametrize("experimental", [False, True])
+def test_offline_node_refuses_motion_and_publishes_no_fake_pose(monkeypatch, experimental):
     """Check the offline motion boundary using the actual ROS executable."""
     env = environment()
     for name in ("ROS_DOMAIN_ID", "ROS_LOCALHOST_ONLY", "RMW_IMPLEMENTATION", "CYCLONEDDS_URI"):
@@ -58,6 +60,9 @@ def test_offline_node_refuses_motion_and_publishes_no_fake_pose(monkeypatch):
         os.environ["AUBO_STEPWISE_EXECUTABLE"], "--ros-args",
         "-p", "connect_hardware:=false", "-p", "enable_motion_interface:=true",
         "-p", "maximum_speed_mps:=0.05", "-p", "maximum_session_travel_m:=0.0",
+        "-p", f"experimental_tcp_can_drag:={str(experimental).lower()}",
+        "-p", "independent_drag_reference:=true", "-p", "fixed_follow_profile:=true",
+        "-p", "enable_follow_drag:=true", "-p", "follow_reference_enabled:=true",
     ], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     rclpy.init()
     node = rclpy.create_node("stepwise_explicit_offline_test")

@@ -87,6 +87,37 @@ def test_identity_transform_preserves_sensor_wrench():
     assert result.torque_base_about_flange == (4.0, 5.0, 6.0)
 
 
+def test_queued_pair_keeps_original_stamp_until_matching_pose_arrives():
+    """A newer unmatched force must not overwrite a fresh matchable sample."""
+    core = _core(queue_sensor_for_pose=True)
+    _accept_both(core, _sensor(force=(1, 0, 0)))
+    newer = _sensor(force=(3, 0, 0))
+    newer.header.stamp.nanosec = 80_000_000
+    assert core.accept_sensor(newer, 10.08, 10.08) is None
+    result = core.output_if_fresh(10.08)
+    assert result.stamp == (10, 0)
+    assert result.force_base == (1, 0, 0)
+    aligned = _pose()
+    aligned.header.stamp.nanosec = 80_000_000
+    assert core.accept_pose(aligned, 10.09, 10.09) is None
+    result = core.output_if_fresh(10.09)
+    assert result.stamp == (10, 80_000_000)
+    assert result.force_base == (3, 0, 0)
+    # No freshness extension just because an old pair can be found.
+    assert core.output_if_fresh(10.30) is None
+
+
+def test_queued_pair_does_not_resurrect_invalid_data_or_old_clock_history():
+    core = _core(queue_sensor_for_pose=True)
+    _accept_both(core)
+    invalid = _sensor(force=(math.nan, 0, 0))
+    assert core.accept_sensor(invalid, 10.01, 10.01) is not None
+    assert core.output_if_fresh(10.02) is None
+    _accept_both(core, _sensor(sec=9), _pose(sec=9), receipt=10.03, ros_now=9)
+    assert core.output_if_fresh(10.04).stamp == (9, 0)
+    assert len(core._sensor_history) == 1
+
+
 def test_clock_step_keeps_last_sample_only_for_original_receipt_lifetime():
     core = _core()
     _accept_both(core)

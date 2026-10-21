@@ -1,0 +1,8 @@
+# Candidate only: V4 mode ownership, 5 ms consumption and stop/buffer semantics
+# MUST be accepted on this controller before using this path for hand guidance.
+aubo_v4_state_node:
+  ros__parameters:
+    experimental_tcp_can_drag: true
+aubo_wrench_transform:
+  ros__parameters:
+    queue_sensor_for_pose: true

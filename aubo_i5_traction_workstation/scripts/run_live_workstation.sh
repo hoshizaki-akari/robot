@@ -70,16 +70,21 @@ for attempt in {1..50}; do
 done
 test -e /tmp/kwr75d-bridge-tty
 BIN="$PROJECT_DIR/ros2_overlay/install"
+experimental_parameters=()
+if [[ "${AUBO_TCP_CAN_DRAG:-0}" == 1 ]]; then
+  experimental_parameters=(--params-file "$PROJECT_DIR/config/tcp_can_drag.experimental.yaml")
+  echo 'Experimental TCP2CAN drag selected; no traction or mode entry until an operator starts drag.'
+fi
 launch robot "$BIN/aubo_v4_driver/lib/aubo_v4_driver/aubo_v4_stepwise_node" \
   --ros-args -p connect_hardware:=true -p enable_motion_interface:=true \
   -p maximum_step_m:=0.005 -p planning_horizon_s:=0.5 -p arrival_tolerance_m:=0.0002 \
   -p maximum_session_travel_m:=0.0 \
   -p state_poll_interval_s:=0.1 -p enable_follow_drag:=true \
-  --params-file "$PROJECT_DIR/config/response_tuning.yaml"
+  --params-file "$PROJECT_DIR/config/response_tuning.yaml" "${experimental_parameters[@]}"
 launch sensor "$BIN/aubo_kwr75_sensor/lib/aubo_kwr75_sensor/kwr75_sensor_node" \
   --ros-args -p serial_path:=/tmp/kwr75d-bridge-tty
 launch wrench "$BIN/fr_traction/lib/fr_traction/aubo_wrench_transform_node.py" \
-  --ros-args --params-file "$PROFILE" -p session_managed_tare:=true
+  --ros-args --params-file "$PROFILE" -p session_managed_tare:=true "${experimental_parameters[@]}"
 CONFIG="$PROJECT_DIR/ros2_overlay/src/fr_traction/config/traction_params.yaml"
 launch controller "$BIN/fr_traction/lib/fr_traction/traction_controller_node" \
   --ros-args -r __node:=traction_controller --params-file "$CONFIG" --params-file "$PROFILE" \

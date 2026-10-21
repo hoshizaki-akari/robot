@@ -53,6 +53,7 @@ public:
     // Same ROS identity/service names as the legacy backend, but never launch
     // both. Two independent opt-ins protect against accidental hardware use.
     const bool connect_hardware = declare_parameter<bool>("connect_hardware", false);
+    experimental_tcp_can_drag_ = declare_parameter("experimental_tcp_can_drag", false);
     enable_motion_ = declare_parameter<bool>("enable_motion_interface", false);
     enable_follow_drag_ = declare_parameter<bool>("enable_follow_drag", false);
     enable_follow_traction_ = declare_parameter<bool>("enable_follow_traction", false);
@@ -317,6 +318,10 @@ public:
       options.brake_on_hold = declare_parameter("brake_on_hold", false);
       options.drag_release_prediction_s = declare_parameter("drag_release_prediction_s", 0.0);
       options.adaptive_follow_ik = declare_parameter("adaptive_follow_ik", false);
+      options.experimental_tcp_can_drag = experimental_tcp_can_drag_;
+      if (options.experimental_tcp_can_drag && !config_.independent_drag_reference) {
+        throw std::invalid_argument("TCP2CAN candidate requires independent drag intent");
+      }
       options.maximum_drag_step_m = std::max(config_.maximum_step_m, config_.drag_maximum_step_m);
       options.drag_intent_timeout_s = std::min(0.5, config_.command_timeout_s);
       options.feedback_timeout_s = config_.feedback_timeout_s;
@@ -724,6 +729,17 @@ private:
       add("drag_intent_refreshes", std::to_string(sample.drag_intent_refreshes));
       add("drag_intent_age_s", std::to_string(sample.drag_intent_age_s));
       add("drag_superseded_commands", std::to_string(sample.drag_superseded_commands));
+      add(
+        "drag_execution_transport",
+        experimental_tcp_can_drag_ ? "tcp2can_experimental" : "follow_mode");
+      add("tcp_can_active", sample.tcp_can_active ? "1" : "0");
+      add("tcp_can_batches", std::to_string(sample.tcp_can_batches));
+      add("tcp_can_points", std::to_string(sample.tcp_can_points));
+      add("tcp_can_queued_points", std::to_string(sample.tcp_can_queued_points));
+      add("tcp_can_status", sample.tcp_can_status);
+      add("tcp_can_fault", sample.tcp_can_fault ? "1" : "0");
+      add("tcp_can_cycle_duration_s", std::to_string(sample.tcp_can_cycle_duration_s));
+      add("tcp_can_send_duration_s", std::to_string(sample.tcp_can_send_duration_s));
       add("follow_joint_speed_max_radps", std::to_string(sample.follow_joint_speed_max_radps));
       add(
         "follow_joint_acceleration_max_radps2",
@@ -752,6 +768,7 @@ private:
   std::string session_limit_handoff_error_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture session_limit_future_;
   bool enable_follow_drag_{false};
+  bool experimental_tcp_can_drag_{false};
   bool enable_follow_traction_{false};
   double telemetry_timeout_s_{0.5};
   unsigned last_command_mode_{0};

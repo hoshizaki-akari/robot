@@ -33,6 +33,8 @@ namespace aubo_v4_test_sdk
     bool bad_profile_readback {false};
     bool block_profile {false}, profile_entered {false}, release_profile {false};
     int follow_move_count {0};
+    int tcp_enter_count {0}, tcp_leave_count {0}, tcp_batch_count {0};
+    int tcp_enter_result {0}, tcp_send_result {0};
     int no_arrival_ahead_count {0};
     std::array < double, 6 > last_follow_target {};
     aubo_robot_namespace::Pos last_ik_position {};
@@ -46,6 +48,7 @@ namespace aubo_v4_test_sdk
     std::array < double, aubo_robot_namespace::ARM_DOF > ik_delta {};
     bool ik_nan {false};
     bool ik_scale_with_position {false};
+    bool tcp_linear_test_kinematics {false};
     int fk_result {0};
     bool block_ik {false};
     bool ik_entered {false};
@@ -94,6 +97,8 @@ namespace aubo_v4_test_sdk
       bad_profile_readback = false;
       block_profile = profile_entered = release_profile = false;
       follow_move_count = 0;
+      tcp_enter_count = tcp_leave_count = tcp_batch_count = 0;
+      tcp_enter_result = tcp_send_result = 0;
       no_arrival_ahead_count = 0;
       last_follow_target.fill(0.0);
       last_ik_position = {};
@@ -107,6 +112,7 @@ namespace aubo_v4_test_sdk
       stop_results = {aubo_robot_namespace::ErrnoSucc};
       ik_delta.fill(0.0);
       ik_scale_with_position = false;
+      tcp_linear_test_kinematics = false;
       fk_result = 0;
       ik_nan = false;
       block_ik = false;
@@ -421,6 +427,39 @@ public:
       return s.line_move_result;
     }
 
+    int robotServiceEnterTcp2CanbusMode()
+    {
+      State & s = state();
+      std::lock_guard < std::mutex > lock(s.mutex);
+      ++s.tcp_enter_count;
+      s.notify("tcp_enter");
+      return s.tcp_enter_result;
+    }
+
+    int robotServiceLeaveTcp2CanbusMode()
+    {
+      State & s = state();
+      std::lock_guard < std::mutex > lock(s.mutex);
+      ++s.tcp_leave_count;
+      s.notify("tcp_leave");
+      return 0;
+    }
+
+    int robotServiceSetRobotPosData2Canbus(
+      const std::vector < aubo_robot_namespace::wayPoint_S > & points)
+    {
+      State & s = state();
+      std::lock_guard < std::mutex > lock(s.mutex);
+      ++s.tcp_batch_count;
+      if (s.tcp_send_result == 0) {
+        s.diagnosis.macTargetPosDataSize = static_cast <
+          decltype(s.diagnosis.macTargetPosDataSize) > (
+          s.diagnosis.macTargetPosDataSize + points.size() * 6);
+      }
+      s.notify("tcp_batch");
+      return s.tcp_send_result;
+    }
+
     int robotServiceRegisterRealTimeRoadPointCallback(
       const RealTimeRoadPointCallback callback, void * context)
     {
@@ -448,6 +487,11 @@ public:
         point.jointpos[i] = seed[i];
       }
       point.cartPos.position = {0.0998, 0.20, 0.30};
+      if (s.tcp_linear_test_kinematics) {
+        point.cartPos.position.x += seed[0];
+        point.cartPos.position.y += seed[1];
+        point.cartPos.position.z += seed[2];
+      }
       point.orientation = {1.0, 0.0, 0.0, 0.0}; // Ori order is WXYZ.
       return s.fk_result;
     }
@@ -471,6 +515,11 @@ public:
         target.jointpos[i] = nan ? std::numeric_limits < double >
           ::quiet_NaN() : seed[i] + delta[i] *
           (s.ik_scale_with_position ? (position.x - 0.0998) / 0.0002 : 1.0);
+      }
+      if (s.tcp_linear_test_kinematics) {
+        target.jointpos[0] = position.x - 0.0998;
+        target.jointpos[1] = position.y - 0.20;
+        target.jointpos[2] = position.z - 0.30;
       }
       ++s.ik_completed_count;
       s.notify("ik_exit");
@@ -515,6 +564,9 @@ public:
       const std::size_t index = static_cast < std::size_t > (number - 1);
       const int result = index < s.stop_results.size() ?
         s.stop_results[index] : aubo_robot_namespace::ErrnoSucc;
+      // Test fixture response only; real firmware buffer clearing still needs
+      // the separate hardware checkpoint and a real buffer query.
+      if (result == 0) {s.diagnosis.macTargetPosDataSize = 0;}
       s.notify(number == 1 ? "stop_first_exit" : "stop_final_exit");
       return result;
     }

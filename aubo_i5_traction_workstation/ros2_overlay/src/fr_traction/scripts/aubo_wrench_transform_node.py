@@ -56,6 +56,7 @@ class TransformConfiguration:
     sensor_timeout_s: float = 0.10
     pose_timeout_s: float = 0.10
     pose_sensor_sync_tolerance_s: float = 0.05
+    queue_sensor_for_pose: bool = False
     timestamp_future_tolerance_s: float = 0.05
     quaternion_norm_tolerance: float = 0.05
     fixed_pose_tare_enabled: bool = False
@@ -262,6 +263,7 @@ class WrenchTransformCore:
             else None
         )
         self._sensor: _SensorSample | None = None
+        self._sensor_history: deque[_SensorSample] = deque(maxlen=256)
         self._pose: _PoseSample | None = None
         self._pose_history: deque[_PoseSample] = deque(maxlen=256)
         self._source_clocks: dict[str, tuple[float, float, float]] = {}
@@ -339,11 +341,15 @@ class WrenchTransformCore:
                 ros_now_s,
                 received,
             )
+            if self._sensor is not None and source_time_s < self._sensor.source_time_s:
+                self._sensor_history.clear()
             self._sensor = _SensorSample(stamp, source_time_s, force, torque, received)
+            self._sensor_history.append(self._sensor)
         except TimestampRejected as error:
             return str(error)
         except (AttributeError, TypeError, ValueError, OverflowError) as error:
             self._sensor = None
+            self._sensor_history.clear()
             return str(error)
         return None
 
@@ -380,11 +386,11 @@ class WrenchTransformCore:
             return str(error)
         return None
 
-    def _pose_at_sensor_time(self) -> Quaternion | None:
+    def _pose_at_sensor_time(self, sensor: _SensorSample | None = None) -> Quaternion | None:
         """Interpolate the flange orientation at the wrench's source timestamp."""
         if self._sensor is None or not self._pose_history:
             return None
-        source_time = self._sensor.source_time_s
+        source_time = (sensor or self._sensor).source_time_s
         previous: _PoseSample | None = None
         for current in self._pose_history:
             if current.source_time_s == source_time:
@@ -408,6 +414,25 @@ class WrenchTransformCore:
             <= self._configuration.pose_sensor_sync_tolerance_s
         ):
             return nearest.q_base_flange
+        return None
+
+    def _sensor_pose_pair(self, now: float) -> tuple[_SensorSample, Quaternion] | None:
+        """
+        Use the newest fresh real sample with a time-compatible real pose.
+
+        Do not overwrite a waiting sample with a newer unmatched force, stamp
+        old data as new, extrapolate orientation, or extend freshness budgets.
+        """
+        if self._sensor is None:
+            return None
+        candidates = (reversed(self._sensor_history)
+                      if self._configuration.queue_sensor_for_pose else (self._sensor,))
+        for sensor in candidates:
+            age = now - sensor.received_monotonic_s
+            if 0.0 <= age <= self._configuration.sensor_timeout_s:
+                orientation = self._pose_at_sensor_time(sensor)
+                if orientation is not None:
+                    return sensor, orientation
         return None
 
     def output_block_reason(self, now_monotonic_s: float) -> str:
@@ -438,7 +463,7 @@ class WrenchTransformCore:
             > config.tare_pose_tolerance_rad
         ):
             return "FIXED_TARE_ORIENTATION_MISMATCH"
-        if self._pose_at_sensor_time() is None:
+        if self._sensor_pose_pair(now_monotonic_s) is None:
             return "POSE_SENSOR_TIMESTAMP_MISMATCH"
         return ""
 
@@ -447,15 +472,16 @@ class WrenchTransformCore:
         if self.output_block_reason(now_monotonic_s):
             return None
         config = self._configuration
-        force_sensor = self._sensor.force_sensor
-        torque_sensor = self._sensor.torque_sensor
+        pair = self._sensor_pose_pair(now_monotonic_s)
+        if pair is None:
+            return None
+        sensor, q_base_flange = pair
+        force_sensor = sensor.force_sensor
+        torque_sensor = sensor.torque_sensor
         if self._use_fixed_tare:
             force_sensor = _subtract(force_sensor, _vector3(config.force_bias_sensor_n))
             torque_sensor = _subtract(torque_sensor, _vector3(config.torque_bias_sensor_nm))
         force_sensor = _multiply_components(force_sensor, self._force_sensor_sign)
-        q_base_flange = self._pose_at_sensor_time()
-        if q_base_flange is None:
-            return None
         force_base, torque_base = transform_sensor_wrench(
             force_sensor,
             torque_sensor,
@@ -466,7 +492,7 @@ class WrenchTransformCore:
         if not all(math.isfinite(component) for component in force_base + torque_base):
             return None
         return TransformedWrench(
-            self._sensor.stamp, q_base_flange, force_base, torque_base
+            sensor.stamp, q_base_flange, force_base, torque_base
         )
 
 
@@ -503,6 +529,9 @@ class AuboWrenchTransformNode(Node):
             pose_timeout_s=float(self.declare_parameter("pose_timeout_s", 0.10).value),
             pose_sensor_sync_tolerance_s=float(
                 self.declare_parameter("pose_sensor_sync_tolerance_s", 0.05).value
+            ),
+            queue_sensor_for_pose=bool(
+                self.declare_parameter("queue_sensor_for_pose", False).value
             ),
             timestamp_future_tolerance_s=float(
                 self.declare_parameter("timestamp_future_tolerance_s", 0.05).value
