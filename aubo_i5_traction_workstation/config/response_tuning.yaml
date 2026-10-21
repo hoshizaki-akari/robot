@@ -8,6 +8,8 @@ aubo_v4_state_node:
     # Drag must not hit the force-mode 5 mm lead ceiling for nearly every force.
     drag_maximum_step_m: 0.020
     drag_follow_horizon_s: 0.10
+    # One short deceleration target, rather than a stale position behind motion.
+    drag_release_prediction_s: 0.04
     follow_hold_enabled: true
     follow_reference_enabled: true
     fixed_follow_profile: true
@@ -32,6 +34,9 @@ traction_controller:
     stepwise_drag_release_gate_enabled: true
     drag_start_force_n: 0.65
     drag_release_force_n: 0.35
+    # Reject brief release-ringdown spikes without raising the breakaway force.
+    drag_start_confirm_s: 0.03
+    drag_max_acceleration_mps2: 1.2
     stepwise_drag_deadband_n: 0.35
     # Linear 10 mm/s/N above release deadband; saturates near 20.35 N, not 5 N.
     stepwise_drag_gain_mps_per_n: 0.010

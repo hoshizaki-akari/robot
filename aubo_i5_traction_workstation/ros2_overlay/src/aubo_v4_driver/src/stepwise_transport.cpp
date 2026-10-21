@@ -44,6 +44,7 @@ struct StepwiseTransport::Impl
   std::deque<TransportResult> results;
   TransportSample latest;
   double previous_dispatch_at{0.0};
+  std::array<double, 6> filtered_joint_velocity{};
   vendor::JointVelcAccParam cached_joint_velocity{}, cached_joint_acceleration{};
   bool joint_profile_cached{false};
   std::atomic<bool> invalidate_follow_profile{true};
@@ -78,7 +79,15 @@ struct StepwiseTransport::Impl
     }
     if (!options.allow_follow_mode) {return false;}
     if (invalidate_follow_profile.exchange(false)) {joint_profile_cached = false;}
-    if (current.command.hold_position) {return joint_profile_cached;}
+    if (current.command.hold_position) {
+      if (current.command.assisted_drag && options.drag_release_prediction_s > 0.0) {
+        // Arrival-ahead blending is useful in motion, not for the final hold.
+        // Reinstall the moving profile only when deliberate input resumes.
+        joint_profile_cached = false;
+        return send->robotServiceSetNoArrivalAhead() == 0;
+      }
+      return joint_profile_cached;
+    }
     double squared = 0.0;
     for (unsigned i = 0; i < 3; ++i) {
       const double delta = current.command.target[i] - current.command.start[i];
@@ -267,8 +276,15 @@ struct StepwiseTransport::Impl
       }
       speed = std::sqrt(squared) / dt;
       for (std::size_t i = 0; i < 6; ++i) {
-        joint_speed = std::hypot(joint_speed, (pose.joints[i] - self.latest.joints[i]) / dt);
+        const double measured = (pose.joints[i] - self.latest.joints[i]) / dt;
+        joint_speed = std::hypot(joint_speed, measured);
+        const double bounded = std::clamp(
+          measured, -self.options.follow_joint_speed_radps, self.options.follow_joint_speed_radps);
+        const double alpha = dt / (0.04 + dt);
+        self.filtered_joint_velocity[i] += alpha * (bounded - self.filtered_joint_velocity[i]);
       }
+    } else {
+      self.filtered_joint_velocity = {};
     }
     self.latest.feedback.position = pose.position;
     self.latest.feedback.orientation = pose.orientation;
@@ -349,6 +365,29 @@ struct StepwiseTransport::Impl
           // can introduce a branch/roundoff correction on an already moving arm.
           std::lock_guard<std::mutex> lock(mutex);
           std::copy(latest.joints.begin(), latest.joints.end(), target.jointpos);
+          latest.drag_release_predicted_joint_step_rad = 0.0;
+          if (current.command.assisted_drag && options.drag_release_prediction_s > 0.0 &&
+            latest.joint_speed_norm_radps > 0.02 &&
+            steady_seconds() - latest.feedback.received_at <= 0.1)
+          {
+            // A moving handle must decelerate ahead, not chase its sampled
+            // position backwards after the network/servo delay. This is a
+            // single bounded terminal target, not an integrating drift term.
+            for (unsigned i = 0; i < 6; ++i) {
+              const double velocity = filtered_joint_velocity[i];
+              const double time = std::min(
+                options.drag_release_prediction_s,
+                std::abs(velocity) / (2.0 * options.follow_joint_acceleration_radps2));
+              const double room = std::max(
+                0.0, options.maximum_joint_step_rad -
+                std::abs(latest.joints[i] - current.seed[i]));
+              const double bound = std::min(room, 0.2 * options.maximum_joint_step_rad);
+              const double delta = std::clamp(velocity * time, -bound, bound);
+              target.jointpos[i] += delta;
+              latest.drag_release_predicted_joint_step_rad = std::max(
+                latest.drag_release_predicted_joint_step_rad, std::abs(delta));
+            }
+          }
         } else {
           ik = send->robotServiceRobotIk(current.seed.data(), position, orientation, target);
         }
@@ -783,6 +822,8 @@ bool StepwiseTransport::connect(const TransportOptions & options, std::string & 
     options.maximum_step_m > 0.005 || !std::isfinite(options.state_poll_interval_s) ||
     !std::isfinite(options.maximum_drag_step_m) || options.maximum_drag_step_m <= 0.0 ||
     options.maximum_drag_step_m > 0.020 ||
+    !std::isfinite(options.drag_release_prediction_s) ||
+    options.drag_release_prediction_s < 0.0 || options.drag_release_prediction_s > 0.1 ||
     options.state_poll_interval_s < 0.02 || options.state_poll_interval_s > 1.0)
   {
     error = "invalid stepwise transport configuration or repeated connect";

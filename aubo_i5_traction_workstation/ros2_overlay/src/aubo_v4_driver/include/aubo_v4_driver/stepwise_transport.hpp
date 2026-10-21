@@ -26,6 +26,7 @@ struct TransportOptions
   bool subdivide_follow_joint_steps{false};
   bool brake_on_hold{false};
   bool adaptive_follow_ik{false};
+  double drag_release_prediction_s{0.0};
   double maximum_drag_step_m{0.005};
   double follow_joint_speed_radps{0.2}, follow_joint_acceleration_radps2{0.5};
 };
@@ -56,6 +57,7 @@ struct TransportSample
   double maximum_ik_duration_s{0.0}, maximum_motion_call_duration_s{0.0};
   std::string last_telemetry_failure;
   double joint_speed_norm_radps{0.0};
+  double drag_release_predicted_joint_step_rad{0.0};
   std::uint64_t controller_event_sequence{0};
   int controller_event_type{0}, controller_event_code{0};
   std::string controller_event_content;

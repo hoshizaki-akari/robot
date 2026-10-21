@@ -130,6 +130,25 @@ TEST(StepwiseResponse, DirectionChangeHasNoOldAxisFilterTail)
   EXPECT_DOUBLE_EQ(ft::norm(released), 0);
 }
 
+TEST(StepwiseResponse, DragReleaseRingdownDoesNotRearmButSustainedLightForceDoes)
+{
+  ft::DragReleaseGate gate;
+  for (unsigned i = 0; i < 2; ++i) {
+    EXPECT_FALSE(gate.update(1.0, 0.65, 0.35, 0.01, 0.03));
+  }
+  EXPECT_TRUE(gate.update(1.0, 0.65, 0.35, 0.01, 0.03));
+  EXPECT_FALSE(gate.update(0.2, 0.65, 0.35, 0.01, 0.03));
+  for (unsigned i = 0; i < 10; ++i) {
+    EXPECT_FALSE(gate.update(0.9, 0.65, 0.35, 0.01, 0.03));
+    EXPECT_FALSE(gate.update(0.4, 0.65, 0.35, 0.01, 0.03));
+  }
+  EXPECT_FALSE(gate.update(0.8, 0.65, 0.35, 0.01, 0.03));
+  EXPECT_FALSE(gate.update(0.8, 0.65, 0.35, 0.01, 0.03));
+  EXPECT_TRUE(gate.update(0.8, 0.65, 0.35, 0.01, 0.03));
+  EXPECT_FALSE(gate.update(0.2, 0.65, 0.35, 0.01, 0.03));
+  EXPECT_FALSE(gate.update(10.0, 0.65, 0.35, 0.5, 0.03));
+}
+
 TEST(StepwiseResponse, ReleaseGateRejectsRecordedNoiseAndDoesNotRearmInHysteresisBand)
 {
   ft::DragReleaseGate gate;

@@ -515,6 +515,37 @@ TEST(StepwiseFollowResponse, DragForcesKeepDifferentLeadDistancesInsteadOfSameFi
   EXPECT_LE(lead(0.1965, false), 0.0050000001);
 }
 
+TEST(StepwiseFollowResponse, DragTurnCannotCarryOldLateralSpringOrOpposingAxis)
+{
+  StepwiseConfig config;
+  config.maximum_step_m = 0.005;
+  config.maximum_speed_mps = 0.15;
+  config.follow_update_interval_s = 0.03;
+  config.follow_reference_enabled = true;
+  StepwiseScheduler scheduler(config);
+  arm(scheduler);
+  scheduler.set_drag_mode(true);
+  scheduler.set_follow_mode(true, 0);
+  const auto first = send(scheduler, {0.05, 0.02, 0});
+  acknowledge(scheduler, first);
+  // The hand/controller already overtook X, while the old target still leads Y.
+  scheduler.set_feedback(feedback(2, 0.05, false, 0.02, {0.004, -0.003, 0}), 0.05);
+  scheduler.set_velocity({0.05, 0, 0}, 0.05);
+  const auto next = scheduler.take_command(0.05);
+  ASSERT_TRUE(next);
+  EXPECT_GT(next->target[0], next->start[0]);
+  EXPECT_DOUBLE_EQ(next->target[1], next->start[1]);
+  scheduler.acknowledge(next->id, next->epoch, true, 0.06);
+  scheduler.set_feedback(feedback(3, 0.09, false, 0.02, {0.006, -0.003, 0}), 0.09);
+  scheduler.set_velocity({0.04, -0.02, 0}, 0.09);
+  const auto turn = scheduler.take_command(0.09);
+  ASSERT_TRUE(turn);
+  EXPECT_GT(turn->target[0], turn->start[0]);
+  EXPECT_LT(turn->target[1], turn->start[1]);
+  EXPECT_NEAR(
+    (turn->target[1] - turn->start[1]) / (turn->target[0] - turn->start[0]), -0.5, 1e-12);
+}
+
 TEST(StepwiseFollowResponse, DelayedSdkReplyDoesNotAccumulateACatchupJump)
 {
   StepwiseConfig config;

@@ -44,23 +44,34 @@ private:
 class DragReleaseGate
 {
 public:
-  void reset() {active_ = false;}
-  bool update(double force_n, double start_n, double release_n)
+  void reset() {active_ = false; start_elapsed_s_ = 0.0;}
+  bool update(
+    double force_n, double start_n, double release_n,
+    double dt_s = 0.0, double start_confirm_s = 0.0)
   {
     if (!std::isfinite(force_n) || !std::isfinite(start_n) ||
-      !std::isfinite(release_n) || release_n < 0.0 || start_n <= release_n)
+      !std::isfinite(release_n) || release_n < 0.0 || start_n <= release_n ||
+      !std::isfinite(start_confirm_s) || start_confirm_s < 0.0 ||
+      (start_confirm_s > 0.0 && (!std::isfinite(dt_s) || dt_s <= 0.0 || dt_s > 0.25)))
     {
-      active_ = false;
+      reset();
     } else if (active_) {
-      if (force_n <= release_n) {active_ = false;}
+      if (force_n <= release_n) {reset();}
     } else if (force_n >= start_n) {
-      active_ = true;
+      start_elapsed_s_ += dt_s;
+      if (start_confirm_s == 0.0 || start_elapsed_s_ + 1e-12 >= start_confirm_s) {
+        active_ = true;
+        start_elapsed_s_ = 0.0;
+      }
+    } else {
+      start_elapsed_s_ = 0.0;
     }
     return active_;
   }
 
 private:
   bool active_{false};
+  double start_elapsed_s_{0.0};
 };
 
 inline Vec3 responsive_drag_force(

@@ -409,6 +409,20 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
       displacement[i] = (continuing ? pending_->target[i] - feedback_->position[i] : 0.0) +
         (*velocity_)[i] * speed_scale * dt;
     }
+    if (drag_mode_) {
+      // A force-controlled handle must not act like a spring attached to the
+      // previous Cartesian reference. Carry only forward lead along CURRENT
+      // input, never an old lateral component opposing the operator's new axis.
+      double along = 0.0;
+      for (unsigned i = 0; i < 3; ++i) {
+        along += displacement[i] * (*velocity_)[i];
+      }
+      const double lead = std::max(
+        requested_speed * speed_scale * dt, along / requested_speed);
+      for (unsigned i = 0; i < 3; ++i) {
+        displacement[i] = lead * (*velocity_)[i] / requested_speed;
+      }
+    }
     double forward = 0.0;
     for (unsigned i = 0; i < 3; ++i) {
       forward += displacement[i] * (*velocity_)[i];

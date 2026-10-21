@@ -435,6 +435,10 @@ def test_responsive_drag_parameters_reach_all_axes_without_retuning_force_modes(
 ):
     """Exercise real ROS parameter wiring, not only the pure decision policy."""
     child = ControllerProcess(verified=True, extra_parameters=[
+        "-p", "stepwise_drag_release_gate_enabled:=true",
+        "-p", "drag_start_force_n:=0.65",
+        "-p", "drag_release_force_n:=0.35",
+        "-p", "drag_start_confirm_s:=0.03",
         "-p", "stepwise_drag_deadband_n:=0.5",
         "-p", f"stepwise_drag_gain_mps_per_n:={gain}",
         "-p", f"stepwise_drag_minimum_speed_mps:={minimum}",

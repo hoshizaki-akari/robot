@@ -33,6 +33,7 @@ namespace aubo_v4_test_sdk
     bool bad_profile_readback {false};
     bool block_profile {false}, profile_entered {false}, release_profile {false};
     int follow_move_count {0};
+    int no_arrival_ahead_count {0};
     std::array < double, 6 > last_follow_target {};
     aubo_robot_namespace::JointVelcAccParam joint_velocity {}, joint_acceleration {};
     std::size_t login_index {0};
@@ -91,6 +92,7 @@ namespace aubo_v4_test_sdk
       bad_profile_readback = false;
       block_profile = profile_entered = release_profile = false;
       follow_move_count = 0;
+      no_arrival_ahead_count = 0;
       last_follow_target.fill(0.0);
       joint_velocity = {};
       joint_acceleration = {};
@@ -388,7 +390,13 @@ public:
       value = s.joint_acceleration;
     }
 
-    int robotServiceSetNoArrivalAhead() {return 0;}
+    int robotServiceSetNoArrivalAhead()
+    {
+      auto & s = aubo_v4_test_sdk::state();
+      std::lock_guard < std::mutex > lock(s.mutex);
+      ++s.no_arrival_ahead_count;
+      return 0;
+    }
     int robotServiceSetArrivalAheadTimeMode(double) {return 0;}
 
     int robotServiceFollowModeJointMove(double * target)

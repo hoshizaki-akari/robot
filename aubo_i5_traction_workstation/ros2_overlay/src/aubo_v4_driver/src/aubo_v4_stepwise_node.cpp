@@ -304,6 +304,7 @@ public:
       options.fixed_follow_profile = fixed_follow_profile;
       options.single_stop_when_quiescent = declare_parameter("single_stop_when_quiescent", false);
       options.brake_on_hold = declare_parameter("brake_on_hold", false);
+      options.drag_release_prediction_s = declare_parameter("drag_release_prediction_s", 0.0);
       options.adaptive_follow_ik = declare_parameter("adaptive_follow_ik", false);
       options.maximum_drag_step_m = std::max(config_.maximum_step_m, config_.drag_maximum_step_m);
       options.subdivide_follow_joint_steps =
@@ -599,6 +600,9 @@ private:
       add("communication_recoveries", std::to_string(scheduler_->communication_recoveries()));
       add("measured_cartesian_speed_mps", std::to_string(sample.feedback.speed_mps));
       add("measured_joint_speed_norm_radps", std::to_string(sample.joint_speed_norm_radps));
+      add(
+        "drag_release_predicted_joint_step_rad",
+        std::to_string(sample.drag_release_predicted_joint_step_rad));
       add("controller_event_type", std::to_string(sample.controller_event_type));
       add("controller_event_code", std::to_string(sample.controller_event_code));
       add("controller_event_content", sample.controller_event_content);

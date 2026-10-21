@@ -117,6 +117,12 @@ public:
     drag_start_force_n_ = declare_parameter("drag_start_force_n", 1.0);
     drag_release_force_n_ = declare_parameter("drag_release_force_n", 0.6);
     drag_release_confirm_s_ = declare_parameter("drag_release_confirm_s", 0.15);
+    drag_start_confirm_s_ = declare_parameter("drag_start_confirm_s", 0.0);
+    if (!std::isfinite(drag_start_confirm_s_) || drag_start_confirm_s_ < 0.0 ||
+      drag_start_confirm_s_ > 0.2)
+    {
+      throw std::invalid_argument("invalid drag start confirmation time");
+    }
     stepwise_drag_release_gate_enabled_ = declare_parameter(
       "stepwise_drag_release_gate_enabled",
       false);
@@ -522,7 +528,8 @@ private:
     Vec3 drag_input = latest_wrench_;
     if (mode == ControlMode::DRAGGING && stepwise_backend_ &&
       stepwise_drag_release_gate_enabled_ &&
-      !drag_release_gate_.update(norm(drag_input), drag_start_force_n_, drag_release_force_n_))
+      !drag_release_gate_.update(
+        norm(drag_input), drag_start_force_n_, drag_release_force_n_, dt_s, drag_start_confirm_s_))
     {
       drag_input = {};
       drag_force_filter_.reset();
@@ -672,6 +679,7 @@ private:
   double drag_start_force_n_ = 1.0;
   double drag_release_force_n_ = 0.6;
   double drag_release_confirm_s_ = 0.15;
+  double drag_start_confirm_s_ = 0.0;
   double drag_gain_mps_per_n_ = 0.00625;
   double drag_max_speed_mps_ = 0.050;
   double drag_max_acceleration_mps2_ = 0.60;

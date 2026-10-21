@@ -587,6 +587,61 @@ TEST_F(StepwiseTransportTest, FollowCachesProfilesAndAcceptsMeasuredHold)
   EXPECT_EQ(stop_count(), 0);
 }
 
+TEST_F(StepwiseTransportTest, DragReleaseTargetsBoundedDecelerationAheadAndDisablesBlending)
+{
+  for (double direction : {-1.0, 1.0}) {
+    StepwiseTransport transport;
+    auto settings = options();
+    settings.allow_follow_mode = true;
+    settings.fixed_follow_profile = true;
+    settings.drag_release_prediction_s = 0.04;
+    const int stops_before = stop_count();
+    std::string error;
+    ASSERT_TRUE(transport.connect(settings, error));
+    auto point = valid_waypoint();
+    aubo_v4_test_sdk::emit_waypoint(point);
+    for (unsigned i = 1; i <= 4; ++i) {
+      std::this_thread::sleep_for(20ms);
+      point.jointpos[0] = direction * 0.001 * i;
+      aubo_v4_test_sdk::emit_waypoint(point);
+    }
+    auto value = command(1, 1);
+    value.start = value.target;
+    value.follow_joint_mode = true;
+    value.assisted_drag = true;
+    value.hold_position = true;
+    std::array<double, 6> current{};
+    current[0] = point.jointpos[0];
+    ASSERT_TRUE(transport.submit(value, current));
+    const auto held = wait_for_motion_result(transport, 1s);
+    ASSERT_TRUE(held);
+    EXPECT_TRUE(held->success) << held->detail;
+    {
+      auto & state = aubo_v4_test_sdk::state();
+      std::lock_guard<std::mutex> lock(state.mutex);
+      const double delta = state.last_follow_target[0] - current[0];
+      EXPECT_GT(direction * delta, 0.0);
+      EXPECT_LE(std::abs(delta), 0.2 * settings.maximum_joint_step_rad);
+      EXPECT_GT(state.no_arrival_ahead_count, 0);
+    }
+    EXPECT_EQ(stop_count(), stops_before);
+    // Settled feedback must cancel any remaining velocity-estimator tail.
+    std::this_thread::sleep_for(20ms);
+    aubo_v4_test_sdk::emit_waypoint(point);
+    value.id = 2;
+    ASSERT_TRUE(transport.submit(value, current));
+    const auto quiet_hold = wait_for_motion_result(transport, 1s);
+    ASSERT_TRUE(quiet_hold);
+    EXPECT_TRUE(quiet_hold->success);
+    EXPECT_DOUBLE_EQ(transport.sample().drag_release_predicted_joint_step_rad, 0.0);
+    {
+      auto & state = aubo_v4_test_sdk::state();
+      std::lock_guard<std::mutex> lock(state.mutex);
+      EXPECT_DOUBLE_EQ(state.last_follow_target[0], current[0]);
+    }
+  }
+}
+
 TEST_F(StepwiseTransportTest, IdleSenderStopsOnceWithoutTreatingSecondStopErrorAsSuccess)
 {
   StepwiseTransport transport;
