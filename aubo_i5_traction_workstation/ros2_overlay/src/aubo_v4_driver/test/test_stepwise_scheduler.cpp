@@ -164,6 +164,42 @@ TEST(StepwiseFollow, AckWithoutPhysicalProgressDoesNotAllowEndlessTargets)
   EXPECT_NE(scheduler.fault_reason().find("no measured progress"), std::string::npos);
 }
 
+TEST(StepwiseFollow, FineForceCorrectionDoesNotFaultBeforeMeasurableTravelIsRequested)
+{
+  StepwiseScheduler scheduler;
+  arm(scheduler);
+  ASSERT_TRUE(scheduler.set_follow_mode(true, 0));
+  auto current = send(scheduler, {0.00001, 0, 0});
+  acknowledge(scheduler, current);
+  for (unsigned i = 1; i < 120 && !scheduler.fault_pending(); ++i) {
+    const double now = i * 0.1 + 0.03;
+    scheduler.set_feedback(feedback(i + 1, now, false), now);
+    scheduler.set_velocity({0.00001, 0, 0}, now);
+    if (auto next = scheduler.take_command(now)) {
+      scheduler.acknowledge(next->id, next->epoch, true, now);
+    }
+    if (i == 30) {EXPECT_FALSE(scheduler.fault_pending());}
+  }
+  // Persistent lack of progress still faults once commanded net travel is
+  // measurable. The change must not turn a stalled actuator into healthy idle.
+  EXPECT_TRUE(scheduler.fault_pending());
+  EXPECT_NE(scheduler.fault_reason().find("no measured progress"), std::string::npos);
+}
+
+TEST(StepwiseFollow, FailedAckRetainsSdkReasonAndOldEpochCannotOverwriteIt)
+{
+  StepwiseScheduler scheduler;
+  arm(scheduler);
+  auto current = send(scheduler, {0.002, 0, 0});
+  scheduler.acknowledge(
+    current.id, current.epoch, false, 0.02,
+    "FollowModeJointMove SDK result 10007");
+  EXPECT_NE(scheduler.fault_reason().find("10007"), std::string::npos);
+  scheduler.acknowledge(current.id, current.epoch, false, 0.03, "stale cancellation");
+  EXPECT_NE(scheduler.fault_reason().find("10007"), std::string::npos);
+  EXPECT_EQ(scheduler.fault_reason().find("stale cancellation"), std::string::npos);
+}
+
 TEST(StepwiseFollow, ReleaseStillRequiresThreeDistinctPostStopFrames)
 {
   StepwiseScheduler scheduler;

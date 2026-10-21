@@ -102,7 +102,9 @@ public:
   bool set_feedback(const StepwiseFeedback & feedback, double now);
   bool set_velocity(const std::array<double, 3> & velocity, double now);
   std::optional<StepwiseCommand> take_command(double now);
-  void acknowledge(std::uint64_t id, std::uint64_t epoch, bool success, double now);
+  void acknowledge(
+    std::uint64_t id, std::uint64_t epoch, bool success, double now,
+    const std::string & detail = "");
   void request_stop(double now, const std::string & reason, bool fault = false);
   std::optional<std::uint64_t> take_stop_request();
   void acknowledge_stop(std::uint64_t epoch, bool success, double now);
@@ -128,6 +130,7 @@ private:
   void clear_motion_cache();
   void fail_closed(const std::string & reason, double now);
   void begin_stop(double now, const std::string & reason, bool fault);
+  void reset_follow_progress(double now);
 
   StepwiseConfig config_;
   bool drag_mode_{false};
@@ -166,6 +169,8 @@ private:
   bool follow_mode_{false};
   double last_follow_dispatch_at_{0.0}, follow_progress_at_{0.0};
   std::array<double, 3> follow_progress_position_{};
+  std::array<double, 3> expected_follow_motion_{};
+  double progress_integrated_at_{0.0};
   std::array<double, 3> last_follow_velocity_{};
   std::uint64_t last_follow_feedback_sequence_{0};
 };

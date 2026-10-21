@@ -319,7 +319,7 @@ private:
       if (result->stop) {
         scheduler_->acknowledge_stop(result->epoch, result->success, time);
       } else {
-        scheduler_->acknowledge(result->id, result->epoch, result->success, time);
+        scheduler_->acknowledge(result->id, result->epoch, result->success, time, result->detail);
       }
     }
     const auto time = av::steady_seconds();
@@ -575,6 +575,9 @@ private:
       add("waypoint_age_s", std::to_string(time - sample.feedback.received_at));
       add("diagnosis_result", std::to_string(sample.diagnosis_result));
       add("state_result", std::to_string(sample.state_result));
+      add("sdk_normal_requests_serialized", "1");
+      add("diagnosis_read_timeouts", std::to_string(sample.diagnosis_read_timeouts));
+      add("state_read_timeouts", std::to_string(sample.state_read_timeouts));
       add("query_duration_s", std::to_string(sample.query_duration_s));
       add("ik_duration_s", std::to_string(sample.ik_duration_s));
       add("motion_call_duration_s", std::to_string(sample.motion_call_duration_s));

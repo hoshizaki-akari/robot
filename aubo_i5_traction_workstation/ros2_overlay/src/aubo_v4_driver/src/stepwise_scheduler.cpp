@@ -135,6 +135,14 @@ void StepwiseScheduler::clear_motion_cache()
   have_quiet_since_ = false;
 }
 
+void StepwiseScheduler::reset_follow_progress(double now)
+{
+  follow_progress_at_ = now;
+  progress_integrated_at_ = now;
+  expected_follow_motion_ = {};
+  if (feedback_) {follow_progress_position_ = feedback_->position;}
+}
+
 void StepwiseScheduler::begin_stop(double now, const std::string & reason, bool fault)
 {
   if (fault && fault_reason_.empty()) {fault_reason_ = reason;}
@@ -189,8 +197,7 @@ bool StepwiseScheduler::set_enabled(bool enabled, double now)
     activation_orientation_ = feedback_->orientation;
     reason_ = "enabled; waiting for a new velocity";
     activation_velocity_generation_ = velocity_generation_;
-    follow_progress_at_ = now;
-    follow_progress_position_ = feedback_->position;
+    reset_follow_progress(now);
     last_follow_feedback_sequence_ = 0;
     return true;
   }
@@ -219,8 +226,7 @@ bool StepwiseScheduler::set_follow_mode(bool enabled, double now)
     return false;
   }
   follow_mode_ = enabled;
-  follow_progress_at_ = now;
-  if (feedback_) {follow_progress_position_ = feedback_->position;}
+  reset_follow_progress(now);
   return true;
 }
 
@@ -272,8 +278,7 @@ bool StepwiseScheduler::set_feedback(const StepwiseFeedback & feedback, double n
   last_feedback_sequence_ = feedback.sequence;
   have_feedback_sequence_ = true;
   if (distance3(feedback.position, follow_progress_position_) >= config_.arrival_tolerance_m) {
-    follow_progress_position_ = feedback.position;
-    follow_progress_at_ = feedback.received_at;
+    reset_follow_progress(now);
   }
 
   if ((state_ == StepwiseState::SENDING || state_ == StepwiseState::MOVING ||
@@ -317,9 +322,8 @@ bool StepwiseScheduler::set_velocity(const std::array<double, 3> & velocity, dou
   {
     begin_stop(now, "zero velocity during motion", false);
   }
-  if (follow_mode_ && was_zero && !velocity_is_zero()) {
-    follow_progress_at_ = now;
-    if (feedback_) {follow_progress_position_ = feedback_->position;}
+  if (follow_mode_ && was_zero != velocity_is_zero()) {
+    reset_follow_progress(now);
   }
   return true;
 }
@@ -428,8 +432,7 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
     return std::nullopt;
   }
   if (follow_mode_ && !updating_follow) {
-    follow_progress_at_ = now;
-    follow_progress_position_ = feedback_->position;
+    reset_follow_progress(now);
   }
   pending_ = command;
   last_follow_velocity_ = *velocity_;
@@ -443,7 +446,7 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
 }
 
 void StepwiseScheduler::acknowledge(
-  std::uint64_t id, std::uint64_t epoch, bool success, double now)
+  std::uint64_t id, std::uint64_t epoch, bool success, double now, const std::string & detail)
 {
   if (!accept_time(now)) {
     return;
@@ -455,7 +458,9 @@ void StepwiseScheduler::acknowledge(
     return;
   }
   if (!success) {
-    begin_stop(now, "command acknowledgement failed", true);
+    begin_stop(
+      now, detail.empty() ? "command acknowledgement failed" :
+      "command acknowledgement failed: " + detail, true);
     return;
   }
   state_ = StepwiseState::MOVING;
@@ -588,7 +593,22 @@ void StepwiseScheduler::poll(double now)
     begin_stop(now, "velocity expired during motion", false);
     return;
   }
-  if (follow_mode_ && !velocity_is_zero() && now - follow_progress_at_ >= 2.0) {
+  if (follow_mode_ && velocity_ && now > progress_integrated_at_) {
+    const double dt = now - progress_integrated_at_;
+    const double scale = std::min(
+      1.0, config_.maximum_speed_mps / std::max(
+        norm3(*velocity_), std::numeric_limits<double>::epsilon()));
+    for (unsigned i = 0; i < 3; ++i) {
+      expected_follow_motion_[i] += (*velocity_)[i] * scale * dt;
+    }
+    progress_integrated_at_ = now;
+  }
+  // Near-target commands may legitimately request less than a measurable
+  // arrival tolerance in two seconds. Require both elapsed time and demanded
+  // net travel; opposite commands cancel instead of inheriting stale intent.
+  if (follow_mode_ && !velocity_is_zero() && now - follow_progress_at_ >= 2.0 &&
+    norm3(expected_follow_motion_) >= 2.0 * config_.arrival_tolerance_m)
+  {
     begin_stop(now, "follow target acknowledged but no measured progress", true);
     return;
   }

@@ -27,11 +27,16 @@ struct StepwiseTransport::Impl
   bool send_connected{false}, read_connected{false}, stop_connected{false};
   TransportOptions options;
   mutable std::mutex mutex;
+  // Legacy synchronous RPCs must not compete with each other. Real-time
+  // waypoint callbacks do not acquire this lock; urgent stop remains separate.
+  std::mutex request_mutex;
+  std::atomic<bool> sender_waiting{false};
   std::condition_variable changed;
   std::thread sender, reader, stopper;
   std::atomic<bool> shutdown{false}, allowed{false};
   std::atomic<std::uint64_t> allowed_epoch{0};
   bool busy{false}, stop_in_progress{false}, pose_valid{false};
+  bool state_valid{false};
   std::atomic<bool> ever_dispatched{false};
   std::optional<Job> job;
   std::optional<std::uint64_t> stop_job;
@@ -212,6 +217,9 @@ struct StepwiseTransport::Impl
     // Publishing an ACK also releases the only sender slot atomically. A
     // tracking replacement may arrive immediately after the consumer sees it.
     if (sender_finished) {busy = false;}
+    // Likewise, consuming a stop ACK must never leave a stale stopping flag
+    // that rejects the next otherwise valid session command.
+    if (value.stop) {stop_in_progress = false;}
     // At most one motion and one stop can be in flight. Bound even unexpected
     // repeated stop results; overflow is itself a diagnostic fault.
     if (results.size() >= 8) {
@@ -240,6 +248,9 @@ struct StepwiseTransport::Impl
       reply.id = current.command.id;
       reply.epoch = current.command.epoch;
       try {
+        sender_waiting = true;
+        std::unique_lock<std::mutex> request_lock(request_mutex);
+        sender_waiting = false;
         vendor::Pos position{};
         position.x = current.command.target[0];
         position.y = current.command.target[1];
@@ -468,6 +479,7 @@ struct StepwiseTransport::Impl
         if (options.single_stop_when_quiescent && sender_quiescent) {
           // Intent was revoked before this lock snapshot. No older send can
           // race this stop, so a second stop on another session is redundant.
+          std::lock_guard<std::mutex> request_lock(request_mutex);
           const int code = send->robotMoveFastStop();
           reply.success = code == vendor::ErrnoSucc;
           reply.detail = "quiescent stop SDK result " + std::to_string(code);
@@ -489,6 +501,7 @@ struct StepwiseTransport::Impl
             // Quiescent sender session gives the final stop the same request
             // ordering as the earlier LineMove. Firmware queue-clearing semantics
             // still need the explicit hardware checkpoint; ACK is not physical stop.
+            std::lock_guard<std::mutex> request_lock(request_mutex);
             const int last = send->robotMoveFastStop();
             reply.success = first == vendor::ErrnoSucc && last == vendor::ErrnoSucc;
             reply.detail = "stop SDK results " + std::to_string(first) + "," + std::to_string(last);
@@ -500,10 +513,6 @@ struct StepwiseTransport::Impl
         reply.detail = "unknown stop SDK exception";
       }
       result(std::move(reply));
-      {
-        std::lock_guard<std::mutex> lock(mutex);
-        stop_in_progress = false;
-      }
       changed.notify_all();
     }
   }
@@ -511,6 +520,14 @@ struct StepwiseTransport::Impl
   void read_loop()
   {
     while (!shutdown) {
+      // Yield normal queries to a queued motion; never block the ROS executor.
+      std::unique_lock<std::mutex> request_lock(request_mutex, std::try_to_lock);
+      if (!request_lock.owns_lock() || sender_waiting) {
+        if (request_lock.owns_lock()) {request_lock.unlock();}
+        std::unique_lock<std::mutex> lock(mutex);
+        changed.wait_for(lock, std::chrono::milliseconds(5));
+        continue;
+      }
       vendor::RobotDiagnosis raw{};
       const double query_started_at = steady_seconds();
       vendor::RobotState state = vendor::RobotStopped;
@@ -539,8 +556,12 @@ struct StepwiseTransport::Impl
       const bool good = diagnosis_rc == vendor::ErrnoSucc && diagnosis_is_healthy(d, &reason);
       {
         std::lock_guard<std::mutex> lock(mutex);
-        latest.diagnosis_ok = good;
+        // A failed read is not a new diagnosis. Retain only the last successful
+        // sample on a request timeout; its original age still expires in node.
+        // Explicit alarm/error replies invalidate health immediately.
+        if (diagnosis_rc != vendor::ErrCode_RequestTimeout) {latest.diagnosis_ok = good;}
         latest.diagnosis_result = diagnosis_rc;
+        if (diagnosis_rc == vendor::ErrCode_RequestTimeout) {++latest.diagnosis_read_timeouts;}
         if (diagnosis_rc == vendor::ErrnoSucc) {latest.diagnosis_at = diagnosis_time;}
         latest.error = good ? std::string{} : "telemetry unavailable or unhealthy: " + reason;
         if (!good) {
@@ -548,17 +569,25 @@ struct StepwiseTransport::Impl
             std::to_string(diagnosis_rc);
         }
       }
+      request_lock.unlock();
       // Publish diagnosis immediately. A slow subsequent state getter must
       // not hide an already completed, fresh diagnosis from the control tick.
-      try {
-        state_rc = read->robotServiceGetRobotCurrentState(state);
-        state_time = steady_seconds();
-      } catch (...) {}
+      {
+        std::unique_lock<std::mutex> state_lock(request_mutex);
+        try {
+          state_rc = read->robotServiceGetRobotCurrentState(state);
+          state_time = steady_seconds();
+        } catch (...) {}
+      }
       {
         std::lock_guard<std::mutex> lock(mutex);
         latest.state_result = state_rc;
+        if (state_rc == vendor::ErrCode_RequestTimeout) {++latest.state_read_timeouts;}
         latest.query_duration_s = steady_seconds() - query_started_at;
         latest.feedback.stopped = state_rc == vendor::ErrnoSucc && state == vendor::RobotStopped;
+        if (state_rc != vendor::ErrCode_RequestTimeout) {
+          state_valid = state_rc == vendor::ErrnoSucc;
+        }
         if (state_rc == vendor::ErrnoSucc) {latest.robot_state_at = state_time;}
         if (state_rc != vendor::ErrnoSucc) {
           latest.error = "robot state query failed: " + std::to_string(state_rc);
@@ -573,7 +602,10 @@ struct StepwiseTransport::Impl
         lock.unlock();
         vendor::wayPoint_S checked{};
         int rc = -1;
-        try {rc = read->robotServiceRobotFk(check.joints.data(), 6, checked);} catch (...) {}
+        {
+          std::lock_guard<std::mutex> fk_lock(request_mutex);
+          try {rc = read->robotServiceRobotFk(check.joints.data(), 6, checked);} catch (...) {}
+        }
         PoseSample pose;
         pose.position =
         {checked.cartPos.position.x, checked.cartPos.position.y, checked.cartPos.position.z};
@@ -695,7 +727,7 @@ TransportSample StepwiseTransport::sample() const
 {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   auto value = impl_->latest;
-  value.feedback.healthy = value.diagnosis_ok && value.state_result == vendor::ErrnoSucc &&
+  value.feedback.healthy = value.diagnosis_ok && impl_->state_valid &&
     impl_->pose_valid && (!impl_->options.adaptive_follow_ik || value.kinematics_verified);
   return value;
 }

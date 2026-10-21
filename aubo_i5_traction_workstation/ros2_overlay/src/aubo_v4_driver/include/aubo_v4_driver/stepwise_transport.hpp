@@ -39,6 +39,7 @@ struct TransportSample
   std::uint64_t motion_ack_count{0}, last_command_id{0};
   double requested_speed_mps{0.0};
   int diagnosis_result{-1}, state_result{-1};
+  std::uint64_t diagnosis_read_timeouts{0}, state_read_timeouts{0};
   int last_ik_result{-1};
   double last_ik_max_joint_delta_rad{0.0};
   double proposed_ik_max_joint_delta_rad{0.0};

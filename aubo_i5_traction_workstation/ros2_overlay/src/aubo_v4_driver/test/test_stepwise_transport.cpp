@@ -680,6 +680,74 @@ TEST_F(StepwiseTransportTest, SlowStateGetterDoesNotHideCompletedDiagnosis)
   EXPECT_TRUE(wait_for_diagnosis(transport, 1s));
 }
 
+TEST_F(StepwiseTransportTest, ReadTimeoutKeepsOriginalSampleAgeButNeverConfirmsStopped)
+{
+  StepwiseTransport transport;
+  ASSERT_TRUE(connect(transport));
+  aubo_v4_test_sdk::emit_waypoint(valid_waypoint());
+  ASSERT_TRUE(wait_for_diagnosis(transport, 1s));
+  ASSERT_TRUE(transport.sample().feedback.healthy);
+  auto & state = aubo_v4_test_sdk::state();
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.state_result = aubo_robot_namespace::ErrCode_RequestTimeout;
+    state.diagnosis_result = aubo_robot_namespace::ErrCode_RequestTimeout;
+  }
+  const auto original = transport.sample();
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  while (transport.sample().state_result == 0 && std::chrono::steady_clock::now() < deadline) {
+    std::size_t seen = 0;
+    aubo_v4_test_sdk::wait_for_event(seen, 20ms);
+  }
+  const auto timed_out = transport.sample();
+  EXPECT_EQ(timed_out.state_result, aubo_robot_namespace::ErrCode_RequestTimeout);
+  EXPECT_TRUE(timed_out.feedback.healthy);
+  EXPECT_FALSE(timed_out.feedback.stopped);
+  EXPECT_DOUBLE_EQ(timed_out.robot_state_at, original.robot_state_at);
+  EXPECT_DOUBLE_EQ(timed_out.diagnosis_at, original.diagnosis_at);
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.state_result = 10004;
+  }
+  while (transport.sample().state_result != 10004 && std::chrono::steady_clock::now() < deadline) {
+    std::size_t seen = 0;
+    aubo_v4_test_sdk::wait_for_event(seen, 20ms);
+  }
+  EXPECT_FALSE(transport.sample().feedback.healthy);
+}
+
+TEST_F(StepwiseTransportTest, MotionCannotOverlapBlockedReadRpcAndTimeoutIsNeverResent)
+{
+  auto & state = aubo_v4_test_sdk::state();
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.block_state = true;
+    state.line_move_result = aubo_robot_namespace::ErrCode_RequestTimeout;
+  }
+  StepwiseTransport transport;
+  ASSERT_TRUE(connect(transport));
+  bool entered;
+  {
+    std::unique_lock<std::mutex> lock(state.mutex);
+    entered = state.changed.wait_for(lock, 1s, [&state]() {return state.state_entered;});
+  }
+  EXPECT_TRUE(entered);
+  EXPECT_TRUE(transport.submit(command(1, 1), seed));
+  const bool ik_started = aubo_v4_test_sdk::wait_for_ik(30ms);
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.release_state = true;
+    state.changed.notify_all();
+  }
+  EXPECT_FALSE(ik_started);
+  const auto result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(result);
+  EXPECT_FALSE(result->success);
+  EXPECT_NE(result->detail.find("10007"), std::string::npos);
+  EXPECT_EQ(line_move_count(), 1);
+  EXPECT_EQ(ik_call_count(), 1);
+}
+
 TEST_F(StepwiseTransportTest, FixedFollowProfileIsConfiguredBeforeMotionAndNotPerTarget)
 {
   StepwiseTransport transport;
