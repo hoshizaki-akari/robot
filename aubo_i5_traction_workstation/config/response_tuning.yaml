@@ -12,10 +12,10 @@ aubo_v4_state_node:
     drag_release_prediction_s: 0.04
     follow_hold_enabled: true
     follow_reference_enabled: true
-    # Match each joint's SDK profile to its IK share of the requested Cartesian
-    # segment. The fixed 1 rad/s profile coincided with measured speed bursts and
-    # is a likely source of uneven Cartesian following during low-force dragging.
-    fixed_follow_profile: false
+    # Keep the SDK joint profile stable while following. Per-waypoint profile
+    # recalculation caused hundreds of profile RPC updates in one drag session,
+    # adding latency when the operator changed direction.
+    fixed_follow_profile: true
     single_stop_when_quiescent: true
     subdivide_follow_joint_steps: false
     adaptive_follow_ik: true
