@@ -322,11 +322,13 @@ class ManagerHarness:
 
     def wait_motion_idle(self, expected, timeout_s=1.0):
         """Confirm the test node received the requested fresh idle feedback."""
-        mark = len(self.motion_idle_history)
+        # This bounded deque may already be full after direction calibration.
+        # A length cursor would then always slice [200:] and never see input.
+        self.motion_idle_history.clear()
         self.wait_until(
             lambda: any(
                 message.data == expected
-                for message in list(self.motion_idle_history)[mark:]
+                for message in self.motion_idle_history
             ),
             timeout_s=timeout_s,
         )
@@ -529,6 +531,55 @@ def test_drag_accepts_bounded_clock_skew_but_rejects_invalid_source_age(manager,
     # Bad timestamps no longer invalidate data; sustained absence of accepted
     # samples must instead expire the unchanged receipt-time watchdog.
     assert manager.status_history[-1].fault_code == 'WRENCH_TIMEOUT'
+
+
+@pytest.mark.parametrize('arrival_force', [9.6, 10.4])
+def test_position_fr5_arrival_window_requests_stop_before_waiting_for_idle(manager, arrival_force):
+    """Within +/-1 N for one second completes without requiring the 0.15 N fine band."""
+    manager.wait_ready()
+    assert manager.set_operation_mode(1).success
+    assert manager.trigger('/traction/prepare').success
+    manager.wrench_force = (3.0, 0.0, 0.0)
+    manager.pump(duration_s=0.2)
+    assert manager.trigger('/traction/calibrate_direction').success
+    manager.wait_status(TractionStatus.DIRECTION_LOCKED, timeout_s=4.0)
+    assert manager.set_target_force(10.0).success
+    assert manager.trigger('/traction/start').success
+    manager.wait_status(TractionStatus.TRACTION)
+    manager.motion_idle = False
+    manager.wait_motion_idle(False)
+    stops_before = manager.switch.stop_requests
+    # A brief visit inside the window must not count as a confirmed arrival.
+    manager.wrench_force = (arrival_force, 0.0, 0.0)
+    manager.pump(duration_s=0.3)
+    manager.wrench_force = (8.0, 0.0, 0.0)
+    manager.pump(duration_s=0.5)
+    assert manager.switch.stop_requests == stops_before
+    manager.wrench_force = (arrival_force, 0.0, 0.0)
+    manager.wait_until(lambda: manager.switch.stop_requests > stops_before, timeout_s=2.5)
+    manager.pump(duration_s=0.15)
+    assert manager.status_history[-1].state == TractionStatus.TRACTION
+    assert not manager.status_history[-1].position_reached
+    assert manager.command_history[-1].mode == TractionCommand.DISABLED
+    if arrival_force > 10.0:
+        # A target update while stopping cannot announce the old target reached.
+        assert manager.set_target_force(14.0).success
+        manager.motion_idle = True
+        manager.wait_until(lambda: manager.switch.start_requests >= 2)
+        manager.wait_until(lambda: manager.status_history[-1].state == TractionStatus.TRACTION
+                           and manager.status_history[-1].target_force_n == 14.0
+                           and manager.command_history[-1].mode == TractionCommand.POSITIONING)
+        assert not manager.status_history[-1].position_reached
+        assert manager.status_history[-1].target_force_n == 14.0
+        return
+    manager.motion_idle = True
+    manager.wait_status(TractionStatus.POSITION_HOLD)
+    manager.wait_until(lambda: manager.status_history[-1].position_reached)
+    assert not manager.status_history[-1].fault_code
+    # Target changes during a completed hold must resume the same session.
+    assert manager.set_target_force(14.0).success
+    manager.wait_status(TractionStatus.TRACTION, after=manager.mark())
+    assert not manager.status_history[-1].position_reached
 
 
 def test_session_bound_waits_for_actual_stop_and_allows_next_prepare(manager):

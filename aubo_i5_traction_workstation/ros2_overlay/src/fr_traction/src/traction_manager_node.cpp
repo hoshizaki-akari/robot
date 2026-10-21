@@ -885,6 +885,7 @@ private:
 
   void handle_stop(const std_srvs::srv::Trigger::Response::SharedPtr response)
   {
+    position_stop_pending_ = false;
     const auto state = state_machine_.state();
     if ((state == TractionState::MANUAL_SETUP || state == TractionState::DIRECTION_LOCKED) &&
       (controller_start_pending_ || controller_activation_confirming_ ||
@@ -1132,6 +1133,7 @@ private:
     release_started_at_.reset();
     position_reached_started_at_.reset();
     calibration_samples_.clear();
+    position_stop_pending_ = false;
     pretension_detection_samples_.clear();
     safety_monitor_.reset();
     force_filter_.reset();
@@ -1354,6 +1356,7 @@ private:
       return;
     }
     fault_code_ = code;
+    position_stop_pending_ = false;
     clear_zero_return_state();
     if (stop_reason_.empty()) {stop_reason_ = reason;}
     transition(TractionState::FAULT);
@@ -1784,6 +1787,24 @@ private:
           break;
         }
         if (operation_mode_ == OperationMode::POSITION_TRACTION) {
+          if (position_stop_pending_) {
+            publish_disabled();
+            if (measured_idle()) {
+              position_stop_pending_ = false;
+              transition(TractionState::POSITION_HOLD);
+              if (std::abs(current_metrics().actual_force_n - target_force_n_) <=
+                position_reached_tolerance_n_)
+              {
+                position_reached_ = true;
+              } else if (!request_controller_start()) {
+                enter_fault("CARTESIAN_CONTROLLER_START_FAILED", "Position target resume failed");
+              }
+            } else if ((current_time - position_stop_started_at_).seconds() > 5.0) {
+              position_stop_pending_ = false;
+              enter_fault("STEPWISE_STOP_UNCONFIRMED", "Position completion stop not confirmed");
+            }
+            break;
+          }
           // Position traction has its own predictive velocity controller. It
           // receives the final target directly and performs fast approach,
           // early braking and fine correction without inheriting the virtual
@@ -1795,19 +1816,26 @@ private:
           const double force_error = std::abs(current_metrics().actual_force_n - target_force_n_);
           const bool diagnostics_fresh = fresh(
             last_position_diagnostics_steady_at_, motion_pause_timeout_s_);
-          const bool controller_settled = diagnostics_fresh &&
-            position_diagnostics_.phase == msg::PositionControlDiagnostics::SETTLING;
-          if (force_error <= position_reached_tolerance_n_ && controller_settled &&
-            measured_idle())
-          {
+          // The hardware port's fine regulation band is not the task's arrival
+          // tolerance. Confirm the original force window before requesting a
+          // stop, then confirm physical idle; never wait for idle while still
+          // commanding the fine-regulation controller to move.
+          const bool controller_settled = require_measured_idle_ || (diagnostics_fresh &&
+            position_diagnostics_.phase == msg::PositionControlDiagnostics::SETTLING);
+          if (force_error <= position_reached_tolerance_n_ && controller_settled) {
             if (!position_reached_started_at_) {position_reached_started_at_ = current_time;}
             if ((current_time - *position_reached_started_at_).seconds() >=
               position_reached_confirm_s_)
             {
               publish_disabled();
               request_controller_stop();
-              position_reached_ = true;
-              transition(TractionState::POSITION_HOLD);
+              if (require_measured_idle_) {
+                position_stop_pending_ = true;
+                position_stop_started_at_ = current_time;
+              } else {
+                position_reached_ = true;
+                transition(TractionState::POSITION_HOLD);
+              }
             }
           } else {
             position_reached_started_at_.reset();
@@ -2168,7 +2196,8 @@ private:
         status.message = constant_force_slack_hold_ ?
           "恒力牵引保持中：牵引带松弛，重新拉紧后自动继续；目标力保留" :
           operation_mode_ == OperationMode::POSITION_TRACTION ?
-          "位置牵引中，正在接近目标力" :
+          (position_stop_pending_ ? "目标力已进入到位范围，正在停稳确认" :
+          "位置牵引中，正在接近目标力") :
           (direction_correction_mode_name_ == "off" ?
           "恒力牵引中，正在沿已标定方向调节牵引力" : "恒力牵引中，正在自适应跟随受力方向");
         break;
@@ -2326,6 +2355,8 @@ private:
   double target_force_n_ = 10.0;
   bool target_force_configured_ = false;
   bool position_reached_ = false;
+  bool position_stop_pending_ = false;
+  rclcpp::Time position_stop_started_at_{0, 0, RCL_STEADY_TIME};
   OperationMode operation_mode_ = OperationMode::CONSTANT_FORCE;
   double current_command_target_n_ = 0.0;
   double velocity_command_mps_ = 0.0;
