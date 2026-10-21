@@ -518,9 +518,17 @@ def test_drag_accepts_bounded_clock_skew_but_rejects_invalid_source_age(manager,
     manager.wrench_stamp_offset_s = 0.02
     manager.pump(duration_s=0.4)
     assert manager.status_history[-1].state == TractionStatus.DRAGGING
+    # A transient invalid header must not poison the last valid force sample.
+    manager.wrench_stamp_offset_s = -3.0
+    manager.pump(duration_s=0.03)
+    manager.wrench_stamp_offset_s = 0.0
+    manager.pump(duration_s=0.2)
+    assert manager.status_history[-1].state == TractionStatus.DRAGGING
     manager.wrench_stamp_offset_s = invalid_offset
     manager.wait_status(TractionStatus.FAULT)
-    assert manager.status_history[-1].fault_code == 'WRENCH_INVALID'
+    # Bad timestamps no longer invalidate data; sustained absence of accepted
+    # samples must instead expire the unchanged receipt-time watchdog.
+    assert manager.status_history[-1].fault_code == 'WRENCH_TIMEOUT'
 
 
 def test_session_bound_waits_for_actual_stop_and_allows_next_prepare(manager):

@@ -202,6 +202,10 @@ def _message_vector(message: Any, field_name: str) -> Vector3:
         raise ValueError(f"invalid {field_name} vector") from error
 
 
+class TimestampRejected(ValueError):
+    """Ignore timing-only rejects without renewing or invalidating cached data."""
+
+
 class WrenchTransformCore:
     """
     ROS-free validation, freshness, and transform state.
@@ -228,6 +232,7 @@ class WrenchTransformCore:
         )
         self._sensor: _SensorSample | None = None
         self._pose: _PoseSample | None = None
+        self._source_clocks: dict[str, tuple[float, float, float]] = {}
 
     def _validate_configuration(self) -> None:
         config = self._configuration
@@ -255,7 +260,8 @@ class WrenchTransformCore:
                 raise ValueError("tare pose tolerance must be finite and nonnegative")
 
     def _validate_header(
-        self, message: Any, expected_frame: str, source_timeout_s: float, ros_now_s: float
+        self, message: Any, expected_frame: str, source_timeout_s: float, ros_now_s: float,
+        received_s: float,
     ) -> Stamp:
         if not math.isfinite(ros_now_s):
             raise ValueError("current ROS time is not finite")
@@ -267,11 +273,19 @@ class WrenchTransformCore:
         if frame_id != expected_frame:
             raise ValueError(f"unexpected frame_id {frame_id!r}; expected {expected_frame!r}")
         stamp, source_time_s = _stamp_seconds(header.stamp)
+        previous = self._source_clocks.get(expected_frame)
+        last_source = previous[2] if previous else 0.0
+        if previous and abs((ros_now_s - previous[0]) - (received_s - previous[1])) > 0.05:
+            last_source = 0.0
+        self._source_clocks[expected_frame] = (ros_now_s, received_s, last_source)
         age_s = ros_now_s - source_time_s
         if age_s > source_timeout_s:
-            raise ValueError("source timestamp is stale")
+            raise TimestampRejected("source timestamp is stale")
         if age_s < -self._configuration.timestamp_future_tolerance_s:
-            raise ValueError("source timestamp is too far in the future")
+            raise TimestampRejected("source timestamp is too far in the future")
+        if source_time_s <= last_source:
+            raise TimestampRejected("source timestamp is duplicated or out of order")
+        self._source_clocks[expected_frame] = (ros_now_s, received_s, source_time_s)
         return stamp
 
     def accept_sensor(
@@ -280,15 +294,18 @@ class WrenchTransformCore:
         """Store a valid sensor sample, returning a rejection reason if invalid."""
         try:
             received = _finite_float(receipt_monotonic_s)
+            force = _message_vector(message.wrench, "force")
+            torque = _message_vector(message.wrench, "torque")
             stamp = self._validate_header(
                 message,
                 self._configuration.expected_sensor_frame,
                 self._configuration.sensor_timeout_s,
                 ros_now_s,
+                received,
             )
-            force = _message_vector(message.wrench, "force")
-            torque = _message_vector(message.wrench, "torque")
             self._sensor = _SensorSample(stamp, force, torque, received)
+        except TimestampRejected as error:
+            return str(error)
         except (AttributeError, TypeError, ValueError, OverflowError) as error:
             self._sensor = None
             return str(error)
@@ -300,12 +317,6 @@ class WrenchTransformCore:
         """Store a valid EE pose sample, returning a rejection reason if invalid."""
         try:
             received = _finite_float(receipt_monotonic_s)
-            self._validate_header(
-                message,
-                self._configuration.expected_pose_frame,
-                self._configuration.pose_timeout_s,
-                ros_now_s,
-            )
             pose = message.pose
             _message_vector(pose, "position")
             orientation = pose.orientation
@@ -313,7 +324,16 @@ class WrenchTransformCore:
                 (orientation.x, orientation.y, orientation.z, orientation.w),
                 self._configuration.quaternion_norm_tolerance,
             )
+            self._validate_header(
+                message,
+                self._configuration.expected_pose_frame,
+                self._configuration.pose_timeout_s,
+                ros_now_s,
+                received,
+            )
             self._pose = _PoseSample(q_base_flange, received)
+        except TimestampRejected as error:
+            return str(error)
         except (AttributeError, TypeError, ValueError, OverflowError) as error:
             self._pose = None
             return str(error)

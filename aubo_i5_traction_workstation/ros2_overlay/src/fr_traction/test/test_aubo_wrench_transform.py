@@ -87,6 +87,28 @@ def test_identity_transform_preserves_sensor_wrench():
     assert result.torque_base_about_flange == (4.0, 5.0, 6.0)
 
 
+def test_clock_step_keeps_last_sample_only_for_original_receipt_lifetime():
+    core = _core()
+    _accept_both(core)
+    assert core.accept_sensor(_sensor(), 10.01, 11.48) is not None
+    assert core.accept_pose(_pose(), 10.01, 11.48) is not None
+    assert core.output_if_fresh(10.02).stamp == (10, 0)
+    assert core.accept_sensor(_sensor(), 10.19, 11.66) is not None
+    assert core.output_if_fresh(10.21) is None
+    sensor, pose = _sensor(sec=12), _pose(sec=12)
+    _accept_both(core, sensor, pose, receipt=10.53, ros_now=12.0)
+    assert core.output_if_fresh(10.54).stamp == (12, 0)
+
+
+def test_backward_clock_step_and_duplicate_source_stamp():
+    core = _core()
+    _accept_both(core)
+    _accept_both(core, _sensor(sec=9), _pose(sec=9), receipt=10.01, ros_now=9.0)
+    assert core.output_if_fresh(10.02).stamp == (9, 0)
+    assert core.accept_sensor(_sensor(sec=9), 10.19, 9.18) is not None
+    assert core.output_if_fresh(10.22) is None
+
+
 def test_90_degree_sensor_to_flange_rotation_is_applied_before_base_rotation():
     """Sensor-frame values rotate into flange coordinates before base rotation."""
     half_sqrt_two = math.sqrt(0.5)
@@ -293,12 +315,15 @@ def test_session_baseline_keeps_base_gravity_and_external_force_separate():
     external_base = (2.0, -1.0, 3.0)
     _accept_both(core, sensor=_sensor(force=gravity_base))
     baseline = core.output_if_fresh(10.01).force_base
-    for angle in (0.02, 0.035903, 0.05):
+    for index, angle in enumerate((0.02, 0.035903, 0.05), start=1):
         q = (0.0, math.sin(angle / 2.0), 0.0, math.cos(angle / 2.0))
         inverse = (0.0, -q[1], 0.0, q[3])
         total = tuple(a + b for a, b in zip(gravity_base, external_base))
         raw = module.rotate_vector(inverse, total)
-        _accept_both(core, sensor=_sensor(force=raw), pose=_pose(quaternion=q))
+        sensor, pose = _sensor(force=raw), _pose(quaternion=q)
+        sensor.header.stamp.nanosec = pose.header.stamp.nanosec = index * 1000000
+        _accept_both(core, sensor=sensor, pose=pose,
+                     receipt=10.0 + index * 0.001, ros_now=10.0 + index * 0.001)
         output = core.output_if_fresh(10.01)
         assert output is not None
         corrected = tuple(a - b for a, b in zip(output.force_base, baseline))

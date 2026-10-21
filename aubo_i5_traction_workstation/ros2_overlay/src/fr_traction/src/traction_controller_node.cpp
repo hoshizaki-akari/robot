@@ -1,5 +1,6 @@
 #include "fr_traction/traction_controller_core.hpp"
 #include "fr_traction/stepwise_traction.hpp"
+#include "fr_traction/source_freshness.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -341,6 +342,10 @@ private:
 
   void on_command(const msg::TractionCommand & message)
   {
+    if (stepwise_backend_ && message.mode != msg::TractionCommand::DISABLED &&
+      !command_stamp_guard_.accept(
+        message.header.stamp.sec + message.header.stamp.nanosec * 1e-9,
+        now().seconds(), monotonic_seconds(), command_timeout_s_)) {return;}
     if (message.mode != command_.mode) {previous_stepwise_velocity_ = {};}
     if (message.mode == msg::TractionCommand::DRAG &&
       command_.mode != msg::TractionCommand::DRAG)
@@ -359,30 +364,36 @@ private:
       finite(vector_from_message(message.locked_direction_base)) &&
       finite(vector_from_message(message.lateral_velocity_base));
     if (stepwise_backend_) {
-      const double age = (now() - rclcpp::Time(message.header.stamp)).seconds();
-      command_valid_ = command_valid_ && message.header.frame_id == "base_link" &&
-        rclcpp::Time(message.header.stamp).nanoseconds() > 0 && age >= 0.0 &&
-        age <= command_timeout_s_;
+      command_valid_ = command_valid_ && message.header.frame_id == "base_link";
     }
   }
 
   void on_wrench(const geometry_msgs::msg::WrenchStamped & message)
   {
+    if (!finite(force_from_message(message)) ||
+      !std::isfinite(message.wrench.torque.x) ||
+      !std::isfinite(message.wrench.torque.y) ||
+      !std::isfinite(message.wrench.torque.z) || message.header.frame_id != "base_link")
+    {
+      wrench_valid_ = false;
+      return;
+    }
+    if (stepwise_backend_ && !wrench_stamp_guard_.accept(
+        message.header.stamp.sec + message.header.stamp.nanosec * 1e-9,
+        now().seconds(), monotonic_seconds(), wrench_timeout_s_)) {return;}
     latest_wrench_ = force_from_message(message);
     last_wrench_at_ = now();
     last_wrench_steady_at_ = std::chrono::steady_clock::now();
     wrench_valid_ = message.header.frame_id == "base_link" && finite(latest_wrench_) &&
       std::isfinite(message.wrench.torque.x) && std::isfinite(message.wrench.torque.y) &&
       std::isfinite(message.wrench.torque.z);
-    if (stepwise_backend_) {
-      const double age = (now() - rclcpp::Time(message.header.stamp)).seconds();
-      wrench_valid_ = wrench_valid_ && rclcpp::Time(message.header.stamp).nanoseconds() > 0 &&
-        age >= 0.0 && age <= wrench_timeout_s_;
-    }
   }
 
   void on_ee_state(const fr_traction::msg::EndEffectorState & message)
   {
+    if (stepwise_backend_ && !ee_stamp_guard_.accept(
+        message.header.stamp.sec + message.header.stamp.nanosec * 1e-9,
+        now().seconds(), monotonic_seconds(), 0.5)) {return;}
     last_ee_steady_at_ = std::chrono::steady_clock::now();
     latest_ee_orientation_ = message.pose.orientation;
     const double quaternion_norm = std::sqrt(
@@ -393,10 +404,8 @@ private:
     ee_orientation_valid_ = message.header.frame_id == "base_link" &&
       std::isfinite(quaternion_norm) && quaternion_norm > 1e-12;
     if (stepwise_backend_) {
-      const double age = (now() - rclcpp::Time(message.header.stamp)).seconds();
       ee_orientation_valid_ = ee_orientation_valid_ &&
-        std::abs(quaternion_norm - 1.0) < 1e-3 &&
-        rclcpp::Time(message.header.stamp).nanoseconds() > 0 && age >= 0.0 && age <= 0.5;
+        std::abs(quaternion_norm - 1.0) < 1e-3;
     }
   }
 
@@ -704,6 +713,7 @@ private:
   uint64_t command_generation_ = 0;
   uint64_t blocked_generation_ = 0;
   rclcpp::Time last_command_at_{0, 0, RCL_ROS_TIME};
+  SourceStampGuard command_stamp_guard_, wrench_stamp_guard_, ee_stamp_guard_;
   rclcpp::Time last_wrench_at_{0, 0, RCL_ROS_TIME};
   std::chrono::steady_clock::time_point last_command_steady_at_{};
   std::chrono::steady_clock::time_point last_wrench_steady_at_{};

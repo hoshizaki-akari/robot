@@ -434,6 +434,18 @@ private:
 
   void on_wrench(const geometry_msgs::msg::WrenchStamped & message)
   {
+    if (!finite(force_from_message(message)) ||
+      !std::isfinite(message.wrench.torque.x) ||
+      !std::isfinite(message.wrench.torque.y) ||
+      !std::isfinite(message.wrench.torque.z) ||
+      message.header.frame_id != expected_wrench_frame_)
+    {
+      wrench_valid_ = false;
+      return;
+    }
+    if (require_measured_idle_ && !wrench_stamp_guard_.accept(
+        message.header.stamp.sec + message.header.stamp.nanosec * 1e-9,
+        now().seconds(), monotonic_seconds(), wrench_timeout_s_)) {return;}
     raw_wrench_ = force_from_message(message);
     if (!wrench_baseline_valid_ && finite(raw_wrench_)) {
       wrench_baseline_ = raw_wrench_;
@@ -451,9 +463,7 @@ private:
       std::isfinite(message.wrench.torque.y) && std::isfinite(message.wrench.torque.z);
     wrench_frame_valid_ = message.header.frame_id == expected_wrench_frame_;
     latest_wrench_source_age_s_ = source_stamp_age(message.header.stamp);
-    const bool source_fresh = source_age_fresh(latest_wrench_source_age_s_, wrench_timeout_s_);
-    wrench_valid_ = finite(latest_wrench_) && latest_torque_finite_ && wrench_frame_valid_ &&
-      (!require_measured_idle_ || source_fresh);
+    wrench_valid_ = finite(latest_wrench_) && latest_torque_finite_ && wrench_frame_valid_;
     last_wrench_at_ = now();
     last_wrench_steady_at_ = std::chrono::steady_clock::now();
     ++wrench_sequence_;
@@ -461,6 +471,9 @@ private:
 
   void on_ee_state(const fr_traction::msg::EndEffectorState & message)
   {
+    if (require_measured_idle_ && !ee_stamp_guard_.accept(
+        message.header.stamp.sec + message.header.stamp.nanosec * 1e-9,
+        now().seconds(), monotonic_seconds(), ee_state_timeout_s_)) {return;}
     latest_ee_position_ = point_from_message(message);
     latest_ee_linear_velocity_ = {
       message.twist.linear.x, message.twist.linear.y, message.twist.linear.z};
@@ -473,14 +486,16 @@ private:
       finite(latest_ee_angular_velocity_) &&
       (!require_measured_idle_ ||
       (zero_pose_unit_quaternion(latest_ee_orientation_) &&
-      message.header.frame_id == "base_link" &&
-      source_stamp_fresh(message.header.stamp, ee_state_timeout_s_)));
+      message.header.frame_id == "base_link"));
     last_ee_at_ = now();
     last_ee_steady_at_ = std::chrono::steady_clock::now();
   }
 
   void on_joint_state(const sensor_msgs::msg::JointState & message)
   {
+    if (require_measured_idle_ && !joint_stamp_guard_.accept(
+        message.header.stamp.sec + message.header.stamp.nanosec * 1e-9,
+        now().seconds(), monotonic_seconds(), ee_state_timeout_s_)) {return;}
     joint_state_valid_ = message.velocity.size() >= 6;
     latest_joint_speed_norm_ = 0.0;
     if (!joint_state_valid_) {return;}
@@ -780,7 +795,7 @@ private:
     temporary_direction_valid_ = true;
     calibration_requested_ = false;
     calibration_samples_.clear();
-    calibration_started_at_ = now();
+    calibration_started_at_ = control_now();
     last_calibration_wrench_sequence_ = wrench_sequence_;
     transition(TractionState::CALIBRATING);
     response->success = true;
@@ -1144,6 +1159,7 @@ private:
   {
     session_id_ = make_session_id(now());
     session_start_at_ = now();
+    session_start_steady_ = control_now();
     session_start_position_ = latest_ee_position_;
     session_record_path_ =
       (std::filesystem::path(data_directory_) / session_id_ / "traction.csv").string();
@@ -1176,7 +1192,7 @@ private:
       "joint_speed_norm_radps,wrench_age_s,ee_age_s,motion_idle_age_s\n";
     record_stream_ << std::setprecision(10);
     session_active_ = true;
-    last_record_flush_at_ = session_start_at_;
+    last_record_flush_at_ = session_start_steady_;
     session_force_sum_ = 0.0;
     session_force_max_ = 0.0;
     session_sample_count_ = 0;
@@ -1404,7 +1420,7 @@ private:
           state == TractionState::MANUAL_SETUP) || state == TractionState::RETURNING_ZERO;
           if (!expected_state) {return;}
           controller_activation_confirming_ = true;
-          controller_activation_started_at_ = now();
+          controller_activation_started_at_ = control_now();
           RCLCPP_INFO(
             get_logger(),
             "Cartesian controller switch completed; waiting for fresh EE feedback.");
@@ -1661,12 +1677,19 @@ private:
       target_ramp_fast_nps_, target_ramp_slow_nps_, target_ramp_slow_window_n_);
   }
 
+  rclcpp::Time control_now() const
+  {
+    return rclcpp::Time(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count(), RCL_STEADY_TIME);
+  }
+
   void control_tick()
   {
-    const rclcpp::Time current_time = now();
+    const rclcpp::Time current_time = control_now();
     const double monotonic_now_s = std::chrono::duration<double>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
-    static rclcpp::Time previous_tick(0, 0, RCL_ROS_TIME);
+    static rclcpp::Time previous_tick(0, 0, RCL_STEADY_TIME);
     double dt_s = 1.0 / control_rate_hz_;
     if (previous_tick.nanoseconds() != 0 && current_time >= previous_tick) {
       dt_s = (current_time - previous_tick).seconds();
@@ -1877,7 +1900,7 @@ private:
         publish_disabled();
         break;
     }
-    write_record_sample(current_time);
+    write_record_sample(now());
   }
 
   void write_record_sample(const rclcpp::Time & current_time)
@@ -1886,7 +1909,8 @@ private:
     const auto metrics = current_metrics();
     const auto direction = active_direction();
     const Vec3 combined_velocity = controller_velocity_base_;
-    const double elapsed = (current_time - session_start_at_).seconds();
+    const auto steady_now = control_now();
+    const double elapsed = (steady_now - session_start_steady_).seconds();
     record_stream_ << std::fixed << current_time.seconds() << ',' << elapsed << ','
                    << state_name(state_machine_.state()) << ',' << operation_mode_name(
       operation_mode_)
@@ -1948,9 +1972,9 @@ private:
     session_force_sum_ += metrics.actual_force_n;
     session_force_max_ = std::max(session_force_max_, metrics.actual_force_n);
     ++session_sample_count_;
-    if ((current_time - last_record_flush_at_).seconds() >= 1.0) {
+    if ((steady_now - last_record_flush_at_).seconds() >= 1.0) {
       record_stream_.flush();
-      last_record_flush_at_ = current_time;
+      last_record_flush_at_ = steady_now;
     }
   }
 
@@ -2254,6 +2278,7 @@ private:
   Vec3 session_start_position_;
   Vec3 pretension_start_position_;
   bool wrench_valid_ = false;
+  SourceStampGuard wrench_stamp_guard_, ee_stamp_guard_, joint_stamp_guard_;
   bool wrench_baseline_valid_ = false;
   bool wrench_frame_valid_ = false;
   bool latest_torque_finite_ = false;
@@ -2316,7 +2341,8 @@ private:
   std::string session_id_;
   std::string session_record_path_;
   rclcpp::Time session_start_at_{0, 0, RCL_ROS_TIME};
-  rclcpp::Time last_record_flush_at_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time session_start_steady_{0, 0, RCL_STEADY_TIME};
+  rclcpp::Time last_record_flush_at_{0, 0, RCL_STEADY_TIME};
   std::ofstream record_stream_;
   double session_force_sum_ = 0.0;
   double session_force_max_ = 0.0;
@@ -2357,7 +2383,7 @@ private:
   bool joint_state_valid_ = false;
   bool controller_start_pending_ = false;
   bool controller_activation_confirming_ = false;
-  rclcpp::Time controller_activation_started_at_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time controller_activation_started_at_{0, 0, RCL_STEADY_TIME};
   rclcpp::Time last_joint_state_at_{0, 0, RCL_ROS_TIME};
 };
 
