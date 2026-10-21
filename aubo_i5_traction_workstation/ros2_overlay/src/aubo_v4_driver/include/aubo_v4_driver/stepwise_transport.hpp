@@ -25,6 +25,8 @@ struct TransportOptions
   bool single_stop_when_quiescent{false};
   bool subdivide_follow_joint_steps{false};
   bool brake_on_hold{false};
+  bool adaptive_follow_ik{false};
+  double maximum_drag_step_m{0.005};
   double follow_joint_speed_radps{0.2}, follow_joint_acceleration_radps2{0.5};
 };
 struct TransportSample
@@ -41,6 +43,10 @@ struct TransportSample
   double last_ik_max_joint_delta_rad{0.0};
   double proposed_ik_max_joint_delta_rad{0.0};
   std::uint64_t follow_joint_subdivisions{0};
+  double accepted_ik_scale{1.0}, accepted_cartesian_step_m{0.0};
+  int adaptive_ik_attempts{0}, fk_result{-1};
+  bool kinematics_verified{false};
+  double fk_position_error_m{0.0};
   std::size_t last_ik_joint_index{0};
   std::string last_ik_failure;
   double query_duration_s{0.0};

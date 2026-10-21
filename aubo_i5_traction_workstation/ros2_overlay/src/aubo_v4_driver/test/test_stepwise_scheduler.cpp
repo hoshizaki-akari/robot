@@ -333,6 +333,44 @@ TEST(StepwiseFollowResponse, OvertakenReferenceCannotCommandMotionAgainstCurrent
   EXPECT_GT(next->target[0], next->start[0]);
 }
 
+TEST(StepwiseFollowResponse, DragForcesKeepDifferentLeadDistancesInsteadOfSameFiveMillimetres)
+{
+  const auto lead = [](double velocity, bool drag) {
+      StepwiseConfig config;
+      config.maximum_step_m = 0.005;
+      config.maximum_speed_mps = 0.20;
+      config.horizon_s = 0.5;
+      config.follow_update_interval_s = 0.03;
+      config.follow_horizon_s = 0.16;
+      config.follow_reference_enabled = true;
+      config.drag_maximum_step_m = 0.020;
+      config.drag_follow_horizon_s = 0.10;
+      StepwiseScheduler scheduler(config);
+      arm(scheduler);
+      scheduler.set_drag_mode(drag);
+      scheduler.set_follow_mode(true, 0);
+      const auto first = send(scheduler, {velocity, 0, 0});
+      acknowledge(scheduler, first);
+      double result = first.target[0];
+      for (unsigned i = 1; i <= 15; ++i) {
+        const double now = i * 0.04;
+        scheduler.set_feedback(feedback(i + 2, now, false, 0.001), now);
+        scheduler.set_velocity({velocity, 0, 0}, now);
+        const auto next = scheduler.take_command(now);
+        if (next) {
+          result = next->target[0];
+          EXPECT_EQ(next->assisted_drag, drag);
+          scheduler.acknowledge(next->id, next->epoch, true, now);
+        }
+      }
+      return result;
+    };
+  EXPECT_NEAR(lead(0.0465, true), 0.00465, 1e-12);
+  EXPECT_NEAR(lead(0.0965, true), 0.00965, 1e-12);
+  EXPECT_NEAR(lead(0.1965, true), 0.01965, 1e-12);
+  EXPECT_LE(lead(0.1965, false), 0.0050000001);
+}
+
 TEST(StepwiseFollowResponse, DelayedSdkReplyDoesNotAccumulateACatchupJump)
 {
   StepwiseConfig config;

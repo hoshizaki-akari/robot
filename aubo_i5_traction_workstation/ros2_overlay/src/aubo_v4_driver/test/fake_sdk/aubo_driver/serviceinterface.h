@@ -33,7 +33,7 @@ namespace aubo_v4_test_sdk
     bool bad_profile_readback {false};
     bool block_profile {false}, profile_entered {false}, release_profile {false};
     int follow_move_count {0};
-    std::array<double, 6> last_follow_target {};
+    std::array < double, 6 > last_follow_target {};
     aubo_robot_namespace::JointVelcAccParam joint_velocity {}, joint_acceleration {};
     std::size_t login_index {0};
     std::vector < int > login_results {aubo_robot_namespace::ErrnoSucc};
@@ -42,6 +42,8 @@ namespace aubo_v4_test_sdk
     std::vector < int > stop_results {aubo_robot_namespace::ErrnoSucc};
     std::array < double, aubo_robot_namespace::ARM_DOF > ik_delta {};
     bool ik_nan {false};
+    bool ik_scale_with_position {false};
+    int fk_result {0};
     bool block_ik {false};
     bool ik_entered {false};
     bool release_ik {false};
@@ -96,6 +98,8 @@ namespace aubo_v4_test_sdk
       line_move_result = aubo_robot_namespace::ErrnoSucc;
       stop_results = {aubo_robot_namespace::ErrnoSucc};
       ik_delta.fill(0.0);
+      ik_scale_with_position = false;
+      fk_result = 0;
       ik_nan = false;
       block_ik = false;
       ik_entered = false;
@@ -388,7 +392,9 @@ public:
       State & s = state();
       std::unique_lock < std::mutex > lock(s.mutex);
       ++s.follow_move_count;
-      for (unsigned i = 0; i < 6; ++i) {s.last_follow_target[i] = target[i];}
+      for (unsigned i = 0; i < 6; ++i) {
+        s.last_follow_target[i] = target[i];
+      }
       s.line_move_entered = true;
       s.notify("follow_move_enter");
       s.changed.wait(lock, [&s]() {return !s.block_line_move || s.release_line_move;});
@@ -415,8 +421,20 @@ public:
       return aubo_robot_namespace::ErrnoSucc;
     }
 
+    int robotServiceRobotFk(const double * seed, int, aubo_robot_namespace::wayPoint_S & point)
+    {
+      State & s = state();
+      std::lock_guard < std::mutex > lock(s.mutex);
+      for (unsigned i = 0; i < 6; ++i) {
+        point.jointpos[i] = seed[i];
+      }
+      point.cartPos.position = {0.0998, 0.20, 0.30};
+      point.orientation = {1.0, 0.0, 0.0, 0.0}; // Ori order is WXYZ.
+      return s.fk_result;
+    }
+
     int robotServiceRobotIk(
-      const double * seed, const aubo_robot_namespace::Pos &,
+      const double * seed, const aubo_robot_namespace::Pos & position,
       const aubo_robot_namespace::Ori &, aubo_robot_namespace::wayPoint_S & target)
     {
       State & s = state();
@@ -430,7 +448,8 @@ public:
       const bool nan = s.ik_nan;
       for (std::size_t i = 0; i < aubo_robot_namespace::ARM_DOF; ++i) {
         target.jointpos[i] = nan ? std::numeric_limits < double >
-          ::quiet_NaN() : seed[i] + delta[i];
+          ::quiet_NaN() : seed[i] + delta[i] *
+          (s.ik_scale_with_position ? (position.x - 0.0998) / 0.0002 : 1.0);
       }
       ++s.ik_completed_count;
       s.notify("ik_exit");

@@ -50,6 +50,7 @@ struct StepwiseConfig
   double follow_horizon_s{0.15};
   bool follow_hold_enabled{false};
   bool follow_reference_enabled{false};
+  double drag_maximum_step_m{0.0}, drag_follow_horizon_s{0.0};
 };
 
 struct StepwiseFeedback
@@ -74,6 +75,7 @@ struct StepwiseCommand
   double speed_mps{0.002};
   bool follow_joint_mode{false};
   bool hold_position{false};
+  bool assisted_drag{false};
 };
 
 enum class StepwiseState
@@ -96,6 +98,7 @@ public:
 
   bool set_enabled(bool enabled, double now);
   bool set_follow_mode(bool enabled, double now);
+  void set_drag_mode(bool enabled) {drag_mode_ = enabled;}
   bool set_feedback(const StepwiseFeedback & feedback, double now);
   bool set_velocity(const std::array<double, 3> & velocity, double now);
   std::optional<StepwiseCommand> take_command(double now);
@@ -127,6 +130,7 @@ private:
   void begin_stop(double now, const std::string & reason, bool fault);
 
   StepwiseConfig config_;
+  bool drag_mode_{false};
   StepwiseState state_{StepwiseState::DISABLED};
   std::string reason_{"disabled"};
   std::string fault_reason_;

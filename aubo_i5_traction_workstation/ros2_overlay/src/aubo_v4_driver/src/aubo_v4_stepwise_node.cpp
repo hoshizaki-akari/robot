@@ -79,6 +79,8 @@ public:
     config.follow_horizon_s = declare_parameter("follow_horizon_s", 0.15);
     config.follow_hold_enabled = declare_parameter("follow_hold_enabled", false);
     config.follow_reference_enabled = declare_parameter("follow_reference_enabled", false);
+    config.drag_maximum_step_m = declare_parameter("drag_maximum_step_m", 0.0);
+    config.drag_follow_horizon_s = declare_parameter("drag_follow_horizon_s", 0.0);
     const bool fixed_follow_profile = declare_parameter("fixed_follow_profile", false);
     if (fixed_follow_profile && !config.follow_reference_enabled) {
       throw std::invalid_argument("fixed follow profiles require a time-paced reference");
@@ -134,6 +136,7 @@ public:
       "/traction/command", rclcpp::QoS(1).reliable(),
       [this](fr_traction::msg::TractionCommand::ConstSharedPtr message) {
         last_command_mode_ = message->mode;
+        scheduler_->set_drag_mode(message->mode == fr_traction::msg::TractionCommand::DRAG);
         mode_at_ = av::steady_seconds();
       });
     velocity_sub_ = create_subscription<geometry_msgs::msg::Twist>(
@@ -246,6 +249,8 @@ public:
       options.fixed_follow_profile = fixed_follow_profile;
       options.single_stop_when_quiescent = declare_parameter("single_stop_when_quiescent", false);
       options.brake_on_hold = declare_parameter("brake_on_hold", false);
+      options.adaptive_follow_ik = declare_parameter("adaptive_follow_ik", false);
+      options.maximum_drag_step_m = std::max(config_.maximum_step_m, config_.drag_maximum_step_m);
       options.subdivide_follow_joint_steps =
         declare_parameter("subdivide_follow_joint_steps", false);
       options.follow_joint_speed_radps = 0.2 * follow_response_scale;
@@ -527,6 +532,8 @@ private:
     add("last_hardware_health_failure", last_health_failure_);
     add("planning_horizon_s", std::to_string(config_.horizon_s));
     add("maximum_step_m", std::to_string(config_.maximum_step_m));
+    add("drag_maximum_step_m", std::to_string(config_.drag_maximum_step_m));
+    add("drag_follow_horizon_s", std::to_string(config_.drag_follow_horizon_s));
     add("arrival_tolerance_m", std::to_string(config_.arrival_tolerance_m));
     add("maximum_speed_mps", std::to_string(config_.maximum_speed_mps));
     add("enable_follow_drag", enable_follow_drag_ ? "1" : "0");
@@ -554,6 +561,12 @@ private:
         "proposed_ik_max_joint_delta_rad",
         std::to_string(sample.proposed_ik_max_joint_delta_rad));
       add("follow_joint_subdivisions", std::to_string(sample.follow_joint_subdivisions));
+      add("accepted_ik_scale", std::to_string(sample.accepted_ik_scale));
+      add("accepted_cartesian_step_m", std::to_string(sample.accepted_cartesian_step_m));
+      add("adaptive_ik_attempts", std::to_string(sample.adaptive_ik_attempts));
+      add("fk_result", std::to_string(sample.fk_result));
+      add("kinematics_verified", sample.kinematics_verified ? "1" : "0");
+      add("fk_position_error_m", std::to_string(sample.fk_position_error_m));
       add("last_ik_joint_index", std::to_string(sample.last_ik_joint_index));
       add("last_ik_failure", sample.last_ik_failure);
       add("requested_speed_mps", std::to_string(sample.requested_speed_mps));

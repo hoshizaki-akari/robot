@@ -246,6 +246,130 @@ TEST_F(StepwiseTransportTest, IKJointContinuityRejectionReportsJointAndDelta)
   EXPECT_EQ(line_move_count(), 0);
 }
 
+TEST_F(StepwiseTransportTest, RecordedPointOneRadProposalIsResolvedByShorterCartesianIk)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = true;
+  settings.fixed_follow_profile = true;
+  settings.adaptive_follow_ik = true;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.ik_delta[5] = 0.100573;
+    state.ik_scale_with_position = true;
+  }
+  auto value = command(1, 1);
+  value.follow_joint_mode = true;
+  ASSERT_TRUE(transport.submit(value, seed));
+  const auto result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result->success) << result->detail;
+  const auto sample = transport.sample();
+  EXPECT_NEAR(sample.proposed_ik_max_joint_delta_rad, 0.100573, 1e-10);
+  EXPECT_EQ(sample.adaptive_ik_attempts, 2);
+  EXPECT_DOUBLE_EQ(sample.accepted_ik_scale, 0.25);
+  EXPECT_LT(sample.last_ik_max_joint_delta_rad, 0.05);
+  EXPECT_EQ(sample.fk_result, 0);
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    EXPECT_NEAR(state.last_follow_target[5], 0.100573 / 4, 1e-10);
+  }
+}
+
+TEST_F(StepwiseTransportTest, AdaptiveIkDoesNotHideUnchangingBranchOrFkFailure)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = true;
+  settings.fixed_follow_profile = true;
+  settings.adaptive_follow_ik = true;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.ik_delta[5] = 0.100573; // Does not shrink with Cartesian subgoals.
+  }
+  auto value = command(1, 1);
+  value.follow_joint_mode = true;
+  ASSERT_TRUE(transport.submit(value, seed));
+  const auto result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(result);
+  EXPECT_FALSE(result->success);
+  EXPECT_EQ(transport.sample().adaptive_ik_attempts, 8);
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    EXPECT_EQ(state.follow_move_count, 0);
+    state.fk_result = 37;
+  }
+  value.id = 2;
+  ASSERT_TRUE(submit_when_available(transport, value, 500ms));
+  const auto failed_fk = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(failed_fk);
+  EXPECT_FALSE(failed_fk->success);
+  EXPECT_EQ(failed_fk->detail, "adaptive IK anchor FK rejected");
+}
+
+TEST_F(StepwiseTransportTest, LongerDragLeadCannotLeakIntoForceOrOrdinaryLineMove)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = true;
+  settings.fixed_follow_profile = true;
+  settings.maximum_drag_step_m = 0.020;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  auto value = command(1, 1);
+  value.target[0] = value.start[0] + 0.015;
+  value.follow_joint_mode = true;
+  EXPECT_FALSE(transport.submit(value, seed));
+  value.assisted_drag = true;
+  value.follow_joint_mode = false;
+  EXPECT_FALSE(transport.submit(value, seed));
+  value.follow_joint_mode = true;
+  ASSERT_TRUE(transport.submit(value, seed));
+  const auto result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(result);
+  EXPECT_TRUE(result->success);
+}
+
+TEST_F(StepwiseTransportTest, AdaptiveKinematicsMustMatchMeasuredPoseBeforeHealthy)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.adaptive_follow_ik = true;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  auto point = valid_waypoint();
+  point.cartPos.position.z = 0.9;
+  aubo_v4_test_sdk::emit_waypoint(point);
+  std::size_t seen = 0;
+  const auto bad_deadline = std::chrono::steady_clock::now() + 1s;
+  while (transport.sample().fk_position_error_m < 0.1 &&
+    std::chrono::steady_clock::now() < bad_deadline)
+  {
+    aubo_v4_test_sdk::wait_for_event(seen, 20ms);
+  }
+  EXPECT_FALSE(transport.sample().kinematics_verified);
+  EXPECT_FALSE(transport.sample().feedback.healthy);
+  aubo_v4_test_sdk::emit_waypoint(valid_waypoint());
+  const auto good_deadline = std::chrono::steady_clock::now() + 1s;
+  while (!transport.sample().kinematics_verified &&
+    std::chrono::steady_clock::now() < good_deadline)
+  {
+    aubo_v4_test_sdk::wait_for_event(seen, 20ms);
+  }
+  EXPECT_TRUE(transport.sample().kinematics_verified);
+  EXPECT_LE(transport.sample().fk_position_error_m, 0.001);
+  EXPECT_TRUE(transport.sample().feedback.healthy);
+  EXPECT_EQ(line_move_count(), 0);
+}
+
 TEST_F(StepwiseTransportTest, RecordedSlightFollowOversizeIsSubdividedWithoutRaisingJointBound)
 {
   StepwiseTransport transport;

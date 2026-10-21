@@ -259,7 +259,6 @@ struct StepwiseTransport::Impl
         } else {
           ik = send->robotServiceRobotIk(current.seed.data(), position, orientation, target);
         }
-        const double ik_duration = steady_seconds() - ik_started;
         double maximum_joint_delta = 0.0;
         std::size_t maximum_joint_index = 0;
         std::string ik_failure;
@@ -278,8 +277,72 @@ struct StepwiseTransport::Impl
             }
           }
           const double proposed_delta = maximum_joint_delta;
+          double accepted_scale = 1.0;
+          int attempts = 0;
+          int fk_result = -1;
           if (ik_failure.empty() && current.command.follow_joint_mode &&
-            options.subdivide_follow_joint_steps &&
+            options.adaptive_follow_ik && !current.command.hold_position &&
+            maximum_joint_delta > options.maximum_joint_step_rad)
+          {
+            vendor::wayPoint_S start_pose{};
+            fk_result = send->robotServiceRobotFk(current.seed.data(), 6, start_pose);
+            PoseSample anchor;
+            anchor.position = {start_pose.cartPos.position.x, start_pose.cartPos.position.y,
+              start_pose.cartPos.position.z};
+            anchor.orientation = {start_pose.orientation.x, start_pose.orientation.y,
+              start_pose.orientation.z, start_pose.orientation.w};
+            anchor.joints = current.seed;
+            if (fk_result != vendor::ErrnoSucc || !valid_pose_sample(anchor, nullptr)) {
+              ik_failure = "adaptive IK anchor FK rejected";
+            } else {
+              double dot = anchor.orientation[0] * orientation.x + anchor.orientation[1] *
+                orientation.y +
+                anchor.orientation[2] * orientation.z + anchor.orientation[3] * orientation.w;
+              const double sign = dot < 0.0 ? -1.0 : 1.0;
+              const std::array<double, 4> goal{orientation.x * sign, orientation.y * sign,
+                orientation.z * sign, orientation.w * sign};
+              for (unsigned retry = 0;
+                retry < 8 && maximum_joint_delta > options.maximum_joint_step_rad; ++retry)
+              {
+                if (!allowed || current.command.epoch != allowed_epoch || shutdown) {break;}
+                accepted_scale *= 0.5;
+                ++attempts;
+                vendor::Pos shorter{};
+                shorter.x = anchor.position[0] + accepted_scale * (position.x - anchor.position[0]);
+                shorter.y = anchor.position[1] + accepted_scale * (position.y - anchor.position[1]);
+                shorter.z = anchor.position[2] + accepted_scale * (position.z - anchor.position[2]);
+                std::array<double, 4> blended{};
+                double squared = 0.0;
+                for (unsigned i = 0; i < 4; ++i) {
+                  blended[i] = anchor.orientation[i] + accepted_scale *
+                    (goal[i] - anchor.orientation[i]);
+                  squared += blended[i] * blended[i];
+                }
+                vendor::Ori shorter_orientation{};
+                const double length = std::sqrt(squared);
+                shorter_orientation.x = blended[0] / length;
+                shorter_orientation.y = blended[1] / length;
+                shorter_orientation.z = blended[2] / length;
+                shorter_orientation.w = blended[3] / length;
+                ik = send->robotServiceRobotIk(
+                  current.seed.data(), shorter, shorter_orientation, target);
+                if (ik != vendor::ErrnoSucc) {ik_failure = "adaptive IK solve rejected"; break;}
+                maximum_joint_delta = 0.0;
+                for (unsigned i = 0; i < 6; ++i) {
+                  if (!std::isfinite(target.jointpos[i])) {
+                    ik_failure = "adaptive IK returned nonfinite joints"; break;
+                  }
+                  const double delta = std::abs(target.jointpos[i] - current.seed[i]);
+                  if (delta > maximum_joint_delta) {
+                    maximum_joint_delta = delta; maximum_joint_index = i;
+                  }
+                }
+                if (!ik_failure.empty()) {break;}
+              }
+            }
+          }
+          if (ik_failure.empty() && current.command.follow_joint_mode &&
+            options.subdivide_follow_joint_steps && !options.adaptive_follow_ik &&
             maximum_joint_delta > options.maximum_joint_step_rad &&
             maximum_joint_delta <= 2.0 * options.maximum_joint_step_rad)
           {
@@ -296,6 +359,16 @@ struct StepwiseTransport::Impl
           {
             std::lock_guard<std::mutex> lock(mutex);
             latest.proposed_ik_max_joint_delta_rad = proposed_delta;
+            latest.accepted_ik_scale = accepted_scale;
+            latest.adaptive_ik_attempts = attempts;
+            latest.fk_result = fk_result;
+            double squared_step = 0.0;
+            for (unsigned i = 0; i < 3; ++i) {
+              const double delta = current.command.target[i] - current.command.start[i];
+              squared_step += delta * delta;
+            }
+            latest.accepted_cartesian_step_m = std::sqrt(squared_step) * accepted_scale;
+            if (attempts > 0) {++latest.follow_joint_subdivisions;}
           }
           if (ik_failure.empty() && maximum_joint_delta > options.maximum_joint_step_rad) {
             ik_failure = "IK joint " + std::to_string(maximum_joint_index + 1) +
@@ -306,8 +379,9 @@ struct StepwiseTransport::Impl
         {
           std::lock_guard<std::mutex> lock(mutex);
           latest.last_ik_result = ik;
-          latest.ik_duration_s = ik_duration;
-          latest.maximum_ik_duration_s = std::max(latest.maximum_ik_duration_s, ik_duration);
+          latest.ik_duration_s = steady_seconds() - ik_started;
+          latest.maximum_ik_duration_s =
+            std::max(latest.maximum_ik_duration_s, latest.ik_duration_s);
           latest.last_ik_max_joint_delta_rad = maximum_joint_delta;
           latest.last_ik_joint_index = ik == vendor::ErrnoSucc ? maximum_joint_index + 1 : 0;
           latest.last_ik_failure = ik_failure;
@@ -492,6 +566,34 @@ struct StepwiseTransport::Impl
         }
       }
       std::unique_lock<std::mutex> lock(mutex);
+      if (options.adaptive_follow_ik && !latest.kinematics_verified &&
+        latest.feedback.sequence > 0)
+      {
+        const auto check = latest;
+        lock.unlock();
+        vendor::wayPoint_S checked{};
+        int rc = -1;
+        try {rc = read->robotServiceRobotFk(check.joints.data(), 6, checked);} catch (...) {}
+        PoseSample pose;
+        pose.position =
+        {checked.cartPos.position.x, checked.cartPos.position.y, checked.cartPos.position.z};
+        pose.orientation =
+        {checked.orientation.x, checked.orientation.y, checked.orientation.z,
+          checked.orientation.w};
+        pose.joints = check.joints;
+        double squared = 0.0;
+        for (unsigned i = 0; i < 3; ++i) {
+          const double delta = pose.position[i] - check.feedback.position[i];
+          squared += delta * delta;
+        }
+        const double error = std::sqrt(squared);
+        const bool verified = rc == 0 && valid_pose_sample(pose, nullptr) && error <= 0.001 &&
+          quaternion_distance_rad(pose.orientation, check.feedback.orientation) <= 0.01;
+        lock.lock();
+        latest.kinematics_verified = verified;
+        latest.fk_position_error_m = error;
+        if (!verified) {latest.error = "FK verification did not match measured pose";}
+      }
       changed.wait_for(
         lock, std::chrono::duration<double>(options.state_poll_interval_s),
         [this]() {return shutdown.load();});
@@ -520,6 +622,8 @@ bool StepwiseTransport::connect(const TransportOptions & options, std::string & 
     options.maximum_joint_step_rad <= 0.0 || options.maximum_joint_step_rad > 0.1 ||
     !std::isfinite(options.maximum_step_m) || options.maximum_step_m <= 0.0 ||
     options.maximum_step_m > 0.005 || !std::isfinite(options.state_poll_interval_s) ||
+    !std::isfinite(options.maximum_drag_step_m) || options.maximum_drag_step_m <= 0.0 ||
+    options.maximum_drag_step_m > 0.020 ||
     options.state_poll_interval_s < 0.02 || options.state_poll_interval_s > 1.0)
   {
     error = "invalid stepwise transport configuration or repeated connect";
@@ -592,7 +696,7 @@ TransportSample StepwiseTransport::sample() const
   std::lock_guard<std::mutex> lock(impl_->mutex);
   auto value = impl_->latest;
   value.feedback.healthy = value.diagnosis_ok && value.state_result == vendor::ErrnoSucc &&
-    impl_->pose_valid;
+    impl_->pose_valid && (!impl_->options.adaptive_follow_ik || value.kinematics_verified);
   return value;
 }
 bool StepwiseTransport::submit(const StepwiseCommand & command, const std::array<double, 6> & seed)
@@ -601,6 +705,7 @@ bool StepwiseTransport::submit(const StepwiseCommand & command, const std::array
   if (impl_->shutdown || impl_->busy || impl_->job || impl_->stop_job ||
     (command.follow_joint_mode && !impl_->options.allow_follow_mode) ||
     (command.hold_position && !command.follow_joint_mode) ||
+    (command.assisted_drag && !command.follow_joint_mode) ||
     !std::isfinite(command.speed_mps) || command.speed_mps <= 0.0 ||
     command.speed_mps > impl_->options.speed_mps ||
     impl_->stop_in_progress || !impl_->sender.joinable() ||
@@ -628,7 +733,9 @@ bool StepwiseTransport::submit(const StepwiseCommand & command, const std::array
   if (!std::isfinite(squared_step) ||
     (squared_step <= 0.0 && !command.hold_position) ||
     (command.hold_position && squared_step > 1e-20) ||
-    squared_step > impl_->options.maximum_step_m * impl_->options.maximum_step_m * (1.0 + 1e-9) ||
+    squared_step > std::pow(
+      command.assisted_drag ? impl_->options.maximum_drag_step_m :
+      impl_->options.maximum_step_m, 2) * (1.0 + 1e-9) ||
     !std::isfinite(quaternion_norm) || std::abs(quaternion_norm - 1.0) > 1e-3) {return false;}
   impl_->last_submitted_id = command.id;
   impl_->allowed_epoch = command.epoch;

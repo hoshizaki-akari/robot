@@ -44,6 +44,14 @@ double distance3(const std::array<double, 3> & left, const std::array<double, 3>
 
 void validate_config(const StepwiseConfig & config)
 {
+  if (!finite(config.drag_maximum_step_m) || config.drag_maximum_step_m < 0.0 ||
+    config.drag_maximum_step_m > 0.020 || !finite(config.drag_follow_horizon_s) ||
+    config.drag_follow_horizon_s < 0.0 || config.drag_follow_horizon_s > 0.5 ||
+    (config.drag_follow_horizon_s > 0.0 &&
+    config.drag_follow_horizon_s < config.follow_update_interval_s))
+  {
+    throw std::invalid_argument("invalid assisted drag lead configuration");
+  }
   const std::array<double, 10> values{
     config.maximum_step_m, config.maximum_speed_mps, config.horizon_s,
     config.feedback_timeout_s, config.command_timeout_s, config.ack_timeout_s,
@@ -342,9 +350,13 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
     return std::nullopt;
   }
   std::array<double, 3> displacement = *velocity_;
+  const double step_bound = follow_mode_ && drag_mode_ && config_.drag_maximum_step_m > 0.0 ?
+    config_.drag_maximum_step_m : config_.maximum_step_m;
   const double requested_speed = holding ? config_.maximum_speed_mps : norm3(displacement);
+  const double follow_horizon = drag_mode_ && config_.drag_follow_horizon_s > 0.0 ?
+    config_.drag_follow_horizon_s : config_.follow_horizon_s;
   const double horizon = follow_mode_ ?
-    std::min(config_.horizon_s, config_.follow_horizon_s) : config_.horizon_s;
+    std::min(config_.horizon_s, follow_horizon) : config_.horizon_s;
   const double speed_scale = std::min(1.0, config_.maximum_speed_mps / requested_speed);
   if (follow_mode_ && config_.follow_reference_enabled && !holding) {
     double projection = 0.0;
@@ -379,7 +391,7 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
     }
     const double lead = norm3(displacement);
     const double maximum_lead = std::min(
-      config_.maximum_step_m,
+      step_bound,
       requested_speed * speed_scale * horizon);
     if (lead > maximum_lead) {
       for (double & component : displacement) {
@@ -388,7 +400,7 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
     }
   } else {
     const double step_scale = std::min(
-      1.0, config_.maximum_step_m / (requested_speed * speed_scale * horizon));
+      1.0, step_bound / (requested_speed * speed_scale * horizon));
     for (double & component : displacement) {
       component *= speed_scale * horizon * step_scale;
     }
@@ -402,6 +414,7 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
   StepwiseCommand command;
   command.speed_mps = std::min(requested_speed, config_.maximum_speed_mps);
   command.follow_joint_mode = follow_mode_;
+  command.assisted_drag = follow_mode_ && drag_mode_;
   command.hold_position = holding;
   command.id = next_command_id_++;
   command.epoch = epoch_;

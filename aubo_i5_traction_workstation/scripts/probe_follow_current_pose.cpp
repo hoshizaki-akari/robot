@@ -16,6 +16,7 @@
 #include <string>
 #include <thread>
 #include "aubo_v4_driver/state_validation.hpp"
+#include "aubo_v4_driver/stepwise_scheduler.hpp"
 
 namespace v = aubo_robot_namespace;
 using Clock = std::chrono::steady_clock;
@@ -111,6 +112,29 @@ int main(int argc, char ** argv)
       throw std::runtime_error("stationary current pose not confirmed");
     }
     if (read_only) {
+      v::wayPoint_S calculated{}, observed{};
+      {
+        std::lock_guard<std::mutex> guard(sample.mutex);
+        observed = sample.point;
+      }
+      const int fk_result = read.robotServiceRobotFk(target.data(), 6, calculated);
+      double squared = 0.0;
+      for (unsigned i = 0; i < 3; ++i) {
+        const double delta = calculated.cartPos.positionVector[i] -
+          observed.cartPos.positionVector[i];
+        squared += delta * delta;
+      }
+      const double angle = aubo_v4_driver::quaternion_distance_rad(
+        {calculated.orientation.x, calculated.orientation.y, calculated.orientation.z,
+          calculated.orientation.w},
+        {observed.orientation.x, observed.orientation.y, observed.orientation.z,
+          observed.orientation.w});
+      const double error = std::sqrt(squared);
+      std::cout << "read_only_fk_result=" << fk_result << " position_error_m=" << error <<
+        " orientation_error_rad=" << angle << '\n';
+      if (fk_result != 0 || !std::isfinite(error) || error > 0.001 || angle > 0.01) {
+        throw std::runtime_error("FK does not match measured pose");
+      }
       std::cout << "read_only_stopped_state=1 distinct_quiet_frames=" << quiet << '\n';
       result = 0;
     } else {
