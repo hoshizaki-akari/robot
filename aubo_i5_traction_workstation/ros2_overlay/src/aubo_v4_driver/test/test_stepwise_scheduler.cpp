@@ -103,6 +103,60 @@ TEST(StepwiseRecovery, FailedStopCannotBeResetUsingStationarySamplesAlone)
   EXPECT_EQ(scheduler.state(), StepwiseState::FAULT);
 }
 
+TEST(StepwiseCommunicationRecovery, VerifiedPauseKeepsTaskButDiscardsOldGoal)
+{
+  StepwiseScheduler scheduler;
+  arm(scheduler);
+  ASSERT_TRUE(scheduler.set_follow_mode(true, 0.001));
+  const auto old = send(scheduler, {0.002, 0, 0});
+  scheduler.acknowledge(old.id, old.epoch, false, 0.02, "SDK 10023", true);
+  EXPECT_EQ(scheduler.state(), StepwiseState::STOPPING);
+  EXPECT_FALSE(scheduler.fault_pending());
+  const auto stop = scheduler.take_stop_request();
+  ASSERT_TRUE(stop);
+  EXPECT_FALSE(scheduler.take_command(0.021));
+  scheduler.acknowledge_stop(*stop, true, 0.03);
+  for (unsigned i = 2; i <= 4; ++i) {
+    ASSERT_TRUE(scheduler.set_feedback(feedback(i, 0.02 + i * 0.01), 0.02 + i * 0.01));
+  }
+  EXPECT_EQ(scheduler.state(), StepwiseState::DISABLED);
+  ASSERT_TRUE(scheduler.set_enabled(true, 0.07));
+  EXPECT_FALSE(scheduler.take_command(0.071));
+  ASSERT_TRUE(scheduler.set_velocity({-0.002, 0, 0}, 0.08));
+  const auto next = scheduler.take_command(0.081);
+  ASSERT_TRUE(next);
+  EXPECT_GT(next->epoch, old.epoch);
+  EXPECT_LT(next->target[0], next->start[0]);
+}
+
+TEST(StepwiseCommunicationRecovery, PersistentRejectionsCannotCreateUnlimitedAutomaticMotionTrials)
+{
+  StepwiseScheduler scheduler;
+  arm(scheduler);
+  ASSERT_TRUE(scheduler.set_follow_mode(true, 0.001));
+  double time = 0.01;
+  unsigned sequence = 1;
+  for (unsigned attempt = 1; attempt <= 4; ++attempt) {
+    ASSERT_TRUE(scheduler.set_velocity({0.002, 0, 0}, time));
+    const auto target = scheduler.take_command(time);
+    ASSERT_TRUE(target);
+    time += 0.01;
+    scheduler.acknowledge(target->id, target->epoch, false, time, "SDK 10023", true);
+    EXPECT_EQ(scheduler.fault_pending(), attempt == 4);
+    if (attempt == 4) {break;}
+    const auto stop = scheduler.take_stop_request();
+    ASSERT_TRUE(stop);
+    time += 0.01;
+    scheduler.acknowledge_stop(*stop, true, time);
+    for (unsigned frame = 0; frame < 3; ++frame) {
+      time += 0.01;
+      ASSERT_TRUE(scheduler.set_feedback(feedback(++sequence, time), time));
+    }
+    time += 0.01;
+    ASSERT_TRUE(scheduler.set_enabled(true, time));
+  }
+}
+
 TEST(StepwiseSchedulerConfig, RejectsNonFiniteAndUnsafeValues)
 {
   StepwiseConfig config;

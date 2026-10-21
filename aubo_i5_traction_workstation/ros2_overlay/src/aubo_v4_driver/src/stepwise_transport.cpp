@@ -164,11 +164,74 @@ struct StepwiseTransport::Impl
       try {send->robotMoveFastStop();} catch (...) {}
     }
     if (read_connected) {
+      read->robotServiceRegisterRobotEventInfoCallback(nullptr, nullptr);
       read->robotServiceRegisterRealTimeRoadPointCallback(nullptr, nullptr);
       read->robotServiceLogout();
     }
-    if (send_connected) {send->robotServiceLogout();}
-    if (stop_connected) {stop->robotServiceLogout();}
+    if (send_connected) {
+      send->robotServiceRegisterRobotEventInfoCallback(nullptr, nullptr);
+      send->robotServiceLogout();
+    }
+    if (stop_connected) {
+      stop->robotServiceRegisterRobotEventInfoCallback(nullptr, nullptr);
+      stop->robotServiceLogout();
+    }
+  }
+
+  static void robot_event(const vendor::RobotEventInfo * event, void * context)
+  {
+    if (!event || !context) {return;}
+    auto & self = *static_cast<Impl *>(context);
+    std::lock_guard<std::mutex> lock(self.mutex);
+    ++self.latest.controller_event_sequence;
+    self.latest.controller_event_type = static_cast<int>(event->eventType);
+    self.latest.controller_event_code = event->eventCode;
+    self.latest.controller_event_content = event->eventContent.substr(0, 512);
+    self.latest.controller_event_at = steady_seconds();
+    const int type = self.latest.controller_event_type;
+    if (type > 1000 && type < 1500 && type != 1005 && type != 1300) {
+      ++self.latest.controller_error_sequence;
+      self.latest.controller_error_type = type;
+      self.latest.controller_error_content = self.latest.controller_event_content;
+    }
+    self.changed.notify_all();
+  }
+
+  // A missing stop response is not evidence that the arm is still moving.
+  // Verify a new healthy diagnosis/state plus three distinct quiet pose frames,
+  // all AFTER the last SDK stop call, while no sender can submit another move.
+  bool measured_stop_after(double fence)
+  {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(700);
+    std::unique_lock<std::mutex> lock(mutex);
+    std::uint64_t sequence = latest.feedback.sequence;
+    unsigned frames = 0;
+    while (!shutdown && std::chrono::steady_clock::now() < deadline) {
+      if (latest.feedback.sequence != sequence) {
+        sequence = latest.feedback.sequence;
+        const double time = steady_seconds();
+        const bool stopped = diagnosis_is_healthy_sample(time, fence);
+        frames = stopped ? frames + 1 : 0;
+        if (frames >= 3) {return true;}
+      }
+      changed.wait_for(lock, std::chrono::milliseconds(5));
+    }
+    return false;
+  }
+
+  bool diagnosis_is_healthy_sample(double time, double fence) const
+  {
+    return !busy && !job && !allowed && diagnosis_ok_for_stop(time, fence) &&
+           latest.feedback.stopped && latest.feedback.speed_mps <= 0.0002 &&
+           latest.joint_speed_norm_radps <= 0.02;
+  }
+
+  bool diagnosis_ok_for_stop(double time, double fence) const
+  {
+    return latest.diagnosis_ok && state_valid && pose_valid &&
+           latest.diagnosis_at > fence && latest.robot_state_at > fence &&
+           latest.feedback.received_at > fence && time - latest.diagnosis_at <= 0.5 &&
+           time - latest.robot_state_at <= 0.5 && time - latest.feedback.received_at <= 0.5;
   }
 
   static void waypoint(const vendor::wayPoint_S * point, void * context)
@@ -193,6 +256,7 @@ struct StepwiseTransport::Impl
     }
     self.pose_valid = true;
     double speed = 0.0;
+    double joint_speed = 0.0;
     const double dt = time - self.latest.feedback.received_at;
     self.latest.waypoint_interval_s = self.latest.feedback.sequence > 0 ? dt : 0.0;
     if (self.latest.feedback.sequence > 0 && dt > 0.0 && dt <= 1.0) {
@@ -202,6 +266,9 @@ struct StepwiseTransport::Impl
         squared += delta * delta;
       }
       speed = std::sqrt(squared) / dt;
+      for (std::size_t i = 0; i < 6; ++i) {
+        joint_speed = std::hypot(joint_speed, (pose.joints[i] - self.latest.joints[i]) / dt);
+      }
     }
     self.latest.feedback.position = pose.position;
     self.latest.feedback.orientation = pose.orientation;
@@ -209,6 +276,8 @@ struct StepwiseTransport::Impl
     self.latest.feedback.speed_mps = speed;
     ++self.latest.feedback.sequence;
     self.latest.joints = pose.joints;
+    self.latest.joint_speed_norm_radps = joint_speed;
+    self.changed.notify_all();
   }
 
   void result(TransportResult value, bool sender_finished = false)
@@ -249,6 +318,18 @@ struct StepwiseTransport::Impl
       reply.epoch = current.command.epoch;
       try {
         sender_waiting = true;
+        {
+          std::unique_lock<std::mutex> lock(mutex);
+          // A saturated motion stream must not starve diagnosis/state RPCs.
+          // Yield briefly when they are due, without overlapping SDK calls.
+          const auto current_telemetry = [this]() {
+              const double time = steady_seconds();
+              return time - latest.diagnosis_at < 0.25 && time - latest.robot_state_at < 0.25;
+            };
+          if (!current_telemetry()) {
+            changed.wait_for(lock, std::chrono::milliseconds(100), current_telemetry);
+          }
+        }
         std::unique_lock<std::mutex> request_lock(request_mutex);
         sender_waiting = false;
         vendor::Pos position{};
@@ -266,7 +347,8 @@ struct StepwiseTransport::Impl
         if (current.command.hold_position) {
           // Hold exactly the sampled joints. Re-solving a Cartesian hold pose
           // can introduce a branch/roundoff correction on an already moving arm.
-          std::copy(current.seed.begin(), current.seed.end(), target.jointpos);
+          std::lock_guard<std::mutex> lock(mutex);
+          std::copy(latest.joints.begin(), latest.joints.end(), target.jointpos);
         } else {
           ik = send->robotServiceRobotIk(current.seed.data(), position, orientation, target);
         }
@@ -434,6 +516,10 @@ struct StepwiseTransport::Impl
           if (braking_hold) {invalidate_follow_profile = true;}
           const double motion_duration = steady_seconds() - dispatch_at;
           reply.success = code == vendor::ErrnoSucc;
+          reply.recoverable = !braking_hold && current.command.follow_joint_mode &&
+            (code == vendor::ErrCode_RequestTimeout ||
+            code == vendor::ErrCode_ResponseReturnError ||
+            code == vendor::ErrCodeWaitRobotStopped);
           {
             std::lock_guard<std::mutex> lock(mutex);
             ++latest.motion_ack_count;
@@ -489,14 +575,17 @@ struct StepwiseTransport::Impl
         if (options.single_stop_when_quiescent && sender_quiescent) {
           // Intent was revoked before this lock snapshot. No older send can
           // race this stop, so a second stop on another session is redundant.
-          std::lock_guard<std::mutex> request_lock(request_mutex);
-          int code = send->robotMoveFastStop();
-          const int first_code = code;
-          if (code == vendor::ErrCode_RequestTimeout) {code = send->robotMoveFastStop();}
+          int code;
+          {
+            std::lock_guard<std::mutex> request_lock(request_mutex);
+            code = send->robotMoveFastStop();
+          }
+          const double stop_finished = steady_seconds();
           reply.success = code == vendor::ErrnoSucc;
           reply.detail = "quiescent stop SDK result " + std::to_string(code);
-          if (first_code == vendor::ErrCode_RequestTimeout) {
-            reply.detail += " after initial timeout " + std::to_string(first_code);
+          if (code == vendor::ErrCode_RequestTimeout && measured_stop_after(stop_finished)) {
+            reply.success = true;
+            reply.detail += "; stop verified by fresh post-request telemetry";
           }
         } else {
           const int first = stop->robotMoveFastStop();
@@ -516,14 +605,25 @@ struct StepwiseTransport::Impl
             // Quiescent sender session gives the final stop the same request
             // ordering as the earlier LineMove. Firmware queue-clearing semantics
             // still need the explicit hardware checkpoint; ACK is not physical stop.
-            std::lock_guard<std::mutex> request_lock(request_mutex);
-            const int last = send->robotMoveFastStop();
+            int last;
+            {
+              std::lock_guard<std::mutex> request_lock(request_mutex);
+              last = send->robotMoveFastStop();
+            }
+            const double stop_finished = steady_seconds();
             // The first request can time out without telling us whether it was
             // applied. After every earlier send has quiesced, the final ACK is
             // authoritative. Physical idle is still confirmed by the scheduler.
             reply.success = last == vendor::ErrnoSucc &&
               (first == vendor::ErrnoSucc || first == vendor::ErrCode_RequestTimeout);
             reply.detail = "stop SDK results " + std::to_string(first) + "," + std::to_string(last);
+            if (last == vendor::ErrCode_RequestTimeout &&
+              (first == vendor::ErrnoSucc || first == vendor::ErrCode_RequestTimeout) &&
+              measured_stop_after(stop_finished))
+            {
+              reply.success = true;
+              reply.detail += "; stop verified by fresh post-request telemetry";
+            }
           }
         }
       } catch (const std::exception & exception) {
@@ -541,7 +641,14 @@ struct StepwiseTransport::Impl
     while (!shutdown) {
       // Yield normal queries to a queued motion; never block the ROS executor.
       std::unique_lock<std::mutex> request_lock(request_mutex, std::try_to_lock);
-      if (!request_lock.owns_lock() || sender_waiting) {
+      bool telemetry_due;
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        const double time = steady_seconds();
+        telemetry_due = time - latest.diagnosis_at >= 0.25 ||
+          time - latest.robot_state_at >= 0.25;
+      }
+      if (!request_lock.owns_lock() || (sender_waiting && !telemetry_due)) {
         if (request_lock.owns_lock()) {request_lock.unlock();}
         std::unique_lock<std::mutex> lock(mutex);
         changed.wait_for(lock, std::chrono::milliseconds(5));
@@ -612,6 +719,7 @@ struct StepwiseTransport::Impl
           latest.error = "robot state query failed: " + std::to_string(state_rc);
           latest.last_telemetry_failure = latest.error;
         }
+        changed.notify_all();
       }
       std::unique_lock<std::mutex> lock(mutex);
       if (options.adaptive_follow_ik && !latest.kinematics_verified &&
@@ -723,6 +831,16 @@ bool StepwiseTransport::connect(const TransportOptions & options, std::string & 
       error = "waypoint push registration rejected";
       return false;
     }
+    if (self.read->robotServiceRegisterRobotEventInfoCallback(&Impl::robot_event, &self) !=
+      vendor::ErrnoSucc ||
+      self.send->robotServiceRegisterRobotEventInfoCallback(&Impl::robot_event, &self) !=
+      vendor::ErrnoSucc ||
+      self.stop->robotServiceRegisterRobotEventInfoCallback(&Impl::robot_event, &self) !=
+      vendor::ErrnoSucc)
+    {
+      error = "controller event subscription rejected";
+      return false;
+    }
     if (options.allow_follow_mode && options.fixed_follow_profile) {
       Impl::Job initial;
       initial.command.follow_joint_mode = true;
@@ -746,6 +864,7 @@ TransportSample StepwiseTransport::sample() const
 {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   auto value = impl_->latest;
+  value.brake_on_hold = impl_->options.brake_on_hold;
   value.feedback.healthy = value.diagnosis_ok && impl_->state_valid &&
     impl_->pose_valid && (!impl_->options.adaptive_follow_ik || value.kinematics_verified);
   return value;

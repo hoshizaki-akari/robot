@@ -568,6 +568,10 @@ TEST_F(StepwiseTransportTest, FollowCachesProfilesAndAcceptsMeasuredHold)
   value.hold_position = true;
   value.start = value.target;
   const std::array<double, 6> measured_joints{0.12, -0.11, 0.18, 0.03, -0.02, 0.01};
+  auto latest_pose = valid_waypoint();
+  std::copy(measured_joints.begin(), measured_joints.end(), latest_pose.jointpos);
+  latest_pose.jointpos[0] += 0.001;
+  aubo_v4_test_sdk::emit_waypoint(latest_pose);
   const int ik_before_hold = ik_call_count();
   ASSERT_TRUE(transport.submit(value, measured_joints));
   const auto held = wait_for_motion_result(transport, 1s);
@@ -577,7 +581,7 @@ TEST_F(StepwiseTransportTest, FollowCachesProfilesAndAcceptsMeasuredHold)
   {
     auto & state = aubo_v4_test_sdk::state();
     std::lock_guard<std::mutex> lock(state.mutex);
-    EXPECT_EQ(state.last_follow_target, measured_joints);
+    EXPECT_DOUBLE_EQ(state.last_follow_target[0], measured_joints[0] + 0.001);
   }
   EXPECT_EQ(transport.sample().follow_profile_updates, 1U);
   EXPECT_EQ(stop_count(), 0);
@@ -611,10 +615,10 @@ TEST_F(StepwiseTransportTest, SingleQuiescentStopFailureRemainsAFailure)
   const auto stopped = wait_for_stop_result(transport, 1s);
   ASSERT_TRUE(stopped);
   EXPECT_FALSE(stopped->success);
-  EXPECT_EQ(stop_count(), 2);
+  EXPECT_EQ(stop_count(), 1);
 }
 
-TEST_F(StepwiseTransportTest, QuiescentStopTimeoutRequiresSuccessfulRetryAck)
+TEST_F(StepwiseTransportTest, QuiescentStopTimeoutRequiresFreshMeasuredStop)
 {
   StepwiseTransport transport;
   auto settings = options();
@@ -623,11 +627,92 @@ TEST_F(StepwiseTransportTest, QuiescentStopTimeoutRequiresSuccessfulRetryAck)
   std::string error;
   ASSERT_TRUE(transport.connect(settings, error));
   transport.cancel_and_stop(1);
+  ASSERT_TRUE(aubo_v4_test_sdk::wait_for_stop_count(1, 500ms));
+  std::thread stream([]() {
+      for (unsigned i = 0; i < 40; ++i) {
+        aubo_v4_test_sdk::emit_waypoint(valid_waypoint());
+        std::this_thread::sleep_for(10ms);
+      }
+    });
   const auto stopped = wait_for_stop_result(transport, 1s);
+  stream.join();
   ASSERT_TRUE(stopped);
   EXPECT_TRUE(stopped->success);
-  EXPECT_EQ(stop_count(), 2);
-  EXPECT_NE(stopped->detail.find("after initial timeout 10007"), std::string::npos);
+  EXPECT_EQ(stop_count(), 1);
+  EXPECT_NE(stopped->detail.find("verified by fresh post-request telemetry"), std::string::npos);
+}
+
+TEST_F(StepwiseTransportTest, MotionResponseErrorsAreClassifiedWithoutResendingOldMotion)
+{
+  for (const int code : {10007, 10023, 21005, 21006}) {
+    aubo_v4_test_sdk::reset();
+    aubo_v4_test_sdk::state().line_move_result = code;
+    StepwiseTransport transport;
+    auto settings = options();
+    settings.allow_follow_mode = true;
+    std::string error;
+    ASSERT_TRUE(transport.connect(settings, error));
+    auto target = command(1, 1);
+    target.follow_joint_mode = true;
+    ASSERT_TRUE(transport.submit(target, seed));
+    const auto result = wait_for_motion_result(transport, 1s);
+    ASSERT_TRUE(result);
+    EXPECT_FALSE(result->success);
+    EXPECT_EQ(result->recoverable, code != 21006);
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    EXPECT_EQ(state.follow_move_count, 1);
+  }
+}
+
+TEST_F(StepwiseTransportTest, StopTimeoutCannotPassOnFreshPoseIfControllerStillReportsRunning)
+{
+  aubo_v4_test_sdk::state().robot_state = aubo_robot_namespace::RobotRunning;
+  aubo_v4_test_sdk::set_stop_results({10007});
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.single_stop_when_quiescent = true;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  transport.cancel_and_stop(1);
+  ASSERT_TRUE(aubo_v4_test_sdk::wait_for_stop_count(1, 500ms));
+  std::thread stream([]() {
+      for (unsigned i = 0; i < 80; ++i) {
+        aubo_v4_test_sdk::emit_waypoint(valid_waypoint());
+        std::this_thread::sleep_for(10ms);
+      }
+    });
+  const auto stopped = wait_for_stop_result(transport, 1500ms);
+  stream.join();
+  ASSERT_TRUE(stopped);
+  EXPECT_FALSE(stopped->success);
+}
+
+TEST_F(StepwiseTransportTest, ControllerLimitEventSurvivesLaterNormalNotification)
+{
+  StepwiseTransport transport;
+  ASSERT_TRUE(connect(transport));
+  RobotEventCallback callback;
+  void * context;
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    callback = state.event_callback;
+    context = state.event_context;
+  }
+  ASSERT_NE(callback, nullptr);
+  aubo_robot_namespace::RobotEventInfo event;
+  event.eventType = aubo_robot_namespace::RobotEventJointOutRange;
+  event.eventCode = 21006;
+  event.eventContent = "joint out of range";
+  callback(&event, context);
+  event.eventType = aubo_robot_namespace::RobotEventMoveEnterStopState;
+  event.eventContent = "stopping";
+  callback(&event, context);
+  const auto sample = transport.sample();
+  EXPECT_EQ(sample.controller_event_type, 1300);
+  EXPECT_EQ(sample.controller_error_type, 1006);
+  EXPECT_EQ(sample.controller_error_sequence, 1U);
 }
 
 TEST_F(StepwiseTransportTest, FinalQuiescentStopAckResolvesOnlyInitialRequestTimeout)

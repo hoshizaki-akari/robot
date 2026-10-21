@@ -41,6 +41,7 @@ struct StepwiseConfig
   double feedback_timeout_s{0.5};
   double command_timeout_s{0.25};
   double ack_timeout_s{2.0};
+  double stop_timeout_s{0.0};
   double completion_timeout_s{5.0};
   double settling_time_s{0.1};
   double arrival_tolerance_m{0.00005};
@@ -105,7 +106,7 @@ public:
   std::optional<StepwiseCommand> take_command(double now);
   void acknowledge(
     std::uint64_t id, std::uint64_t epoch, bool success, double now,
-    const std::string & detail = "");
+    const std::string & detail = "", bool recoverable = false);
   void request_stop(double now, const std::string & reason, bool fault = false);
   std::optional<std::uint64_t> take_stop_request();
   void acknowledge_stop(std::uint64_t epoch, bool success, double now);
@@ -118,6 +119,7 @@ public:
   const std::string & reason() const;
   const std::string & fault_reason() const;
   std::uint64_t epoch() const;
+  unsigned communication_recoveries() const {return communication_recoveries_;}
 
 private:
   bool accept_time(double now);
@@ -168,6 +170,8 @@ private:
   std::uint64_t stop_acknowledged_sequence_{0};
   unsigned int stop_frames_{0};
   bool follow_mode_{false};
+  unsigned communication_recoveries_{0};
+  double last_communication_recovery_at_{0.0};
   double last_follow_dispatch_at_{0.0}, follow_progress_at_{0.0};
   std::array<double, 3> follow_progress_position_{};
   std::array<double, 3> expected_follow_motion_{};

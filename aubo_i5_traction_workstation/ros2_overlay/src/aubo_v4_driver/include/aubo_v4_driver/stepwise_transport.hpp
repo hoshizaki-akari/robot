@@ -55,7 +55,16 @@ struct TransportSample
   double dispatch_interval_s{0.0}, maximum_dispatch_interval_s{0.0};
   double maximum_ik_duration_s{0.0}, maximum_motion_call_duration_s{0.0};
   std::string last_telemetry_failure;
+  double joint_speed_norm_radps{0.0};
+  std::uint64_t controller_event_sequence{0};
+  int controller_event_type{0}, controller_event_code{0};
+  std::string controller_event_content;
+  double controller_event_at{0.0};
+  std::uint64_t controller_error_sequence{0};
+  int controller_error_type{0};
+  std::string controller_error_content;
   bool follow_joint_mode{false};
+  bool brake_on_hold{false};
   std::uint64_t follow_profile_updates{0};
   double follow_joint_speed_max_radps{0.0}, follow_joint_acceleration_max_radps2{0.0};
   std::string error;
@@ -64,6 +73,7 @@ struct TransportResult
 {
   std::uint64_t id{0}, epoch{0};
   bool success{false}, stop{false};
+  bool recoverable{false};
   std::string detail;
 };
 

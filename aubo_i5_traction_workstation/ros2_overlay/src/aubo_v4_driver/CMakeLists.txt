@@ -82,6 +82,12 @@ if(BUILD_TESTING)
   target_include_directories(test_stepwise_transport BEFORE PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/test/fake_sdk" "${AUBO_V4_INCLUDE_DIR}")
   target_link_libraries(test_stepwise_transport aubo_v4_state_validation Threads::Threads)
+  ament_add_gtest(test_stepwise_node_recovery test/test_stepwise_node_recovery.cpp src/stepwise_transport.cpp)
+  target_include_directories(test_stepwise_node_recovery BEFORE PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/fake_sdk" "${AUBO_V4_INCLUDE_DIR}")
+  target_link_libraries(test_stepwise_node_recovery aubo_v4_state_validation Threads::Threads)
+  ament_target_dependencies(test_stepwise_node_recovery
+    controller_manager_msgs diagnostic_msgs fr_traction geometry_msgs rclcpp sensor_msgs std_msgs std_srvs)
   add_library(stepwise_sdk_constructor_guard SHARED test/sdk_constructor_guard.cpp)
   ament_add_pytest_test(test_stepwise_offline_node test/test_stepwise_offline_node.py
     TIMEOUT 40

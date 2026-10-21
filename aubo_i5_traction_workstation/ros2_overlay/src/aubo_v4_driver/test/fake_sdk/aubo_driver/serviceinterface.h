@@ -61,6 +61,8 @@ namespace aubo_v4_test_sdk
     aubo_robot_namespace::RobotDiagnosis diagnosis {};
     aubo_robot_namespace::RobotState robot_state {aubo_robot_namespace::RobotStopped};
     RealTimeRoadPointCallback waypoint_callback {nullptr};
+    RobotEventCallback event_callback {nullptr};
+    void * event_context {nullptr};
     void * waypoint_context {nullptr};
     std::vector < std::string > calls;
     std::size_t event_sequence {0};
@@ -119,6 +121,8 @@ namespace aubo_v4_test_sdk
       diagnosis.armPowerStatus = true;
       robot_state = aubo_robot_namespace::RobotStopped;
       waypoint_callback = nullptr;
+      event_callback = nullptr;
+      event_context = nullptr;
       waypoint_context = nullptr;
       calls.clear();
       event_sequence = 0;
@@ -468,6 +472,15 @@ public:
       ++s.line_move_completed_count;
       s.notify("line_move_exit");
       return result;
+    }
+
+    int robotServiceRegisterRobotEventInfoCallback(RobotEventCallback callback, void * context)
+    {
+      State & s = state();
+      std::lock_guard < std::mutex > lock(s.mutex);
+      s.event_callback = callback;
+      s.event_context = context;
+      return 0;
     }
 
     int robotMoveFastStop()

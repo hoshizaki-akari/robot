@@ -14,7 +14,9 @@ aubo_v4_state_node:
     single_stop_when_quiescent: true
     subdivide_follow_joint_steps: false
     adaptive_follow_ik: true
-    brake_on_hold: true
+    # Zero/reversal stays in follow mode; FastStop is reserved for actual stops.
+    brake_on_hold: false
+    stop_timeout_s: 5.0
     maximum_speed_mps: 0.200
     session_orientation_tolerance_rad: 0.10
     # Use the supported profile range, while force maps to paced target speed.

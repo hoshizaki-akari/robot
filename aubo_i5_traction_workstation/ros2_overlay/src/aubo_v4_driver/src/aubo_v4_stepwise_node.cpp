@@ -71,6 +71,7 @@ public:
     config.feedback_timeout_s = declare_parameter("feedback_timeout_s", 0.5);
     config.command_timeout_s = declare_parameter("command_timeout_s", 0.25);
     config.ack_timeout_s = declare_parameter("ack_timeout_s", 2.0);
+    config.stop_timeout_s = declare_parameter("stop_timeout_s", 5.0);
     config.completion_timeout_s = declare_parameter("completion_timeout_s", 5.0);
     config.settling_time_s = declare_parameter("settling_time_s", 0.1);
     config.arrival_tolerance_m = declare_parameter("arrival_tolerance_m", 0.00005);
@@ -363,6 +364,14 @@ private:
         av::steady_seconds(), "multiple robot drivers or motion-command publishers", true);
     }
     const auto sample = transport_->sample();
+    if (sample.controller_error_sequence > handled_controller_error_) {
+      handled_controller_error_ = sample.controller_error_sequence;
+      session_enabled_ = false;
+      scheduler_->request_stop(
+        av::steady_seconds(),
+        "controller event " + std::to_string(sample.controller_error_type) + ": " +
+        sample.controller_error_content, true);
+    }
     while (const auto result = transport_->take_result()) {
       last_sdk_result_ = result->detail;
       if (!result->success) {
@@ -373,7 +382,11 @@ private:
       if (result->stop) {
         scheduler_->acknowledge_stop(result->epoch, result->success, time);
       } else {
-        scheduler_->acknowledge(result->id, result->epoch, result->success, time, result->detail);
+        scheduler_->acknowledge(
+          result->id, result->epoch, result->success, time, result->detail,
+          result->recoverable && sample.feedback.healthy &&
+          time - sample.diagnosis_at <= telemetry_timeout_s_ &&
+          time - sample.robot_state_at <= telemetry_timeout_s_);
       }
     }
     const auto time = av::steady_seconds();
@@ -578,6 +591,20 @@ private:
     add("motion_stream_active", session_enabled_ ? "1" : "0");
     add("stepwise_phase", phase.data);
     add("motion_idle", idle.data ? "1" : "0");
+    if (connected_) {
+      const auto sample = transport_->sample();
+      add("sdk_robot_stopped", sample.feedback.stopped ? "1" : "0");
+      add("brake_on_hold", sample.brake_on_hold ? "1" : "0");
+      add("stop_timeout_s", std::to_string(config_.stop_timeout_s));
+      add("communication_recoveries", std::to_string(scheduler_->communication_recoveries()));
+      add("measured_cartesian_speed_mps", std::to_string(sample.feedback.speed_mps));
+      add("measured_joint_speed_norm_radps", std::to_string(sample.joint_speed_norm_radps));
+      add("controller_event_type", std::to_string(sample.controller_event_type));
+      add("controller_event_code", std::to_string(sample.controller_event_code));
+      add("controller_event_content", sample.controller_event_content);
+      add("controller_error_type", std::to_string(sample.controller_error_type));
+      add("controller_error_content", sample.controller_error_content);
+    }
     add("epoch", std::to_string(scheduler_->epoch()));
     add("last_sdk_result", last_sdk_result_);
     add("last_motion_failure", last_motion_failure_);
@@ -678,6 +705,7 @@ private:
   std::string connection_error_, last_sdk_result_, last_motion_failure_, pose_frame_;
   std::vector<std::string> names_;
   std::uint64_t intent_sequence_{0}, resume_after_intent_{0}, published_sequence_{0};
+  std::uint64_t handled_controller_error_{0};
   double intent_at_{0.0}, state_fence_at_{0.0};
   double last_tick_at_{0.0}, maximum_tick_gap_s_{0.0};
   double maximum_session_travel_{0.0};

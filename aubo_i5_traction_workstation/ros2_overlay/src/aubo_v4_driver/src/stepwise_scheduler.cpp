@@ -44,6 +44,11 @@ double distance3(const std::array<double, 3> & left, const std::array<double, 3>
 
 void validate_config(const StepwiseConfig & config)
 {
+  if (!finite(config.stop_timeout_s) || config.stop_timeout_s < 0.0 ||
+    config.stop_timeout_s > 120.0)
+  {
+    throw std::invalid_argument("invalid stop confirmation budget");
+  }
   if (!finite(config.drag_maximum_step_m) || config.drag_maximum_step_m < 0.0 ||
     config.drag_maximum_step_m > 0.020 || !finite(config.drag_follow_horizon_s) ||
     config.drag_follow_horizon_s < 0.0 || config.drag_follow_horizon_s > 0.5 ||
@@ -171,7 +176,8 @@ void StepwiseScheduler::begin_stop(double now, const std::string & reason, bool 
     return;
   }
   state_ = StepwiseState::STOPPING;
-  stop_deadline_ = finite(now) ? now + config_.ack_timeout_s : last_now_;
+  stop_deadline_ = finite(now) ? now +
+    (config_.stop_timeout_s > 0.0 ? config_.stop_timeout_s : config_.ack_timeout_s) : last_now_;
 }
 
 void StepwiseScheduler::fail_closed(const std::string & reason, double now)
@@ -233,6 +239,7 @@ bool StepwiseScheduler::reset_fault(double now)
   stop_acknowledged_ = false;
   stop_frames_ = 0;
   fault_reason_.clear();
+  communication_recoveries_ = 0;
   state_ = StepwiseState::DISABLED;
   reason_ = "fault reset after measured stop; new activation required";
   return true;
@@ -466,7 +473,8 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
 }
 
 void StepwiseScheduler::acknowledge(
-  std::uint64_t id, std::uint64_t epoch, bool success, double now, const std::string & detail)
+  std::uint64_t id, std::uint64_t epoch, bool success, double now, const std::string & detail,
+  bool recoverable)
 {
   if (!accept_time(now)) {
     return;
@@ -478,6 +486,18 @@ void StepwiseScheduler::acknowledge(
     return;
   }
   if (!success) {
+    if (recoverable && follow_mode_) {
+      if (now - last_communication_recovery_at_ > 10.0) {communication_recoveries_ = 0;}
+      last_communication_recovery_at_ = now;
+      if (++communication_recoveries_ <= 3) {
+        begin_stop(now, "communication recovery pause: " + detail, false);
+        return;
+      }
+      begin_stop(
+        now, "communication recovery exhausted after three confirmed pauses: " + detail,
+        true);
+      return;
+    }
     begin_stop(
       now, detail.empty() ? "command acknowledgement failed" :
       "command acknowledgement failed: " + detail, true);
