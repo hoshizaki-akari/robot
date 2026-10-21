@@ -652,6 +652,40 @@ TEST_F(StepwiseTransportTest, ReleaseBrakesWithoutSendingAnyOldJointTarget)
   EXPECT_EQ(transport.sample().follow_profile_updates, 2U);
 }
 
+TEST_F(StepwiseTransportTest, HoldTimeoutRetriesOnlyTheBrakeAndRequiresSuccessfulAck)
+{
+  for (const int final_code : {0, 10007, 10001}) {
+    aubo_v4_test_sdk::reset();
+    StepwiseTransport transport;
+    auto settings = options();
+    settings.allow_follow_mode = true;
+    settings.fixed_follow_profile = true;
+    settings.brake_on_hold = true;
+    aubo_v4_test_sdk::set_stop_results({10007, final_code});
+    std::string error;
+    ASSERT_TRUE(transport.connect(settings, error));
+    auto target = command(1, 1);
+    target.follow_joint_mode = true;
+    ASSERT_TRUE(transport.submit(target, seed));
+    const auto moved = wait_for_motion_result(transport, 1s);
+    ASSERT_TRUE(moved && moved->success);
+    const int before = stop_count();
+    target.id = 2;
+    target.hold_position = true;
+    target.start = target.target;
+    ASSERT_TRUE(submit_when_available(transport, target, 500ms));
+    const auto held = wait_for_motion_result(transport, 1s);
+    ASSERT_TRUE(held);
+    EXPECT_EQ(held->success, final_code == 0);
+    EXPECT_EQ(stop_count() - before, 2);
+    EXPECT_NE(held->detail.find("after initial timeout 10007"), std::string::npos);
+    EXPECT_EQ(line_move_count(), 0);
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    EXPECT_EQ(state.follow_move_count, 1);
+  }
+}
+
 TEST_F(StepwiseTransportTest, SlowStateGetterDoesNotHideCompletedDiagnosis)
 {
   auto & state = aubo_v4_test_sdk::state();

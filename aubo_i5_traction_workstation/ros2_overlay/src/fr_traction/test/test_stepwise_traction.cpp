@@ -73,6 +73,33 @@ TEST(StepwiseResponse, ForceApproachIsFasterButContinuousAtHoldBand)
   EXPECT_LT(out(-2.0).linear_velocity.x, -0.015);
 }
 
+TEST(StepwiseResponse, PositionConvergesInsideCompletionToleranceInsteadOfStoppingAtSeventeen)
+{
+  auto config = verified();
+  config.maximum_speed_mps = 0.020;
+  config.minimum_command_speed_mps = 0.0;
+  config.force_gain_mps_per_n = 0.010;
+  config.force_soft_transition_n = 0.25;
+  const auto out = [&](double measured) {
+      return ft::stepwise_traction_output(
+        config, ft::ControlMode::POSITIONING, {1, 0, 0}, 18.0, {measured, 0, 0});
+    };
+  EXPECT_GT(out(17.0).scalar_velocity_mps, 0.006);
+  EXPECT_EQ(out(17.0).position_control.phase, ft::PositionControlPhase::APPROACH);
+  EXPECT_GT(out(17.7).scalar_velocity_mps, 0.0);
+  EXPECT_DOUBLE_EQ(out(17.9).scalar_velocity_mps, 0.0);
+  EXPECT_EQ(out(17.9).position_control.phase, ft::PositionControlPhase::SETTLING);
+  EXPECT_LT(out(18.3).scalar_velocity_mps, 0.0);
+  double measured = 17.0;
+  for (unsigned i = 0; i < 1000; ++i) {
+    measured += 400.0 * out(measured).scalar_velocity_mps * 0.01;
+  }
+  EXPECT_GT(measured, 17.8);
+  EXPECT_LE(measured, 18.0);
+  EXPECT_EQ(out(measured).position_control.phase, ft::PositionControlPhase::SETTLING);
+  EXPECT_DOUBLE_EQ(out(measured).scalar_velocity_mps, 0.0);
+}
+
 TEST(StepwiseResponse, VelocityRampDoesNotRetainOldDirectionOrDelayRelease)
 {
   ft::Vec3 previous;

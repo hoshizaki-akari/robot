@@ -420,10 +420,17 @@ struct StepwiseTransport::Impl
           }
           const double dispatch_at = steady_seconds();
           const bool braking_hold = current.command.hold_position && options.brake_on_hold;
-          const int code =
+          int code =
             braking_hold ? send->robotMoveFastStop() : current.command.follow_joint_mode ?
             send->robotServiceFollowModeJointMove(target.jointpos) :
             send->robotServiceLineMove(target, false);
+          const int first_code = code;
+          // RequestTimeout does not say whether the controller applied the stop.
+          // Repeating this idempotent brake once is safe; never resend a move,
+          // or turn an unconfirmed stop into a successful acknowledgement.
+          const bool retry_hold = braking_hold && code == vendor::ErrCode_RequestTimeout &&
+            allowed && current.command.epoch == allowed_epoch && !shutdown;
+          if (retry_hold) {code = send->robotMoveFastStop();}
           if (braking_hold) {invalidate_follow_profile = true;}
           const double motion_duration = steady_seconds() - dispatch_at;
           reply.success = code == vendor::ErrnoSucc;
@@ -447,6 +454,9 @@ struct StepwiseTransport::Impl
             current.command.follow_joint_mode ?
             "FollowModeJointMove SDK result " : "ordinary LineMove SDK result ") + std::to_string(
             code);
+          if (retry_hold) {
+            reply.detail += " after initial timeout " + std::to_string(first_code);
+          }
         }
       } catch (const std::exception & exception) {
         reply.detail = std::string("motion SDK exception: ") + exception.what();

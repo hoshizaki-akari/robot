@@ -140,6 +140,13 @@ public:
     stepwise_config_.drag_signs = {drag_sign_x_, drag_sign_y_, drag_sign_z_};
     position_tolerance_n_ = declare_parameter("position_tolerance_n", 1.0);
     stepwise_config_.position_tolerance_n = position_tolerance_n_;
+    stepwise_config_.position_regulation_deadband_n = declare_parameter(
+      "stepwise_position_regulation_deadband_n", 0.15);
+    if (!std::isfinite(stepwise_config_.position_regulation_deadband_n) ||
+      stepwise_config_.position_regulation_deadband_n <= 0.0)
+    {
+      throw std::invalid_argument("stepwise position regulation deadband must be positive");
+    }
     position_far_gain_mps_per_n_ = declare_parameter(
       "position_far_gain_mps_per_n", 0.0060);
     position_near_gain_mps_per_n_ = declare_parameter(

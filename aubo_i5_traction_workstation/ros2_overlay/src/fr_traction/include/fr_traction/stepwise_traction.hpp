@@ -86,6 +86,7 @@ struct StepwiseTractionConfig
   double axis_sign{0.0};
   double force_gain_mps_per_n{0.0002}, force_deadband_n{0.5};
   double position_tolerance_n{1.0}, maximum_speed_mps{0.002};
+  double position_regulation_deadband_n{0.15};
   // 0.1 s horizon gives >=0.12 mm, above twice the default arrival tolerance.
   // Actual minimum repeatable motion remains a hardware checkpoint.
   double minimum_command_speed_mps{0.0012};
@@ -176,7 +177,9 @@ inline ControllerOutput stepwise_traction_output(
   if (!normalize(direction, unit) || !std::isfinite(config.force_gain_mps_per_n) ||
     config.force_gain_mps_per_n <= 0.0 || !std::isfinite(config.force_deadband_n) ||
     config.force_deadband_n < 0.0 || !std::isfinite(config.position_tolerance_n) ||
-    config.position_tolerance_n <= 0.0)
+    config.position_tolerance_n <= 0.0 ||
+    !std::isfinite(config.position_regulation_deadband_n) ||
+    config.position_regulation_deadband_n <= 0.0)
   {
     return result;
   }
@@ -187,13 +190,20 @@ inline ControllerOutput stepwise_traction_output(
   if (!std::isfinite(measured)) {return result;}
   const double error = target_force_n - measured;
   const double band = mode == ControlMode::POSITIONING ?
-    std::min(config.position_tolerance_n, std::max(0.05, 0.2 * target_force_n)) :
+    std::min(
+    {config.position_tolerance_n, config.position_regulation_deadband_n,
+      std::max(0.05, 0.2 * target_force_n)}) :
     config.force_deadband_n;
-  const double excess = std::max(0.0, std::abs(error) - band);
+  // Positioning must cross into its accuracy band in finite time instead of
+  // asymptotically approaching its edge. Use the full error until inside it.
+  const double excess = mode == ControlMode::POSITIONING ?
+    (std::abs(error) > band ? std::abs(error) : 0.0) :
+    std::max(0.0, std::abs(error) - band);
   if (!std::isfinite(config.force_soft_transition_n) || config.force_soft_transition_n < 0.0) {
     return result;
   }
-  // C1 transition at the hold band; no minimum-speed jump near the target.
+  // Continuous hold-band transition for constant force; position regulation
+  // slows toward its target before settling inside the tighter accuracy band.
   const double shaped_excess = config.force_soft_transition_n > 0.0 ?
     excess * excess / (excess + config.force_soft_transition_n) : excess;
   const double magnitude = excess > 0.0 ? std::clamp(
