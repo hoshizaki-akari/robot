@@ -14,18 +14,20 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Sequence
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
 try:  # Keep pure-math unit tests independent of a sourced ROS installation.
     import rclpy
     from fr_traction.msg import EndEffectorState
-    from geometry_msgs.msg import WrenchStamped
+    from geometry_msgs.msg import QuaternionStamped, WrenchStamped
     from rclpy.node import Node
     from rclpy.qos import qos_profile_sensor_data
 except ImportError:  # pragma: no cover - exercised only outside ROS.
     rclpy = None
     EndEffectorState = Any
+    QuaternionStamped = Any
     WrenchStamped = Any
     Node = object
 
@@ -53,6 +55,7 @@ class TransformConfiguration:
     pose_frame_verified: bool = False
     sensor_timeout_s: float = 0.10
     pose_timeout_s: float = 0.10
+    pose_sensor_sync_tolerance_s: float = 0.05
     timestamp_future_tolerance_s: float = 0.05
     quaternion_norm_tolerance: float = 0.05
     fixed_pose_tare_enabled: bool = False
@@ -72,6 +75,7 @@ class TransformedWrench:
     """Validated base-frame wrench expressed about the flange origin."""
 
     stamp: Stamp
+    q_base_flange: Quaternion
     force_base: Vector3
     torque_base_about_flange: Vector3
 
@@ -79,6 +83,7 @@ class TransformedWrench:
 @dataclass(frozen=True)
 class _SensorSample:
     stamp: Stamp
+    source_time_s: float
     force_sensor: Vector3
     torque_sensor: Vector3
     received_monotonic_s: float
@@ -86,6 +91,7 @@ class _SensorSample:
 
 @dataclass(frozen=True)
 class _PoseSample:
+    source_time_s: float
     q_base_flange: Quaternion
     received_monotonic_s: float
 
@@ -146,6 +152,31 @@ def _quaternion_angle_rad(left: Quaternion, right: Quaternion) -> float:
     """Return the shortest orientation distance, treating q and -q as equal."""
     dot = sum(first * second for first, second in zip(left, right, strict=True))
     return 2.0 * math.acos(min(1.0, max(0.0, abs(dot))))
+
+
+def _interpolate_quaternion(first: Quaternion, second: Quaternion, alpha: float) -> Quaternion:
+    """Shortest-arc quaternion interpolation for a timestamp between poses."""
+    dot = sum(a * b for a, b in zip(first, second, strict=True))
+    adjusted = second
+    if dot < 0.0:
+        adjusted = (-second[0], -second[1], -second[2], -second[3])
+        dot = -dot
+    dot = min(1.0, max(-1.0, dot))
+    if dot > 0.9995:
+        values = tuple(a + alpha * (b - a) for a, b in zip(first, adjusted, strict=True))
+    else:
+        angle = math.acos(dot)
+        denominator = math.sin(angle)
+        first_weight = math.sin((1.0 - alpha) * angle) / denominator
+        second_weight = math.sin(alpha * angle) / denominator
+        values = tuple(
+            first_weight * a + second_weight * b
+            for a, b in zip(first, adjusted, strict=True)
+        )
+    magnitude = math.sqrt(sum(value * value for value in values))
+    if magnitude <= 1e-12 or not math.isfinite(magnitude):
+        raise ValueError("quaternion interpolation produced an invalid orientation")
+    return tuple(value / magnitude for value in values)  # type: ignore[return-value]
 
 
 def rotate_vector(quaternion: Quaternion, vector: Vector3) -> Vector3:
@@ -232,13 +263,18 @@ class WrenchTransformCore:
         )
         self._sensor: _SensorSample | None = None
         self._pose: _PoseSample | None = None
+        self._pose_history: deque[_PoseSample] = deque(maxlen=256)
         self._source_clocks: dict[str, tuple[float, float, float]] = {}
 
     def _validate_configuration(self) -> None:
         config = self._configuration
         if not config.expected_sensor_frame or not config.expected_pose_frame:
             raise ValueError("expected input frame IDs must be nonempty")
-        for timeout in (config.sensor_timeout_s, config.pose_timeout_s):
+        for timeout in (
+            config.sensor_timeout_s,
+            config.pose_timeout_s,
+            config.pose_sensor_sync_tolerance_s,
+        ):
             if not math.isfinite(timeout) or timeout <= 0.0:
                 raise ValueError("freshness timeouts must be finite and positive")
         if (
@@ -262,7 +298,7 @@ class WrenchTransformCore:
     def _validate_header(
         self, message: Any, expected_frame: str, source_timeout_s: float, ros_now_s: float,
         received_s: float,
-    ) -> Stamp:
+    ) -> tuple[Stamp, float]:
         if not math.isfinite(ros_now_s):
             raise ValueError("current ROS time is not finite")
         try:
@@ -286,7 +322,7 @@ class WrenchTransformCore:
         if source_time_s <= last_source:
             raise TimestampRejected("source timestamp is duplicated or out of order")
         self._source_clocks[expected_frame] = (ros_now_s, received_s, source_time_s)
-        return stamp
+        return stamp, source_time_s
 
     def accept_sensor(
         self, message: Any, receipt_monotonic_s: float, ros_now_s: float
@@ -296,14 +332,14 @@ class WrenchTransformCore:
             received = _finite_float(receipt_monotonic_s)
             force = _message_vector(message.wrench, "force")
             torque = _message_vector(message.wrench, "torque")
-            stamp = self._validate_header(
+            stamp, source_time_s = self._validate_header(
                 message,
                 self._configuration.expected_sensor_frame,
                 self._configuration.sensor_timeout_s,
                 ros_now_s,
                 received,
             )
-            self._sensor = _SensorSample(stamp, force, torque, received)
+            self._sensor = _SensorSample(stamp, source_time_s, force, torque, received)
         except TimestampRejected as error:
             return str(error)
         except (AttributeError, TypeError, ValueError, OverflowError) as error:
@@ -324,19 +360,53 @@ class WrenchTransformCore:
                 (orientation.x, orientation.y, orientation.z, orientation.w),
                 self._configuration.quaternion_norm_tolerance,
             )
-            self._validate_header(
+            _, source_time_s = self._validate_header(
                 message,
                 self._configuration.expected_pose_frame,
                 self._configuration.pose_timeout_s,
                 ros_now_s,
                 received,
             )
-            self._pose = _PoseSample(q_base_flange, received)
+            if self._pose_history and source_time_s < self._pose_history[-1].source_time_s:
+                # A ROS clock reset must not interpolate across two time bases.
+                self._pose_history.clear()
+            sample = _PoseSample(source_time_s, q_base_flange, received)
+            self._pose_history.append(sample)
+            self._pose = sample
         except TimestampRejected as error:
             return str(error)
         except (AttributeError, TypeError, ValueError, OverflowError) as error:
             self._pose = None
             return str(error)
+        return None
+
+    def _pose_at_sensor_time(self) -> Quaternion | None:
+        """Interpolate the flange orientation at the wrench's source timestamp."""
+        if self._sensor is None or not self._pose_history:
+            return None
+        source_time = self._sensor.source_time_s
+        previous: _PoseSample | None = None
+        for current in self._pose_history:
+            if current.source_time_s == source_time:
+                return current.q_base_flange
+            if previous is not None and previous.source_time_s < source_time < current.source_time_s:
+                span = current.source_time_s - previous.source_time_s
+                if span <= 0.0:
+                    return None
+                alpha = (source_time - previous.source_time_s) / span
+                return _interpolate_quaternion(
+                    previous.q_base_flange, current.q_base_flange, alpha
+                )
+            previous = current
+        nearest = min(
+            self._pose_history,
+            key=lambda sample: abs(sample.source_time_s - source_time),
+        )
+        if (
+            abs(nearest.source_time_s - source_time)
+            <= self._configuration.pose_sensor_sync_tolerance_s
+        ):
+            return nearest.q_base_flange
         return None
 
     def output_block_reason(self, now_monotonic_s: float) -> str:
@@ -367,6 +437,8 @@ class WrenchTransformCore:
             > config.tare_pose_tolerance_rad
         ):
             return "FIXED_TARE_ORIENTATION_MISMATCH"
+        if self._pose_at_sensor_time() is None:
+            return "POSE_SENSOR_TIMESTAMP_MISMATCH"
         return ""
 
     def output_if_fresh(self, now_monotonic_s: float) -> TransformedWrench | None:
@@ -380,16 +452,21 @@ class WrenchTransformCore:
             force_sensor = _subtract(force_sensor, _vector3(config.force_bias_sensor_n))
             torque_sensor = _subtract(torque_sensor, _vector3(config.torque_bias_sensor_nm))
         force_sensor = _multiply_components(force_sensor, self._force_sensor_sign)
+        q_base_flange = self._pose_at_sensor_time()
+        if q_base_flange is None:
+            return None
         force_base, torque_base = transform_sensor_wrench(
             force_sensor,
             torque_sensor,
             _normalize_quaternion(config.q_flange_sensor, config.quaternion_norm_tolerance),
             _vector3(config.p_flange_sensor_m),
-            self._pose.q_base_flange,
+            q_base_flange,
         )
         if not all(math.isfinite(component) for component in force_base + torque_base):
             return None
-        return TransformedWrench(self._sensor.stamp, force_base, torque_base)
+        return TransformedWrench(
+            self._sensor.stamp, q_base_flange, force_base, torque_base
+        )
 
 
 class AuboWrenchTransformNode(Node):
@@ -423,6 +500,9 @@ class AuboWrenchTransformNode(Node):
             ),
             sensor_timeout_s=float(self.declare_parameter("sensor_timeout_s", 0.10).value),
             pose_timeout_s=float(self.declare_parameter("pose_timeout_s", 0.10).value),
+            pose_sensor_sync_tolerance_s=float(
+                self.declare_parameter("pose_sensor_sync_tolerance_s", 0.05).value
+            ),
             timestamp_future_tolerance_s=float(
                 self.declare_parameter("timestamp_future_tolerance_s", 0.05).value
             ),
@@ -470,6 +550,14 @@ class AuboWrenchTransformNode(Node):
             self.declare_parameter("output_wrench_topic", "/controller_manager/wrench").value
         )
         self._publisher = self.create_publisher(WrenchStamped, output_wrench_topic, 10)
+        orientation_topic = str(
+            self.declare_parameter(
+                "output_orientation_topic", "/controller_manager/wrench_orientation"
+            ).value
+        )
+        self._orientation_publisher = self.create_publisher(
+            QuaternionStamped, orientation_topic, 10
+        )
         self.create_subscription(
             WrenchStamped, raw_wrench_topic, self._on_sensor, qos_profile_sensor_data
         )
@@ -517,6 +605,15 @@ class AuboWrenchTransformNode(Node):
             output.wrench.torque.z,
         ) = result.torque_base_about_flange
         self._publisher.publish(output)
+        orientation = QuaternionStamped()
+        orientation.header = output.header
+        (
+            orientation.quaternion.x,
+            orientation.quaternion.y,
+            orientation.quaternion.z,
+            orientation.quaternion.w,
+        ) = result.q_base_flange
+        self._orientation_publisher.publish(orientation)
         self._last_published_stamp = result.stamp
 
 

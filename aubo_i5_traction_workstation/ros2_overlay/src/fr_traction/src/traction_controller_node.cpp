@@ -5,6 +5,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <algorithm>
+#include <deque>
 #include <limits>
 #include <memory>
 #include <string>
@@ -14,6 +16,7 @@
 #include "fr_traction/msg/position_control_diagnostics.hpp"
 #include "fr_traction/msg/end_effector_state.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "geometry_msgs/msg/quaternion_stamped.hpp"
 #include "geometry_msgs/msg/wrench_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
@@ -262,6 +265,13 @@ public:
       // QoS so the force loop does not silently lose a feedback burst.
       wrench_topic_, rclcpp::QoS(10).reliable(),
       [this](const geometry_msgs::msg::WrenchStamped::SharedPtr message) {on_wrench(*message);});
+    wrench_orientation_topic_ = declare_parameter(
+      "wrench_orientation_topic", std::string("/controller_manager/wrench_orientation"));
+    wrench_orientation_subscription_ = create_subscription<geometry_msgs::msg::QuaternionStamped>(
+      wrench_orientation_topic_, rclcpp::QoS(10).reliable(),
+      [this](const geometry_msgs::msg::QuaternionStamped::SharedPtr message) {
+        on_wrench_orientation(*message);
+      });
     ee_state_subscription_ = create_subscription<fr_traction::msg::EndEffectorState>(
       ee_state_topic_, rclcpp::QoS(10).reliable(),
       [this](const fr_traction::msg::EndEffectorState::SharedPtr message) {on_ee_state(*message);});
@@ -293,6 +303,63 @@ private:
   static Vec3 force_from_message(const geometry_msgs::msg::WrenchStamped & message)
   {
     return {message.wrench.force.x, message.wrench.force.y, message.wrench.force.z};
+  }
+
+  struct TimedOrientation
+  {
+    double stamp_s;
+    geometry_msgs::msg::Quaternion orientation;
+  };
+
+  bool try_pair_drag_force()
+  {
+    if (wrench_orientations_.empty() || latest_wrench_stamp_s_ <= 0.0) {return false;}
+    const auto paired = std::find_if(
+      wrench_orientations_.rbegin(), wrench_orientations_.rend(), [this](const auto & sample) {
+        return std::abs(sample.stamp_s - latest_wrench_stamp_s_) <= 1e-9;
+      });
+    if (paired == wrench_orientations_.rend()) {return false;}
+    Vec3 tool_force;
+    if (!rotate_base_to_tool(latest_wrench_, paired->orientation, tool_force)) {return false;}
+    latest_drag_tool_wrench_ = tool_force;
+    latest_drag_pair_steady_at_ = std::chrono::steady_clock::now();
+    return true;
+  }
+
+  void on_wrench_orientation(const geometry_msgs::msg::QuaternionStamped & message)
+  {
+    const double stamp_s = static_cast<double>(message.header.stamp.sec) +
+      static_cast<double>(message.header.stamp.nanosec) * 1e-9;
+    auto orientation = message.quaternion;
+    const double quaternion_norm = std::sqrt(
+      orientation.x * orientation.x + orientation.y * orientation.y +
+      orientation.z * orientation.z + orientation.w * orientation.w);
+    if (message.header.frame_id != "base_link" || stamp_s <= 0.0 ||
+      !std::isfinite(quaternion_norm) || quaternion_norm <= 1e-12)
+    {
+      return;
+    }
+    orientation.x /= quaternion_norm;
+    orientation.y /= quaternion_norm;
+    orientation.z /= quaternion_norm;
+    orientation.w /= quaternion_norm;
+    if (!wrench_orientations_.empty() &&
+      stamp_s < wrench_orientations_.back().stamp_s)
+    {
+      // Do not pair samples across a ROS clock reset.
+      wrench_orientations_.clear();
+    }
+    if (wrench_orientations_.empty() ||
+      stamp_s > wrench_orientations_.back().stamp_s)
+    {
+      wrench_orientations_.push_back({stamp_s, orientation});
+      while (wrench_orientations_.size() > 256U ||
+        stamp_s - wrench_orientations_.front().stamp_s > 1.0)
+      {
+        wrench_orientations_.pop_front();
+      }
+    }
+    (void)try_pair_drag_force();
   }
 
   static bool rotate_base_to_tool(
@@ -395,6 +462,9 @@ private:
         message.header.stamp.sec + message.header.stamp.nanosec * 1e-9,
         now().seconds(), monotonic_seconds(), wrench_timeout_s_)) {return;}
     latest_wrench_ = force_from_message(message);
+    latest_wrench_stamp_s_ = static_cast<double>(message.header.stamp.sec) +
+      static_cast<double>(message.header.stamp.nanosec) * 1e-9;
+    (void)try_pair_drag_force();
     last_wrench_at_ = now();
     last_wrench_steady_at_ = std::chrono::steady_clock::now();
     wrench_valid_ = message.header.frame_id == "base_link" && finite(latest_wrench_) &&
@@ -526,6 +596,18 @@ private:
       return;
     }
     Vec3 drag_input = latest_wrench_;
+    if (mode == ControlMode::DRAGGING && stepwise_backend_) {
+      const double paired_age = latest_drag_pair_steady_at_.time_since_epoch().count() == 0 ?
+        std::numeric_limits<double>::infinity() :
+        std::chrono::duration<double>(steady_time - latest_drag_pair_steady_at_).count();
+      if (paired_age < 0.0 || paired_age > wrench_timeout_s_)
+      {
+        publish_zero();
+        publish_health(true);
+        return;
+      }
+      drag_input = latest_drag_tool_wrench_;
+    }
     if (mode == ControlMode::DRAGGING && stepwise_backend_ &&
       stepwise_drag_release_gate_enabled_ &&
       !drag_release_gate_.update(
@@ -541,7 +623,7 @@ private:
         stepwise_config_.drag_deadband_n) : drag_force_filter_.update(latest_wrench_, dt_s)) :
       force_filter_.update(latest_wrench_, dt_s);
     Vec3 controller_wrench = filtered_wrench;
-    if (mode == ControlMode::DRAGGING) {
+    if (mode == ControlMode::DRAGGING && !stepwise_backend_) {
       if (!ee_orientation_valid_ ||
         !rotate_base_to_tool(filtered_wrench, latest_ee_orientation_, controller_wrench))
       {
@@ -711,6 +793,7 @@ private:
   double pretension_speed_mps_ = 0.002;
   double wrench_timeout_s_ = 0.10;
   double command_timeout_s_ = 0.10;
+  std::string wrench_orientation_topic_;
   std::string wrench_topic_;
   std::string command_topic_;
   std::string cartesian_command_topic_;
@@ -721,7 +804,10 @@ private:
 
   msg::TractionCommand command_;
   Vec3 latest_wrench_;
+  Vec3 latest_drag_tool_wrench_;
+  double latest_wrench_stamp_s_ = 0.0;
   geometry_msgs::msg::Quaternion latest_ee_orientation_;
+  std::deque<TimedOrientation> wrench_orientations_;
   bool command_valid_ = false;
   bool wrench_valid_ = false;
   bool ee_orientation_valid_ = false;
@@ -732,6 +818,7 @@ private:
   rclcpp::Time last_wrench_at_{0, 0, RCL_ROS_TIME};
   std::chrono::steady_clock::time_point last_command_steady_at_{};
   std::chrono::steady_clock::time_point last_wrench_steady_at_{};
+  std::chrono::steady_clock::time_point latest_drag_pair_steady_at_{};
   std::chrono::steady_clock::time_point last_control_steady_at_{};
   FirstOrderLowPass force_filter_;
   FirstOrderLowPass drag_force_filter_;
@@ -747,6 +834,8 @@ private:
 
   rclcpp::Subscription<msg::TractionCommand>::SharedPtr command_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr wrench_subscription_;
+  rclcpp::Subscription<geometry_msgs::msg::QuaternionStamped>::SharedPtr
+    wrench_orientation_subscription_;
   rclcpp::Subscription<fr_traction::msg::EndEffectorState>::SharedPtr ee_state_subscription_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr twist_publisher_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr velocity_publisher_;

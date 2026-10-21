@@ -1176,7 +1176,7 @@ private:
       "raw_dir_x,raw_dir_y,raw_dir_z,robust_dir_x,robust_dir_y,robust_dir_z,"
       "filtered_dir_x,filtered_dir_y,filtered_dir_z,"
       "candidate_dir_x,candidate_dir_y,candidate_dir_z,"
-      "ee_x,ee_y,ee_z,axis_displacement_m,total_travel_m,"
+      "ee_x,ee_y,ee_z,ee_qx,ee_qy,ee_qz,ee_qw,axis_displacement_m,total_travel_m,"
       "velocity_cmd_mps,direction_track_state,direction_error_rad,"
       "direction_fast_slow_error_rad,direction_candidate_dispersion_rad,"
       "direction_candidate_elapsed_s,direction_ambiguity_elapsed_s,"
@@ -1959,6 +1959,8 @@ private:
       direction_estimate_.candidate_direction.z << ','
                    << latest_ee_position_.x << ',' << latest_ee_position_.y << ',' <<
       latest_ee_position_.z << ','
+                   << latest_ee_orientation_[0] << ',' << latest_ee_orientation_[1] << ','
+                   << latest_ee_orientation_[2] << ',' << latest_ee_orientation_[3] << ','
                    << axis_displacement() << ',' << total_travel_distance() << ','
                    << velocity_command_mps_ << ','
                    << static_cast<int>(direction_estimate_.state) << ','

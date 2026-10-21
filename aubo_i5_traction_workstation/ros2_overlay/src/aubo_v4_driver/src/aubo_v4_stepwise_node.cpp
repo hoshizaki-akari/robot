@@ -502,6 +502,34 @@ private:
         pose.twist.linear.x = (feedback.position[0] - previous_sample_->feedback.position[0]) / dt;
         pose.twist.linear.y = (feedback.position[1] - previous_sample_->feedback.position[1]) / dt;
         pose.twist.linear.z = (feedback.position[2] - previous_sample_->feedback.position[2]) / dt;
+
+        // Report measured angular velocity in the same base frame as the pose.
+        // Previously this stayed at its default zero, hiding wrist/head motion
+        // from session diagnostics even when the quaternion actually changed.
+        const auto & previous = previous_sample_->feedback.orientation;
+        const auto & current = feedback.orientation;
+        double delta_x = -current[3] * previous[0] + current[0] * previous[3] -
+          current[1] * previous[2] + current[2] * previous[1];
+        double delta_y = -current[3] * previous[1] + current[0] * previous[2] +
+          current[1] * previous[3] - current[2] * previous[0];
+        double delta_z = -current[3] * previous[2] - current[0] * previous[1] +
+          current[1] * previous[0] + current[2] * previous[3];
+        double delta_w = current[3] * previous[3] + current[0] * previous[0] +
+          current[1] * previous[1] + current[2] * previous[2];
+        if (delta_w < 0.0) {
+          delta_x = -delta_x;
+          delta_y = -delta_y;
+          delta_z = -delta_z;
+          delta_w = -delta_w;
+        }
+        const double sine_half = std::sqrt(
+          delta_x * delta_x + delta_y * delta_y + delta_z * delta_z);
+        if (sine_half > 1e-12 && std::isfinite(sine_half) && std::isfinite(delta_w)) {
+          const double angle = 2.0 * std::atan2(sine_half, std::max(0.0, delta_w));
+          pose.twist.angular.x = delta_x * angle / (sine_half * dt);
+          pose.twist.angular.y = delta_y * angle / (sine_half * dt);
+          pose.twist.angular.z = delta_z * angle / (sine_half * dt);
+        }
       }
     }
     joint_pub_->publish(joints);
