@@ -604,13 +604,56 @@ TEST_F(StepwiseTransportTest, SingleQuiescentStopFailureRemainsAFailure)
   StepwiseTransport transport;
   auto settings = options();
   settings.single_stop_when_quiescent = true;
-  aubo_v4_test_sdk::set_stop_results({10007});
+  aubo_v4_test_sdk::set_stop_results({10007, 10007});
   std::string error;
   ASSERT_TRUE(transport.connect(settings, error));
   transport.cancel_and_stop(1);
   const auto stopped = wait_for_stop_result(transport, 1s);
   ASSERT_TRUE(stopped);
   EXPECT_FALSE(stopped->success);
+  EXPECT_EQ(stop_count(), 2);
+}
+
+TEST_F(StepwiseTransportTest, QuiescentStopTimeoutRequiresSuccessfulRetryAck)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.single_stop_when_quiescent = true;
+  aubo_v4_test_sdk::set_stop_results({10007, 0});
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  transport.cancel_and_stop(1);
+  const auto stopped = wait_for_stop_result(transport, 1s);
+  ASSERT_TRUE(stopped);
+  EXPECT_TRUE(stopped->success);
+  EXPECT_EQ(stop_count(), 2);
+  EXPECT_NE(stopped->detail.find("after initial timeout 10007"), std::string::npos);
+}
+
+TEST_F(StepwiseTransportTest, FinalQuiescentStopAckResolvesOnlyInitialRequestTimeout)
+{
+  for (const auto & codes : std::vector<std::array<int, 2>>{
+      {10007, 0}, {0, 10007}, {10007, 10007}, {10001, 0}, {0, 0}})
+  {
+    aubo_v4_test_sdk::reset();
+    aubo_v4_test_sdk::set_stop_results({codes[0], codes[1]});
+    aubo_v4_test_sdk::state().block_line_move = true;
+    StepwiseTransport transport;
+    ASSERT_TRUE(connect(transport));
+    ASSERT_TRUE(transport.submit(command(1, 1), seed));
+    ASSERT_TRUE(aubo_v4_test_sdk::wait_for_line_move(500ms));
+    transport.cancel_and_stop(2);
+    ASSERT_TRUE(aubo_v4_test_sdk::wait_for_stop_count(1, 500ms));
+    EXPECT_FALSE(transport.take_result());
+    aubo_v4_test_sdk::release_line_move();
+    const auto stopped = wait_for_stop_result(transport, 1s);
+    ASSERT_TRUE(stopped);
+    EXPECT_EQ(stopped->success, codes[1] == 0 && (codes[0] == 0 || codes[0] == 10007));
+    EXPECT_EQ(stop_count(), 2);
+    const auto order = calls();
+    EXPECT_LT(index_of(order, "line_move_exit"), index_of(order, "stop_final"));
+    EXPECT_FALSE(transport.submit(command(2, 1), seed));
+  }
 }
 
 TEST_F(StepwiseTransportTest, ReleaseBrakesWithoutSendingAnyOldJointTarget)

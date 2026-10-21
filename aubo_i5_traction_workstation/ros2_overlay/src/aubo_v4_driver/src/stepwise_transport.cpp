@@ -490,9 +490,14 @@ struct StepwiseTransport::Impl
           // Intent was revoked before this lock snapshot. No older send can
           // race this stop, so a second stop on another session is redundant.
           std::lock_guard<std::mutex> request_lock(request_mutex);
-          const int code = send->robotMoveFastStop();
+          int code = send->robotMoveFastStop();
+          const int first_code = code;
+          if (code == vendor::ErrCode_RequestTimeout) {code = send->robotMoveFastStop();}
           reply.success = code == vendor::ErrnoSucc;
           reply.detail = "quiescent stop SDK result " + std::to_string(code);
+          if (first_code == vendor::ErrCode_RequestTimeout) {
+            reply.detail += " after initial timeout " + std::to_string(first_code);
+          }
         } else {
           const int first = stop->robotMoveFastStop();
           // A dispatch can pass its cancellation check just before the first
@@ -513,7 +518,11 @@ struct StepwiseTransport::Impl
             // still need the explicit hardware checkpoint; ACK is not physical stop.
             std::lock_guard<std::mutex> request_lock(request_mutex);
             const int last = send->robotMoveFastStop();
-            reply.success = first == vendor::ErrnoSucc && last == vendor::ErrnoSucc;
+            // The first request can time out without telling us whether it was
+            // applied. After every earlier send has quiesced, the final ACK is
+            // authoritative. Physical idle is still confirmed by the scheduler.
+            reply.success = last == vendor::ErrnoSucc &&
+              (first == vendor::ErrnoSucc || first == vendor::ErrCode_RequestTimeout);
             reply.detail = "stop SDK results " + std::to_string(first) + "," + std::to_string(last);
           }
         }
