@@ -1,4 +1,5 @@
 #include "aubo_v4_driver/stepwise_scheduler.hpp"
+#include "aubo_v4_driver/aubo_drag_reference.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -389,7 +390,13 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
   const double horizon = follow_mode_ ?
     std::min(config_.horizon_s, follow_horizon) : config_.horizon_s;
   const double speed_scale = std::min(1.0, config_.maximum_speed_mps / requested_speed);
-  if (follow_mode_ && config_.follow_reference_enabled && !holding) {
+  if (follow_mode_ && drag_mode_ && config_.independent_drag_reference && !holding) {
+    std::array<double, 3> velocity = *velocity_;
+    for (double & value : velocity) {
+      value *= speed_scale;
+    }
+    displacement = aubo_drag_offset(velocity, horizon, step_bound);
+  } else if (follow_mode_ && config_.follow_reference_enabled && !holding) {
     double projection = 0.0;
     for (unsigned i = 0; i < 3; ++i) {
       projection += last_follow_velocity_[i] * displacement[i];
@@ -460,6 +467,8 @@ std::optional<StepwiseCommand> StepwiseScheduler::take_command(double now)
   command.speed_mps = std::min(requested_speed, config_.maximum_speed_mps);
   command.follow_joint_mode = follow_mode_;
   command.assisted_drag = follow_mode_ && drag_mode_;
+  command.cartesian_drag_reference = command.assisted_drag && config_.independent_drag_reference;
+  command.drag_reference_horizon_s = horizon;
   command.hold_position = holding;
   command.id = next_command_id_++;
   command.epoch = epoch_;
@@ -523,6 +532,20 @@ void StepwiseScheduler::acknowledge(
   acknowledged_sequence_ = have_feedback_sequence_ ? last_feedback_sequence_ : 0U;
   arrival_frames_ = 0U;
   have_quiet_since_ = false;
+}
+
+bool StepwiseScheduler::discard_drag_command(std::uint64_t id, std::uint64_t epoch, double now)
+{
+  if (!accept_time(now) || state_ != StepwiseState::SENDING || !pending_ ||
+    !pending_->cartesian_drag_reference || pending_->id != id || pending_->epoch != epoch)
+  {
+    return false;
+  }
+  // Nothing was dispatched: await the next fresh intent/feedback pair without
+  // reporting a fabricated motion acknowledgement or stopping the session.
+  state_ = StepwiseState::MOVING;
+  reason_ = "obsolete drag command discarded before SDK dispatch";
+  return true;
 }
 
 void StepwiseScheduler::evaluate_arrival(const StepwiseFeedback & feedback)

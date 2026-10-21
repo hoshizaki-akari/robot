@@ -35,6 +35,8 @@ namespace aubo_v4_test_sdk
     int follow_move_count {0};
     int no_arrival_ahead_count {0};
     std::array < double, 6 > last_follow_target {};
+    aubo_robot_namespace::Pos last_ik_position {};
+    aubo_robot_namespace::Ori last_ik_orientation {};
     aubo_robot_namespace::JointVelcAccParam joint_velocity {}, joint_acceleration {};
     std::size_t login_index {0};
     std::vector < int > login_results {aubo_robot_namespace::ErrnoSucc};
@@ -94,6 +96,8 @@ namespace aubo_v4_test_sdk
       follow_move_count = 0;
       no_arrival_ahead_count = 0;
       last_follow_target.fill(0.0);
+      last_ik_position = {};
+      last_ik_orientation = {};
       joint_velocity = {};
       joint_acceleration = {};
       login_index = 0;
@@ -363,7 +367,10 @@ public:
     int robotServiceSetGlobalMoveJointMaxVelc(const aubo_robot_namespace::JointVelcAccParam & value)
     {
       State & s = state();
-      std::lock_guard < std::mutex > lock(s.mutex);
+      std::unique_lock < std::mutex > lock(s.mutex);
+      s.profile_entered = true;
+      s.notify("set_joint_vel");
+      s.changed.wait(lock, [&s]() {return !s.block_profile || s.release_profile;});
       s.joint_velocity = value;
       return 0;
     }
@@ -447,11 +454,13 @@ public:
 
     int robotServiceRobotIk(
       const double * seed, const aubo_robot_namespace::Pos & position,
-      const aubo_robot_namespace::Ori &, aubo_robot_namespace::wayPoint_S & target)
+      const aubo_robot_namespace::Ori & orientation, aubo_robot_namespace::wayPoint_S & target)
     {
       State & s = state();
       std::unique_lock < std::mutex > lock(s.mutex);
       ++s.ik_call_count;
+      s.last_ik_position = position;
+      s.last_ik_orientation = orientation;
       s.ik_entered = true;
       s.notify("ik_enter");
       s.changed.wait(lock, [&s]() {return !s.block_ik || s.release_ik;});

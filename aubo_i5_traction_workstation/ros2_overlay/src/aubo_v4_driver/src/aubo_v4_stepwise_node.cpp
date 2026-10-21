@@ -82,7 +82,11 @@ public:
     config.follow_reference_enabled = declare_parameter("follow_reference_enabled", false);
     config.drag_maximum_step_m = declare_parameter("drag_maximum_step_m", 0.0);
     config.drag_follow_horizon_s = declare_parameter("drag_follow_horizon_s", 0.0);
+    config.independent_drag_reference = declare_parameter("independent_drag_reference", false);
     const bool fixed_follow_profile = declare_parameter("fixed_follow_profile", false);
+    if (config.independent_drag_reference && (!fixed_follow_profile || !enable_follow_drag_)) {
+      throw std::invalid_argument("independent AUBO drag requires the stable follow profile");
+    }
     if (fixed_follow_profile && !config.follow_reference_enabled) {
       throw std::invalid_argument("fixed follow profiles require a time-paced reference");
     }
@@ -169,7 +173,14 @@ public:
               last_command_mode_ <= fr_traction::msg::TractionCommand::POSITIONING &&
               last_command_mode_ != fr_traction::msg::TractionCommand::DRAG), time);
           }
-          scheduler_->set_velocity({message->linear.x, message->linear.y, message->linear.z}, time);
+          const std::array<double, 3> velocity{
+            message->linear.x, message->linear.y, message->linear.z};
+          if (scheduler_->set_velocity(velocity, time) && transport_ &&
+          config_.independent_drag_reference &&
+          last_command_mode_ == fr_traction::msg::TractionCommand::DRAG)
+          {
+            transport_->update_drag_intent(velocity, scheduler_->epoch(), time);
+          }
         }
       });
     switch_service_ = create_service<controller_manager_msgs::srv::SwitchController>(
@@ -307,6 +318,8 @@ public:
       options.drag_release_prediction_s = declare_parameter("drag_release_prediction_s", 0.0);
       options.adaptive_follow_ik = declare_parameter("adaptive_follow_ik", false);
       options.maximum_drag_step_m = std::max(config_.maximum_step_m, config_.drag_maximum_step_m);
+      options.drag_intent_timeout_s = std::min(0.5, config_.command_timeout_s);
+      options.feedback_timeout_s = config_.feedback_timeout_s;
       options.subdivide_follow_joint_steps =
         declare_parameter("subdivide_follow_joint_steps", false);
       options.follow_joint_speed_radps = 0.2 * follow_response_scale;
@@ -375,13 +388,15 @@ private:
     }
     while (const auto result = transport_->take_result()) {
       last_sdk_result_ = result->detail;
-      if (!result->success) {
+      if (!result->success && !result->superseded) {
         last_motion_failure_ = result->detail;
       }
       const auto time = av::steady_seconds();
       state_fence_at_ = time;
       if (result->stop) {
         scheduler_->acknowledge_stop(result->epoch, result->success, time);
+      } else if (result->superseded) {
+        scheduler_->discard_drag_command(result->id, result->epoch, time);
       } else {
         scheduler_->acknowledge(
           result->id, result->epoch, result->success, time, result->detail,
@@ -660,6 +675,9 @@ private:
     add("session_limit_handoff_error", session_limit_handoff_error_);
     add("maximum_session_travel_m", std::to_string(maximum_session_travel_));
     add("session_orientation_tolerance_rad", std::to_string(session_orientation_tolerance_rad_));
+    add(
+      "drag_reference_model", config_.independent_drag_reference ?
+      "aubo_cartesian_admittance_v2" : "legacy_follow_reference");
     if (transport_) {
       const auto sample = transport_->sample();
       add("sdk_profile_speed_mps", std::to_string(sample.sdk_speed_mps));
@@ -702,6 +720,10 @@ private:
       add("last_telemetry_failure", sample.last_telemetry_failure);
       add("follow_joint_mode", sample.follow_joint_mode ? "1" : "0");
       add("follow_profile_updates", std::to_string(sample.follow_profile_updates));
+      add("drag_reference_reanchors", std::to_string(sample.drag_reference_reanchors));
+      add("drag_intent_refreshes", std::to_string(sample.drag_intent_refreshes));
+      add("drag_intent_age_s", std::to_string(sample.drag_intent_age_s));
+      add("drag_superseded_commands", std::to_string(sample.drag_superseded_commands));
       add("follow_joint_speed_max_radps", std::to_string(sample.follow_joint_speed_max_radps));
       add(
         "follow_joint_acceleration_max_radps2",

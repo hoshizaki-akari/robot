@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Sequence
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -389,7 +389,8 @@ class WrenchTransformCore:
         for current in self._pose_history:
             if current.source_time_s == source_time:
                 return current.q_base_flange
-            if previous is not None and previous.source_time_s < source_time < current.source_time_s:
+            if (previous is not None
+                    and previous.source_time_s < source_time < current.source_time_s):
                 span = current.source_time_s - previous.source_time_s
                 if span <= 0.0:
                     return None

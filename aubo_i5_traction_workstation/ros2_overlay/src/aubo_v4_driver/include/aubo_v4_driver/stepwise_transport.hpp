@@ -28,6 +28,8 @@ struct TransportOptions
   bool adaptive_follow_ik{false};
   double drag_release_prediction_s{0.0};
   double maximum_drag_step_m{0.005};
+  double drag_intent_timeout_s{0.25};
+  double feedback_timeout_s{0.5};
   double follow_joint_speed_radps{0.2}, follow_joint_acceleration_radps2{0.5};
 };
 struct TransportSample
@@ -69,6 +71,9 @@ struct TransportSample
   bool brake_on_hold{false};
   std::uint64_t follow_profile_updates{0};
   double follow_joint_speed_max_radps{0.0}, follow_joint_acceleration_max_radps2{0.0};
+  std::uint64_t drag_reference_reanchors{0}, drag_intent_refreshes{0};
+  double drag_intent_age_s{0.0};
+  std::uint64_t drag_superseded_commands{0};
   std::string error;
 };
 struct TransportResult
@@ -76,6 +81,7 @@ struct TransportResult
   std::uint64_t id{0}, epoch{0};
   bool success{false}, stop{false};
   bool recoverable{false};
+  bool superseded{false};
   std::string detail;
 };
 
@@ -92,6 +98,8 @@ public:
   TransportSample sample() const;
   bool quiescent() const;
   bool submit(const StepwiseCommand & command, const std::array<double, 6> & seed);
+  bool update_drag_intent(
+    const std::array<double, 3> & velocity, std::uint64_t epoch, double received_at);
   void cancel_and_stop(std::uint64_t epoch);
   std::optional<TransportResult> take_result();
 

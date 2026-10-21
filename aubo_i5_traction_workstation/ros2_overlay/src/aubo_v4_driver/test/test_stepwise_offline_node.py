@@ -7,6 +7,7 @@ robot, serial, UI, fabricated operational feedback or real motion API calls.
 import os
 import subprocess
 import time
+from pathlib import Path
 
 import rclpy
 from controller_manager_msgs.srv import SwitchController
@@ -25,6 +26,11 @@ def environment():
     env.update({
         "ROS_DOMAIN_ID": "172", "ROS_LOCALHOST_ONLY": "1",
         "RMW_IMPLEMENTATION": "rmw_cyclonedds_cpp",
+        # Match deployment: WSL mirrored loopback can drop oversized UDP
+        # datagrams, including diagnostics. Do not depend on host defaults.
+        "CYCLONEDDS_URI": (
+            Path(__file__).resolve().parents[4] / "config/cyclonedds_local.xml"
+        ).as_uri(),
         "LD_PRELOAD": os.environ["AUBO_SDK_GUARD"],
         "AUBO_V4_HOST": "127.0.0.1", "AUBO_V4_PORT": "9",
         "AUBO_V4_USERNAME": "offline-test", "AUBO_V4_PASSWORD": "offline-test",
@@ -46,7 +52,7 @@ def test_sdk_constructor_guard_negative_control():
 def test_offline_node_refuses_motion_and_publishes_no_fake_pose(monkeypatch):
     """Check the offline motion boundary using the actual ROS executable."""
     env = environment()
-    for name in ("ROS_DOMAIN_ID", "ROS_LOCALHOST_ONLY", "RMW_IMPLEMENTATION"):
+    for name in ("ROS_DOMAIN_ID", "ROS_LOCALHOST_ONLY", "RMW_IMPLEMENTATION", "CYCLONEDDS_URI"):
         monkeypatch.setenv(name, env[name])
     process = subprocess.Popen([
         os.environ["AUBO_STEPWISE_EXECUTABLE"], "--ros-args",

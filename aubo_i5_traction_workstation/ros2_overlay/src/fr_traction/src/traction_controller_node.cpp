@@ -1,6 +1,7 @@
 #include "fr_traction/traction_controller_core.hpp"
 #include "fr_traction/stepwise_traction.hpp"
 #include "fr_traction/source_freshness.hpp"
+#include "fr_traction/aubo_drag_model.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -147,6 +148,27 @@ public:
     traction_sign_y_ = declare_parameter("traction_sign_y", 1.0);
     traction_sign_z_ = declare_parameter("traction_sign_z", 1.0);
     stepwise_config_.drag_signs = {drag_sign_x_, drag_sign_y_, drag_sign_z_};
+    aubo_drag_enabled_ = declare_parameter("aubo_drag_model_enabled", false);
+    AuboDragConfig aubo_drag_config;
+    aubo_drag_config.response_time_s = declare_parameter("aubo_drag_response_time_s", 0.080);
+    aubo_drag_config.mobility_mps_per_n = stepwise_config_.drag_gain_mps_per_n *
+      stepwise_config_.drag_response_scale;
+    aubo_drag_config.deadband_n = stepwise_config_.drag_deadband_n;
+    aubo_drag_config.start_n = drag_start_force_n_;
+    aubo_drag_config.release_n = drag_release_force_n_;
+    aubo_drag_config.start_confirm_s = drag_start_confirm_s_;
+    aubo_drag_config.maximum_speed_mps = std::min(
+      drag_max_speed_mps_, stepwise_config_.drag_maximum_speed_mps);
+    aubo_drag_config.maximum_acceleration_mps2 = drag_max_acceleration_mps2_;
+    aubo_drag_model_ = AuboDragModel(aubo_drag_config);
+    if (aubo_drag_enabled_ && !stepwise_backend_) {
+      throw std::invalid_argument("AUBO drag model requires the AUBO backend");
+    }
+    if (aubo_drag_enabled_) {
+      RCLCPP_INFO(
+        get_logger(), "AUBO drag: Cartesian admittance v2, tau=%.3f s",
+        aubo_drag_config.response_time_s);
+    }
     position_tolerance_n_ = declare_parameter("position_tolerance_n", 1.0);
     stepwise_config_.position_tolerance_n = position_tolerance_n_;
     stepwise_config_.position_regulation_deadband_n = declare_parameter(
@@ -322,6 +344,7 @@ private:
     Vec3 tool_force;
     if (!rotate_base_to_tool(latest_wrench_, paired->orientation, tool_force)) {return false;}
     latest_drag_tool_wrench_ = tool_force;
+    latest_drag_pair_orientation_ = paired->orientation;
     latest_drag_pair_steady_at_ = std::chrono::steady_clock::now();
     return true;
   }
@@ -426,7 +449,10 @@ private:
       !command_stamp_guard_.accept(
         message.header.stamp.sec + message.header.stamp.nanosec * 1e-9,
         now().seconds(), monotonic_seconds(), command_timeout_s_)) {return;}
-    if (message.mode != command_.mode) {previous_stepwise_velocity_ = {};}
+    if (message.mode != command_.mode) {
+      previous_stepwise_velocity_ = {};
+      aubo_drag_model_.reset();
+    }
     if (message.mode == msg::TractionCommand::DRAG &&
       command_.mode != msg::TractionCommand::DRAG)
     {
@@ -530,6 +556,7 @@ private:
 
   void publish_zero()
   {
+    aubo_drag_model_.reset();
     previous_stepwise_velocity_ = {};
     drag_release_gate_.reset();
     drag_force_filter_.reset();
@@ -600,13 +627,34 @@ private:
       const double paired_age = latest_drag_pair_steady_at_.time_since_epoch().count() == 0 ?
         std::numeric_limits<double>::infinity() :
         std::chrono::duration<double>(steady_time - latest_drag_pair_steady_at_).count();
-      if (paired_age < 0.0 || paired_age > wrench_timeout_s_)
-      {
+      if (paired_age < 0.0 || paired_age > wrench_timeout_s_) {
         publish_zero();
         publish_health(true);
         return;
       }
       drag_input = latest_drag_tool_wrench_;
+    }
+    if (aubo_drag_enabled_ && mode == ControlMode::DRAGGING) {
+      // Convert the calibrated tool axes once, then keep all dynamic state in
+      // base coordinates. This branch owns the entire assisted-drag response;
+      // it bypasses the legacy filter resets and second velocity ramp below.
+      const Vec3 calibrated{
+        drag_input.x * stepwise_config_.drag_signs.x * stepwise_config_.drag_axis_mask.x,
+        drag_input.y * stepwise_config_.drag_signs.y * stepwise_config_.drag_axis_mask.y,
+        drag_input.z * stepwise_config_.drag_signs.z * stepwise_config_.drag_axis_mask.z};
+      Vec3 base_force;
+      if (!stepwise_config_.drag_axes_verified ||
+        !rotate_tool_to_base(calibrated, latest_drag_pair_orientation_, base_force))
+      {
+        publish_zero(); publish_health(false); return;
+      }
+      ControllerOutput drag_output;
+      drag_output.linear_velocity = aubo_drag_model_.update(base_force, dt_s);
+      drag_output.scalar_velocity_mps = norm(drag_output.linear_velocity);
+      drag_output.valid = finite(drag_output.linear_velocity);
+      publish_output(drag_output);
+      publish_health(drag_output.valid);
+      return;
     }
     if (mode == ControlMode::DRAGGING && stepwise_backend_ &&
       stepwise_drag_release_gate_enabled_ &&
@@ -807,6 +855,7 @@ private:
   Vec3 latest_drag_tool_wrench_;
   double latest_wrench_stamp_s_ = 0.0;
   geometry_msgs::msg::Quaternion latest_ee_orientation_;
+  geometry_msgs::msg::Quaternion latest_drag_pair_orientation_;
   std::deque<TimedOrientation> wrench_orientations_;
   bool command_valid_ = false;
   bool wrench_valid_ = false;
@@ -824,6 +873,8 @@ private:
   FirstOrderLowPass drag_force_filter_;
   TractionControllerCore core_;
   bool stepwise_backend_{false};
+  bool aubo_drag_enabled_{false};
+  AuboDragModel aubo_drag_model_;
   bool stepwise_drag_release_gate_enabled_{false};
   DragReleaseGate drag_release_gate_;
   bool stepwise_velocity_ramp_enabled_{false};

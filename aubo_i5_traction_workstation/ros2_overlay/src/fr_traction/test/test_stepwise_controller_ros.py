@@ -9,7 +9,7 @@ import time
 
 import pytest
 import rclpy
-from geometry_msgs.msg import Twist, WrenchStamped
+from geometry_msgs.msg import QuaternionStamped, Twist, WrenchStamped
 from fr_traction.msg import EndEffectorState, PositionControlDiagnostics, TractionCommand
 from rclpy.node import Node
 from rclpy.executors import SingleThreadedExecutor
@@ -22,6 +22,7 @@ BASE_FRAME = "base_link"
 WRENCH_TOPIC = "/test/stepwise/wrench"
 COMMAND_TOPIC = "/test/stepwise/command"
 EE_TOPIC = "/test/stepwise/ee"
+ORIENTATION_TOPIC = "/test/stepwise/wrench_orientation"
 VELOCITY_TOPIC = "/test/stepwise/velocity"
 DIAGNOSTICS_TOPIC = "/test/stepwise/diagnostics"
 HEALTH_TOPIC = "/traction_controller/healthy"
@@ -67,6 +68,8 @@ class ControllerProcess:
             f"command_topic:={COMMAND_TOPIC}",
             "-p",
             f"ee_state_topic:={EE_TOPIC}",
+            "-p",
+            f"wrench_orientation_topic:={ORIENTATION_TOPIC}",
             "-p",
             f"cartesian_command_topic:={VELOCITY_TOPIC}",
             "-p",
@@ -136,6 +139,9 @@ class ControllerHarness:
         )
         self.ee_publisher = self.node.create_publisher(
             EndEffectorState, EE_TOPIC, input_qos
+        )
+        self.orientation_publisher = self.node.create_publisher(
+            QuaternionStamped, ORIENTATION_TOPIC, input_qos
         )
         self.outputs = deque(maxlen=1000)
         self.diagnostics = deque(maxlen=1000)
@@ -231,6 +237,13 @@ class ControllerHarness:
         wrench.wrench.force.x = self.force[0]
         wrench.wrench.force.y = self.force[1]
         wrench.wrench.force.z = self.force[2]
+        paired = QuaternionStamped()
+        paired.header = wrench.header
+        paired.quaternion.x = self.ee_quaternion[0]
+        paired.quaternion.y = self.ee_quaternion[1]
+        paired.quaternion.z = self.ee_quaternion[2]
+        paired.quaternion.w = self.ee_quaternion[3]
+        self.orientation_publisher.publish(paired)
         self.wrench_publisher.publish(wrench)
 
         ee_state = EndEffectorState()
@@ -424,6 +437,42 @@ def test_drag_axes_follow_identity_pose_and_let_go_returns_zero(controller):
     controller.wait_for_stable_output(
         released, lambda message: _norm(message) <= ZERO_EPSILON, timeout_s=3.0
     )
+
+
+def test_independent_aubo_drag_xyz_release_and_mode_isolation(ros_runtime):
+    """Verify v2 ROS wiring, rotated-frame XYZ response and other-mode isolation."""
+    child = ControllerProcess(verified=True, extra_parameters=[
+        "-p", "aubo_drag_model_enabled:=true",
+        "-p", "stepwise_drag_gain_mps_per_n:=0.010",
+        "-p", "stepwise_drag_deadband_n:=0.35",
+        "-p", "stepwise_drag_maximum_speed_mps:=0.200",
+        "-p", "drag_max_speed_mps:=0.200",
+        "-p", "drag_start_force_n:=0.65",
+        "-p", "drag_release_force_n:=0.35",
+        "-p", "drag_start_confirm_s:=0.03",
+    ]).start()
+    harness = ControllerHarness(ros_runtime, child)
+    try:
+        harness.wait_until(lambda: bool(harness.health), timeout_s=5.0)
+        quaternion = (0.0, 0.0, math.sqrt(0.5), math.sqrt(0.5))
+        for force in ((5.0, 0.0, 0.0), (0.0, -5.0, 0.0), (0.0, 0.0, 5.0)):
+            mark = harness.mark()
+            harness.configure(TractionCommand.DRAG, 0.0, force, ee_quaternion=quaternion)
+            expected = tuple(value / 5.0 * 0.0465 for value in force)
+            harness.wait_for_stable_output(mark, lambda message: all(
+                abs(actual - desired) < 0.001 for actual, desired in zip(
+                    (message.linear.x, message.linear.y, message.linear.z), expected)))
+        mark = harness.mark()
+        harness.configure(TractionCommand.DRAG, 0.0, (0.0, 0.0, 0.0))
+        harness.wait_for_stable_output(mark, lambda message: _norm(message) < ZERO_EPSILON)
+        mark = harness.mark()
+        harness.configure(TractionCommand.TRACTION, 5.0, (3.0, 0.0, 0.0))
+        harness.wait_for_stable_output(mark, lambda message: 0.00001 < message.linear.x <= 0.002)
+        mark = harness.mark()
+        harness.configure(TractionCommand.POSITIONING, 5.0, (5.0, 0.0, 0.0))
+        harness.wait_for_position_settling(mark)
+    finally:
+        harness.close()
 
 
 @pytest.mark.parametrize(("gain", "minimum", "maximum", "force_ceiling"), [

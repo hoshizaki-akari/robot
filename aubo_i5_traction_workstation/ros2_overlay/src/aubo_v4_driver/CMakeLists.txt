@@ -76,6 +76,8 @@ if(BUILD_TESTING)
   target_link_libraries(test_state_validation aubo_v4_state_validation)
   ament_add_gtest(test_stepwise_scheduler test/test_stepwise_scheduler.cpp)
   target_link_libraries(test_stepwise_scheduler aubo_v4_state_validation)
+  ament_add_gtest(test_aubo_drag_reference test/test_aubo_drag_reference.cpp)
+  target_link_libraries(test_aubo_drag_reference aubo_v4_state_validation)
   # Only this automated test target overrides the SDK header. Never link the
   # vendor library or install this test double into an operational package.
   ament_add_gtest(test_stepwise_transport test/test_stepwise_transport.cpp src/stepwise_transport.cpp)

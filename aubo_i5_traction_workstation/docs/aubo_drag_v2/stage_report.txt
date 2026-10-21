@@ -1,0 +1,43 @@
+===== AUBO I5 DRAG V2 =====
+date = 2026-10-21
+scope = AUBO assisted drag only; no original FR5 changes
+source_session = session_1792573840796
+actual_duration_s = 37.882905455
+actual_final_reason = DRAG_COMPLETED
+actual_max_orientation_change_deg = 0.520674646
+recorded_motion_acks = 557
+recorded_profile_updates = 9
+recorded_max_dispatch_gap_s = 0.364570
+
+implementation:
+base-frame isotropic first-order admittance; tau = 0.080 s
+linear mobility = 0.010 m/s/N; radial deadband = 0.35 N
+fresh measured pose + current velocity * 0.060 s
+no retained target-error integral or per-axis direction reset
+refresh pose/intent after delayed IK; discard obsolete unsent goals
+Cartesian release endpoint; windowed actual translational velocity
+existing SDK transport and position/constant-force modes retained
+existing force/speed/travel limits unchanged
+
+validation:
+production C++ model replay on three recorded sessions
+opposing-force velocity rows = 0 in all three replays
+latest-session command-difference RMS reduction = 27.5 percent
+session_1792573148457 command-difference RMS increase = 22.0 percent
+replay is NOT a new measured robot trajectory or physical acceptance
+Python workstation checks = 66 passed; lint passed
+final ROS/C++ regression = both packages passed, zero errors/failures
+fr_traction aggregate test reports = 244 entries, 27 skipped
+aubo_v4_driver aggregate test reports = 183 entries, 17 skipped
+counts include CTest/lint reports; they are not independent hardware trials
+offline DDS diagnostic test uses deployed WSL fragmentation config
+no hardware connection, SDK motion or serial calibration initiated this turn
+
+debug = debug/session_20261021_aubo_drag_v2/
+design = docs/AUBO_DRAG_V2_REFACTOR_20261021.md
+status = WAITING_PHYSICAL_DRAG_CHECKPOINT
+checkpoint = diagonal pull, curved direction changes, stop/release wobble
+physical_wobble_fixed = NOT YET VERIFIED
+run = cd ~/projects/aubo_i5_traction_ws/aubo_i5_traction_workstation && bash start_workstation.sh
+activation = restart after hardware is connected; current process not restarted
+diagnostic = drag_reference_model=aubo_cartesian_admittance_v2

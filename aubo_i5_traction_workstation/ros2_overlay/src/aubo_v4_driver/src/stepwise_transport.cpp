@@ -10,6 +10,7 @@
 #include <mutex>
 #include <thread>
 #include "aubo_v4_driver/state_validation.hpp"
+#include "aubo_v4_driver/aubo_drag_reference.hpp"
 
 namespace aubo_v4_driver
 {
@@ -45,6 +46,15 @@ struct StepwiseTransport::Impl
   TransportSample latest;
   double previous_dispatch_at{0.0};
   std::array<double, 6> filtered_joint_velocity{};
+  CartesianVelocityWindow drag_velocity_window;
+  struct DragIntent
+  {
+    std::array<double, 3> velocity;
+    std::uint64_t epoch, generation;
+    double received_at;
+  };
+  std::optional<DragIntent> drag_intent;
+  std::uint64_t drag_intent_generation{0};
   vendor::JointVelcAccParam cached_joint_velocity{}, cached_joint_acceleration{};
   bool joint_profile_cached{false};
   std::atomic<bool> invalidate_follow_profile{true};
@@ -137,6 +147,79 @@ struct StepwiseTransport::Impl
     latest.follow_joint_acceleration_max_radps2 = *std::max_element(
       acceleration.jointPara, acceleration.jointPara + 6);
     return true;
+  }
+
+  bool prepare_cartesian_drag(
+    Job & current, vendor::Pos & position, vendor::Ori & orientation,
+    std::uint64_t & generation, std::uint64_t & pose_sequence)
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    const double time = steady_seconds();
+    if (!pose_valid || latest.feedback.sequence == 0 ||
+      time - latest.feedback.received_at > options.feedback_timeout_s) {return false;}
+    std::array<double, 3> velocity{};
+    generation = drag_intent ? drag_intent->generation : 0;
+    pose_sequence = latest.feedback.sequence;
+    latest.drag_intent_age_s = drag_intent ? time - drag_intent->received_at : -1.0;
+    if (drag_intent && drag_intent->epoch == current.command.epoch &&
+      latest.drag_intent_age_s >= 0.0 && latest.drag_intent_age_s <= options.drag_intent_timeout_s)
+    {
+      velocity = drag_intent->velocity;
+    }
+    const double requested_speed = std::hypot(velocity[0], velocity[1], velocity[2]);
+    current.command.hold_position = current.command.hold_position || requested_speed <= 1e-12;
+    double horizon = current.command.drag_reference_horizon_s;
+    if (current.command.hold_position) {
+      // One Cartesian endpoint along window-measured motion. Six independent
+      // joint predictions need not preserve a translational release path.
+      velocity = drag_velocity_window.velocity();
+      if (time - latest.feedback.received_at > 0.1) {velocity = {};}
+      const double speed = std::hypot(velocity[0], velocity[1], velocity[2]);
+      horizon = speed <= 0.0002 ? 0.0 : std::min(
+        options.drag_release_prediction_s, speed / (2.0 * options.fast_acceleration_mps2));
+      orientation.x = latest.feedback.orientation[0];
+      orientation.y = latest.feedback.orientation[1];
+      orientation.z = latest.feedback.orientation[2];
+      orientation.w = latest.feedback.orientation[3];
+    } else if (requested_speed > options.speed_mps) {
+      for (double & component : velocity) {component *= options.speed_mps / requested_speed;}
+    }
+    const auto offset = aubo_drag_offset(velocity, horizon, options.maximum_drag_step_m);
+    current.seed = latest.joints;
+    current.command.start = latest.feedback.position;
+    current.command.speed_mps = current.command.hold_position ? options.speed_mps :
+      std::min(requested_speed, options.speed_mps);
+    position.x = current.command.start[0] + offset[0];
+    position.y = current.command.start[1] + offset[1];
+    position.z = current.command.start[2] + offset[2];
+    current.command.target = {position.x, position.y, position.z};
+    latest.drag_release_predicted_joint_step_rad = 0.0;
+    ++latest.drag_reference_reanchors;
+    return true;
+  }
+
+  bool drag_was_superseded(
+    std::uint64_t generation, bool holding, const std::array<double, 3> & target)
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    const bool released = drag_intent &&
+      std::hypot(
+      drag_intent->velocity[0], drag_intent->velocity[1],
+      drag_intent->velocity[2]) <= 1e-12;
+    bool changed = drag_intent && !(holding && released) &&
+      (drag_intent->generation != generation ||
+      (!holding && steady_seconds() - drag_intent->received_at > options.drag_intent_timeout_s));
+    if (!holding && drag_intent && !released) {
+      double ahead = 0.0;
+      for (unsigned i = 0; i < 3; ++i) {
+        ahead += (target[i] - latest.feedback.position[i]) * drag_intent->velocity[i];
+      }
+      // Even an unchanged intent can be obsolete after a blocked profile call:
+      // never ask a moving handle to chase an endpoint it has already passed.
+      changed = changed || ahead <= 0.0;
+    }
+    if (changed) {++latest.drag_superseded_commands;}
+    return changed;
   }
 
   ~Impl()
@@ -264,6 +347,7 @@ struct StepwiseTransport::Impl
       return;
     }
     self.pose_valid = true;
+    self.drag_velocity_window.push(pose.position, time);
     double speed = 0.0;
     double joint_speed = 0.0;
     const double dt = time - self.latest.feedback.received_at;
@@ -360,7 +444,14 @@ struct StepwiseTransport::Impl
         vendor::wayPoint_S target{};
         const double ik_started = steady_seconds();
         int ik = vendor::ErrnoSucc;
-        if (current.command.hold_position) {
+        std::uint64_t drag_generation = 0;
+        std::uint64_t drag_pose_sequence = 0;
+        if (current.command.cartesian_drag_reference) {
+          ik = prepare_cartesian_drag(
+            current, position, orientation, drag_generation, drag_pose_sequence) ?
+            send->robotServiceRobotIk(
+            current.seed.data(), position, orientation, target) : -1;
+        } else if (current.command.hold_position) {
           // Hold exactly the sampled joints. Re-solving a Cartesian hold pose
           // can introduce a branch/roundoff correction on an already moving arm.
           std::lock_guard<std::mutex> lock(mutex);
@@ -390,6 +481,23 @@ struct StepwiseTransport::Impl
           }
         } else {
           ik = send->robotServiceRobotIk(current.seed.data(), position, orientation, target);
+        }
+        if (current.command.cartesian_drag_reference && ik == vendor::ErrnoSucc) {
+          bool changed_intent = false;
+          {
+            std::lock_guard<std::mutex> lock(mutex);
+            changed_intent = latest.feedback.sequence != drag_pose_sequence ||
+              (drag_intent && (drag_intent->generation != drag_generation ||
+              steady_seconds() - drag_intent->received_at > options.drag_intent_timeout_s));
+            if (changed_intent) {++latest.drag_intent_refreshes;}
+          }
+          // A blocked IK/RPC must not release an obsolete direction later.
+          // Refresh once from the newest intent/pose; never queue catch-up moves.
+          if (changed_intent) {
+            ik = prepare_cartesian_drag(
+              current, position, orientation, drag_generation, drag_pose_sequence) ?
+              send->robotServiceRobotIk(current.seed.data(), position, orientation, target) : -1;
+          }
         }
         double maximum_joint_delta = 0.0;
         std::size_t maximum_joint_index = 0;
@@ -532,6 +640,12 @@ struct StepwiseTransport::Impl
           reply.detail = "motion mode/joint profile rejected";
         } else if (!allowed || current.command.epoch != allowed_epoch || shutdown) {
           reply.detail = "stepwise command cancelled during profile update";
+        } else if (current.command.cartesian_drag_reference &&
+          drag_was_superseded(
+            drag_generation, current.command.hold_position, current.command.target))
+        {
+          reply.superseded = true;
+          reply.detail = "obsolete drag intent discarded before SDK dispatch";
         } else {
           // Absolute bounded endpoint: no speculative queued trajectory, no
           // automatic resend. 'false' does NOT promise zero request latency.
@@ -822,6 +936,10 @@ bool StepwiseTransport::connect(const TransportOptions & options, std::string & 
     options.maximum_step_m > 0.005 || !std::isfinite(options.state_poll_interval_s) ||
     !std::isfinite(options.maximum_drag_step_m) || options.maximum_drag_step_m <= 0.0 ||
     options.maximum_drag_step_m > 0.020 ||
+    !std::isfinite(options.drag_intent_timeout_s) || options.drag_intent_timeout_s <= 0.0 ||
+    options.drag_intent_timeout_s > 0.5 ||
+    !std::isfinite(options.feedback_timeout_s) || options.feedback_timeout_s <= 0.0 ||
+    options.feedback_timeout_s > 1.0 ||
     !std::isfinite(options.drag_release_prediction_s) ||
     options.drag_release_prediction_s < 0.0 || options.drag_release_prediction_s > 0.1 ||
     options.state_poll_interval_s < 0.02 || options.state_poll_interval_s > 1.0)
@@ -942,6 +1060,9 @@ bool StepwiseTransport::submit(const StepwiseCommand & command, const std::array
     }
   }
   if (!std::isfinite(squared_step) ||
+    (command.cartesian_drag_reference && (!command.assisted_drag || !command.follow_joint_mode)) ||
+    (command.cartesian_drag_reference && (!std::isfinite(command.drag_reference_horizon_s) ||
+    command.drag_reference_horizon_s <= 0.0 || command.drag_reference_horizon_s > 0.5)) ||
     (squared_step <= 0.0 && !command.hold_position) ||
     (command.hold_position && squared_step > 1e-20) ||
     squared_step > std::pow(
@@ -955,6 +1076,27 @@ bool StepwiseTransport::submit(const StepwiseCommand & command, const std::array
   impl_->changed.notify_all();
   return true;
 }
+bool StepwiseTransport::update_drag_intent(
+  const std::array<double, 3> & velocity, std::uint64_t epoch, double received_at)
+{
+  if (!std::isfinite(received_at)) {return false;}
+  for (double value : velocity) {
+    if (!std::isfinite(value)) {
+      return false;
+    }
+  }
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  if (impl_->drag_intent && received_at < impl_->drag_intent->received_at) {return false;}
+  if (!impl_->drag_intent || impl_->drag_intent->epoch != epoch ||
+    impl_->drag_intent->velocity != velocity)
+  {
+    ++impl_->drag_intent_generation;
+  }
+  impl_->drag_intent =
+    Impl::DragIntent{velocity, epoch, impl_->drag_intent_generation, received_at};
+  return true;
+}
+
 bool StepwiseTransport::quiescent() const
 {
   std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -971,6 +1113,7 @@ void StepwiseTransport::cancel_and_stop(std::uint64_t epoch)
   impl_->allowed_epoch = std::max(epoch, impl_->allowed_epoch.load());
   impl_->previous_dispatch_at = 0.0;
   impl_->job.reset();
+  impl_->drag_intent.reset();
   impl_->stop_job = impl_->allowed_epoch.load();
   impl_->changed.notify_all();
 }

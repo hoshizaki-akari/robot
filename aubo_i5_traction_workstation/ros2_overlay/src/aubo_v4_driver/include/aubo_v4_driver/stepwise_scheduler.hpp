@@ -51,6 +51,7 @@ struct StepwiseConfig
   double follow_horizon_s{0.15};
   bool follow_hold_enabled{false};
   bool follow_reference_enabled{false};
+  bool independent_drag_reference{false};
   double drag_maximum_step_m{0.0}, drag_follow_horizon_s{0.0};
 };
 
@@ -77,6 +78,8 @@ struct StepwiseCommand
   bool follow_joint_mode{false};
   bool hold_position{false};
   bool assisted_drag{false};
+  bool cartesian_drag_reference{false};
+  double drag_reference_horizon_s{0.06};
 };
 
 enum class StepwiseState
@@ -107,6 +110,7 @@ public:
   void acknowledge(
     std::uint64_t id, std::uint64_t epoch, bool success, double now,
     const std::string & detail = "", bool recoverable = false);
+  bool discard_drag_command(std::uint64_t id, std::uint64_t epoch, double now);
   void request_stop(double now, const std::string & reason, bool fault = false);
   std::optional<std::uint64_t> take_stop_request();
   void acknowledge_stop(std::uint64_t epoch, bool success, double now);

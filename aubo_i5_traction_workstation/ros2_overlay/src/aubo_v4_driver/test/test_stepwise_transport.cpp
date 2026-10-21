@@ -587,6 +587,201 @@ TEST_F(StepwiseTransportTest, FollowCachesProfilesAndAcceptsMeasuredHold)
   EXPECT_EQ(stop_count(), 0);
 }
 
+TEST_F(StepwiseTransportTest, IndependentDragRefreshesOldPoseAndReversedIntentAfterDelayedIk)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = settings.fixed_follow_profile = true;
+  settings.speed_mps = 0.05;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  auto point = valid_waypoint();
+  aubo_v4_test_sdk::emit_waypoint(point);
+  ASSERT_TRUE(transport.update_drag_intent({0.01, 0, 0}, 1, aubo_v4_driver::steady_seconds()));
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.block_ik = true;
+  }
+  auto value = command(1, 1);
+  value.follow_joint_mode = value.assisted_drag = value.cartesian_drag_reference = true;
+  ASSERT_TRUE(transport.submit(value, seed));
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::unique_lock<std::mutex> lock(state.mutex);
+    ASSERT_TRUE(state.changed.wait_for(lock, 1s, [&]() {return state.ik_entered;}));
+  }
+  point.cartPos.position.x += 0.002;
+  point.cartPos.position.z -= 0.001;
+  aubo_v4_test_sdk::emit_waypoint(point);
+  ASSERT_TRUE(transport.update_drag_intent({0, -0.02, 0}, 1, aubo_v4_driver::steady_seconds()));
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.release_ik = true;
+    state.changed.notify_all();
+  }
+  const auto result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result->success) << result->detail;
+  auto & state = aubo_v4_test_sdk::state();
+  std::lock_guard<std::mutex> lock(state.mutex);
+  EXPECT_EQ(state.ik_call_count, 2);
+  EXPECT_DOUBLE_EQ(state.last_ik_position.x, point.cartPos.position.x);
+  EXPECT_NEAR(state.last_ik_position.y, point.cartPos.position.y - 0.02 * 0.06, 1e-12);
+  EXPECT_DOUBLE_EQ(state.last_ik_position.z, point.cartPos.position.z);
+  EXPECT_EQ(transport.sample().drag_intent_refreshes, 1U);
+}
+
+TEST_F(StepwiseTransportTest, IndependentDragWithoutFreshEpochIntentHoldsInsteadOfReplayingTarget)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = settings.fixed_follow_profile = true;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  auto point = valid_waypoint();
+  aubo_v4_test_sdk::emit_waypoint(point);
+  ASSERT_TRUE(transport.update_drag_intent({0.01, 0, 0}, 99, aubo_v4_driver::steady_seconds()));
+  auto value = command(1, 1);
+  value.follow_joint_mode = value.assisted_drag = value.cartesian_drag_reference = true;
+  ASSERT_TRUE(transport.submit(value, seed));
+  const auto result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result->success) << result->detail;
+  auto & state = aubo_v4_test_sdk::state();
+  std::lock_guard<std::mutex> lock(state.mutex);
+  EXPECT_DOUBLE_EQ(state.last_ik_position.x, point.cartPos.position.x);
+  EXPECT_DOUBLE_EQ(state.last_ik_position.y, point.cartPos.position.y);
+  EXPECT_DOUBLE_EQ(state.last_ik_position.z, point.cartPos.position.z);
+}
+
+TEST_F(StepwiseTransportTest, ConstantIntentHeartbeatStillReanchorsPoseAfterDelayedIk)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = settings.fixed_follow_profile = true;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  auto point = valid_waypoint();
+  aubo_v4_test_sdk::emit_waypoint(point);
+  ASSERT_TRUE(transport.update_drag_intent({0.001, 0, 0}, 1, aubo_v4_driver::steady_seconds()));
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.block_ik = true;
+  }
+  auto value = command(1, 1);
+  value.follow_joint_mode = value.assisted_drag = value.cartesian_drag_reference = true;
+  ASSERT_TRUE(transport.submit(value, seed));
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::unique_lock<std::mutex> lock(state.mutex);
+    ASSERT_TRUE(state.changed.wait_for(lock, 1s, [&]() {return state.ik_entered;}));
+  }
+  point.cartPos.position.x += 0.001;
+  aubo_v4_test_sdk::emit_waypoint(point);
+  ASSERT_TRUE(transport.update_drag_intent({0.001, 0, 0}, 1, aubo_v4_driver::steady_seconds()));
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.release_ik = true;
+    state.changed.notify_all();
+  }
+  const auto result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result->success) << result->detail;
+  auto & state = aubo_v4_test_sdk::state();
+  std::lock_guard<std::mutex> lock(state.mutex);
+  EXPECT_EQ(state.ik_call_count, 2);
+  EXPECT_NEAR(state.last_ik_position.x, point.cartPos.position.x + 0.001 * 0.06, 1e-12);
+}
+
+TEST_F(StepwiseTransportTest, ReleaseDuringProfileUpdateDiscardsUnsentMoveWithoutFalseAck)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = settings.fixed_follow_profile = true;
+  settings.drag_release_prediction_s = 0.04;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  aubo_v4_test_sdk::emit_waypoint(valid_waypoint());
+  auto value = command(1, 1);
+  value.follow_joint_mode = value.assisted_drag = value.cartesian_drag_reference = true;
+  value.hold_position = true;
+  value.start = value.target;
+  ASSERT_TRUE(transport.submit(value, seed));
+  const auto held = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(held);
+  ASSERT_TRUE(held->success);
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.block_profile = true;
+    state.profile_entered = false;
+  }
+  value = command(2, 1);
+  value.follow_joint_mode = value.assisted_drag = value.cartesian_drag_reference = true;
+  ASSERT_TRUE(transport.update_drag_intent({0.001, 0, 0}, 1, aubo_v4_driver::steady_seconds()));
+  ASSERT_TRUE(transport.submit(value, seed));
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::unique_lock<std::mutex> lock(state.mutex);
+    ASSERT_TRUE(state.changed.wait_for(lock, 1s, [&]() {return state.profile_entered;}));
+  }
+  ASSERT_TRUE(transport.update_drag_intent({}, 1, aubo_v4_driver::steady_seconds()));
+  {
+    auto & state = aubo_v4_test_sdk::state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.release_profile = true;
+    state.changed.notify_all();
+  }
+  const auto result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(result);
+  EXPECT_TRUE(result->superseded);
+  EXPECT_FALSE(result->success);
+  EXPECT_EQ(transport.sample().motion_ack_count, 1U);
+  auto & state = aubo_v4_test_sdk::state();
+  std::lock_guard<std::mutex> lock(state.mutex);
+  EXPECT_EQ(state.follow_move_count, 1);
+}
+
+TEST_F(StepwiseTransportTest, IndependentDragReleaseSolvesCartesianEndpointWithMeasuredOrientation)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = settings.fixed_follow_profile = true;
+  settings.drag_release_prediction_s = 0.04;
+  settings.fast_acceleration_mps2 = 0.20;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error));
+  auto point = valid_waypoint();
+  aubo_v4_test_sdk::emit_waypoint(point);
+  for (unsigned i = 1; i <= 4; ++i) {
+    std::this_thread::sleep_for(20ms);
+    point.cartPos.position.x += 0.001;
+    aubo_v4_test_sdk::emit_waypoint(point);
+  }
+  auto value = command(1, 1);
+  value.start = value.target;
+  value.follow_joint_mode = value.assisted_drag = value.hold_position = true;
+  value.cartesian_drag_reference = true;
+  ASSERT_TRUE(transport.submit(value, seed));
+  const auto result = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result->success) << result->detail;
+  auto & state = aubo_v4_test_sdk::state();
+  std::lock_guard<std::mutex> lock(state.mutex);
+  EXPECT_EQ(state.ik_call_count, 1);
+  EXPECT_GT(state.last_ik_position.x, point.cartPos.position.x);
+  EXPECT_LT(state.last_ik_position.x - point.cartPos.position.x, 0.003);
+  EXPECT_DOUBLE_EQ(state.last_ik_position.y, point.cartPos.position.y);
+  EXPECT_DOUBLE_EQ(state.last_ik_position.z, point.cartPos.position.z);
+  EXPECT_DOUBLE_EQ(state.last_ik_orientation.w, point.orientation.w);
+  EXPECT_DOUBLE_EQ(state.last_ik_orientation.x, point.orientation.x);
+  EXPECT_EQ(state.last_follow_target, seed);
+}
+
 TEST_F(StepwiseTransportTest, DragReleaseTargetsBoundedDecelerationAheadAndDisablesBlending)
 {
   for (double direction : {-1.0, 1.0}) {
