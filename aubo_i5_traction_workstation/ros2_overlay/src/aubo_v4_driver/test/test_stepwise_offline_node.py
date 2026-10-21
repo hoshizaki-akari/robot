@@ -81,6 +81,7 @@ def test_offline_node_refuses_motion_and_publishes_no_fake_pose(monkeypatch):
     velocity = node.create_publisher(Twist, "/controller_manager/command_cart_vel", 10)
     switch = node.create_client(SwitchController, "/controller_manager/switch_controller")
     stop = node.create_client(Trigger, "/aubo_v4_state_node/hardware_stop")
+    recover = node.create_client(Trigger, "/aubo_v4_state_node/recover_fault")
 
     def wait(predicate, seconds=5.0):
         deadline = time.monotonic() + seconds
@@ -112,6 +113,10 @@ def test_offline_node_refuses_motion_and_publishes_no_fake_pose(monkeypatch):
         stopped = stop.call_async(Trigger.Request())
         wait(stopped.done)
         assert stopped.result().success is False
+        assert recover.wait_for_service(timeout_sec=2)
+        recovered = recover.call_async(Trigger.Request())
+        wait(recovered.done)
+        assert recovered.result().success is False
         assert seen["joint"] == 0 and seen["pose"] == 0
         assert process.poll() is None
     finally:

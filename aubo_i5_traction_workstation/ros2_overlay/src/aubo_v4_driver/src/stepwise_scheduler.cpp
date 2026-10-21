@@ -218,6 +218,26 @@ bool StepwiseScheduler::set_enabled(bool enabled, double now)
   return true;
 }
 
+bool StepwiseScheduler::reset_fault(double now)
+{
+  if (!accept_time(now) || state_ != StepwiseState::FAULT ||
+    !stop_acknowledged_ || stop_frames_ < kStopConfirmationFrames ||
+    !feedback_is_healthy_and_quiet(now)) {return false;}
+  ++epoch_;
+  clear_motion_cache();
+  activation_velocity_generation_ = velocity_generation_;
+  follow_mode_ = false;
+  drag_mode_ = false;
+  reset_follow_progress(now);
+  stop_fault_ = false;
+  stop_acknowledged_ = false;
+  stop_frames_ = 0;
+  fault_reason_.clear();
+  state_ = StepwiseState::DISABLED;
+  reason_ = "fault reset after measured stop; new activation required";
+  return true;
+}
+
 bool StepwiseScheduler::set_follow_mode(bool enabled, double now)
 {
   if (!accept_time(now)) {return false;}

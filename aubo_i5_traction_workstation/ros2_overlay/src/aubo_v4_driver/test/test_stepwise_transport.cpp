@@ -970,6 +970,25 @@ TEST_F(StepwiseTransportTest, StaleEpochJobCannotStartAfterCancellation)
   EXPECT_EQ(line_move_count(), 0);
 }
 
+TEST_F(StepwiseTransportTest, RecoveryCannotPassTransportGateBeforeOldRequestsAndResultsDrain)
+{
+  aubo_v4_test_sdk::state().block_line_move = true;
+  StepwiseTransport transport;
+  ASSERT_TRUE(connect(transport));
+  EXPECT_TRUE(transport.quiescent());
+  ASSERT_TRUE(transport.submit(command(1, 1), seed));
+  ASSERT_TRUE(aubo_v4_test_sdk::wait_for_line_move(500ms));
+  EXPECT_FALSE(transport.quiescent());
+  transport.cancel_and_stop(2);
+  EXPECT_FALSE(transport.quiescent());
+  ASSERT_TRUE(aubo_v4_test_sdk::wait_for_stop_count(1, 500ms));
+  aubo_v4_test_sdk::release_line_move();
+  const auto stopped = wait_for_stop_result(transport, 1s);
+  ASSERT_TRUE(stopped && stopped->success);
+  EXPECT_TRUE(transport.quiescent());
+  EXPECT_FALSE(transport.submit(command(2, 1), seed));
+}
+
 TEST_F(StepwiseTransportTest, CancelWhileLineMoveBlockedStopsOnlyAfterQuiescence)
 {
   aubo_v4_test_sdk::state().block_line_move = true;

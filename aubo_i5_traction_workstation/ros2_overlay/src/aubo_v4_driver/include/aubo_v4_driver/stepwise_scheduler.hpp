@@ -97,6 +97,7 @@ public:
   explicit StepwiseScheduler(const StepwiseConfig & config = {});
 
   bool set_enabled(bool enabled, double now);
+  bool reset_fault(double now);
   bool set_follow_mode(bool enabled, double now);
   void set_drag_mode(bool enabled) {drag_mode_ = enabled;}
   bool set_feedback(const StepwiseFeedback & feedback, double now);

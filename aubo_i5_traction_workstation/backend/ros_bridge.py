@@ -45,6 +45,7 @@ class RosBridge:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._recovery_lock = threading.Lock()
         self._node: Any = None
         self._executor: Any = None
         self._thread: threading.Thread | None = None
@@ -138,6 +139,9 @@ class RosBridge:
                 Trigger, "/aubo_v4_state_node/hardware_stop"
             ),
             "reset_fault": self._node.create_client(Trigger, "/traction/reset_fault"),
+            "driver_recover_fault": self._node.create_client(
+                Trigger, "/aubo_v4_state_node/recover_fault"
+            ),
             "set_zero_pose": self._node.create_client(
                 Trigger, "/traction/set_zero_pose"
             ),
@@ -423,6 +427,16 @@ class RosBridge:
             raise RosBridgeError("ROS2牵引系统不可用，请先启动 AUBO i5 牵引系统")
         if not self.snapshot()["robot"]["identity_verified"]:
             raise RosBridgeError("AUBO i5 V4 驱动身份未验证，拒绝发送操作")
+        if name == "reset_fault":
+            return self._recover_fault()
+        if self._recovery_lock.locked() and name not in (
+            "stop", "emergency_stop", "hardware_emergency_stop"
+        ):
+            raise RosBridgeError("故障复位正在进行，请等待完成后重新校准")
+        return self._call_service(name, target_force_n)
+
+    def _call_service(self, name: str, target_force_n: float | None = None) -> dict[str, Any]:
+        """Invoke one ROS service without recursively entering recovery orchestration."""
         client = self._clients.get(name)
         if client is None:
             raise RosBridgeError(f"未知牵引操作：{name}")
@@ -445,7 +459,37 @@ class RosBridge:
             raise RosBridgeError(response.message)
         return {"success": True, "message": response.message, "snapshot": self.snapshot()}
 
+    def _recover_fault(self) -> dict[str, Any]:
+        """Reset driver then manager, leaving every motion session disabled."""
+        if not self._recovery_lock.acquire(blocking=False):
+            raise RosBridgeError("故障复位已在进行，请等待结果")
+        try:
+            deadline = time.monotonic() + 8.0
+            driver_ready = False
+            while time.monotonic() < deadline:
+                snapshot = self.snapshot()
+                if not snapshot["traction"]["valid"] or snapshot["traction"]["state"] != 9:
+                    raise RosBridgeError("故障复位仅适用于在线软件故障；急停请按示教器流程恢复")
+                try:
+                    if not driver_ready:
+                        self._call_service("driver_recover_fault")
+                        driver_ready = True
+                    result = self._call_service("reset_fault")
+                    result["message"] = "故障复位完成，请松弛牵引带并重新初始校准"
+                    return result
+                except RosBridgeError as error:
+                    text = str(error)
+                    if not (text.startswith("RECOVERY_PENDING:") or
+                            (driver_ready and text.startswith("Reset rejected: AUBO must"))):
+                        raise
+                time.sleep(0.05)
+            raise RosBridgeError("故障复位未完成：停止或实时反馈尚未确认，请查看设备状态后重试")
+        finally:
+            self._recovery_lock.release()
+
     def set_operation_mode(self, mode: int) -> dict[str, Any]:
+        if self._recovery_lock.locked():
+            raise RosBridgeError("故障复位正在进行，暂不能切换模式")
         if not self._started or self._node is None:
             raise RosBridgeError("ROS2牵引系统不可用，请先启动 AUBO i5 牵引系统")
         if not self.snapshot()["robot"]["identity_verified"]:

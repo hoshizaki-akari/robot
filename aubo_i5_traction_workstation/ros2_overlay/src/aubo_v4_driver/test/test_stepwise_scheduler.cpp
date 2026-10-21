@@ -49,6 +49,60 @@ void acknowledge(StepwiseScheduler & scheduler, const StepwiseCommand & command)
 }
 }  // namespace
 
+TEST(StepwiseRecovery, ThreeModesResetOnlyAfterFreshStopAndNeverReplayOldIntent)
+{
+  for (unsigned mode = 0; mode < 3; ++mode) {
+    StepwiseScheduler scheduler;
+    arm(scheduler);
+    ASSERT_TRUE(scheduler.set_follow_mode(true, 0.001));
+    scheduler.set_drag_mode(mode == 2);
+    const auto old = send(scheduler, {0.002, 0, 0});
+    scheduler.acknowledge(old.id, old.epoch, false, 0.02, "SDK timeout");
+    EXPECT_FALSE(scheduler.reset_fault(0.021));
+    const auto stop = scheduler.take_stop_request();
+    ASSERT_TRUE(stop);
+    scheduler.acknowledge_stop(*stop, true, 0.03);
+    for (unsigned i = 2; i <= 4; ++i) {
+      ASSERT_TRUE(scheduler.set_feedback(feedback(i, 0.02 + i * 0.01), 0.02 + i * 0.01));
+    }
+    ASSERT_EQ(scheduler.state(), StepwiseState::FAULT);
+    EXPECT_FALSE(scheduler.reset_fault(0.7));  // Retained data is now stale.
+    ASSERT_TRUE(scheduler.set_feedback(feedback(5, 0.71, false, 0.001), 0.71));
+    EXPECT_FALSE(scheduler.reset_fault(0.711));
+    ASSERT_TRUE(scheduler.set_feedback(feedback(6, 0.72), 0.72));
+    ASSERT_TRUE(scheduler.reset_fault(0.721));
+    EXPECT_EQ(scheduler.state(), StepwiseState::DISABLED);
+    EXPECT_TRUE(scheduler.fault_reason().empty());
+    EXPECT_GT(scheduler.epoch(), old.epoch);
+    EXPECT_FALSE(scheduler.take_command(0.722));
+    scheduler.acknowledge(old.id, old.epoch, true, 0.723);
+    EXPECT_EQ(scheduler.state(), StepwiseState::DISABLED);
+    ASSERT_TRUE(scheduler.set_enabled(true, 0.724));
+    EXPECT_FALSE(scheduler.take_command(0.725));
+    ASSERT_TRUE(scheduler.set_velocity({0.002, 0, 0}, 0.726));
+    const auto next = scheduler.take_command(0.727);
+    ASSERT_TRUE(next);
+    EXPECT_GT(next->id, old.id);
+    EXPECT_GT(next->epoch, old.epoch);
+  }
+}
+
+TEST(StepwiseRecovery, FailedStopCannotBeResetUsingStationarySamplesAlone)
+{
+  StepwiseScheduler scheduler;
+  arm(scheduler);
+  const auto command = send(scheduler, {0.002, 0, 0});
+  scheduler.acknowledge(command.id, command.epoch, false, 0.02);
+  const auto stop = scheduler.take_stop_request();
+  ASSERT_TRUE(stop);
+  scheduler.acknowledge_stop(*stop, false, 0.03);
+  for (unsigned i = 2; i < 7; ++i) {
+    ASSERT_TRUE(scheduler.set_feedback(feedback(i, 0.02 + i * 0.01), 0.02 + i * 0.01));
+  }
+  EXPECT_FALSE(scheduler.reset_fault(0.09));
+  EXPECT_EQ(scheduler.state(), StepwiseState::FAULT);
+}
+
 TEST(StepwiseSchedulerConfig, RejectsNonFiniteAndUnsafeValues)
 {
   StepwiseConfig config;

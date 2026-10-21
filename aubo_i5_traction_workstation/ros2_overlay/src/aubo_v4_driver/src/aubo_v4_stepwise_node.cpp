@@ -227,7 +227,61 @@ public:
           stop_epoch.value_or(
             scheduler_->epoch()));
         response->success = true;
-        response->message = "Stop requested; physical stop is not yet confirmed. Node restart required.";
+        response->message = "Stop requested; physical stop is not yet confirmed.";
+      });
+    recover_service_ = create_service<std_srvs::srv::Trigger>(
+      "~/recover_fault",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        const double time = av::steady_seconds();
+        if (!connected_) {
+          response->message = "Driver recovery rejected: hardware disconnected.";
+          return;
+        }
+        const auto sample = transport_->sample();
+        if (!sample.feedback.healthy || !sample.diagnosis_ok ||
+        time - sample.feedback.received_at > config_.feedback_timeout_s ||
+        time - sample.diagnosis_at > telemetry_timeout_s_ ||
+        time - sample.robot_state_at > telemetry_timeout_s_)
+        {
+          response->message = "Driver recovery rejected: live telemetry unhealthy or stale.";
+          return;
+        }
+        if (session_enabled_ || (scheduler_->state() != av::StepwiseState::FAULT &&
+        scheduler_->state() != av::StepwiseState::STOPPING &&
+        scheduler_->state() != av::StepwiseState::DISABLED))
+        {
+          response->message = "Driver recovery rejected: a motion session is active.";
+          return;
+        }
+        if (sample.feedback.stopped && sample.feedback.speed_mps <= config_.quiet_speed_mps &&
+        transport_->quiescent() && (scheduler_->reset_fault(time) ||
+        (scheduler_->state() == av::StepwiseState::DISABLED && scheduler_->motion_idle(time))))
+        {
+          recovery_in_progress_ = false;
+          resume_after_intent_ = ++intent_sequence_;
+          intent_at_ = 0.0;
+          mode_at_ = 0.0;
+          last_command_mode_ = 0;
+          session_limit_reached_ = false;
+          last_motion_failure_.clear();
+          publish_status(time);
+          response->success = true;
+          response->message = "Driver fault reset; motion disabled; initial calibration required.";
+          return;
+        }
+        if (!recovery_in_progress_) {
+          recovery_in_progress_ = true;
+          recovery_started_at_ = time;
+          scheduler_->request_stop(time, "operator fault recovery stop", true);
+        } else if (time - recovery_started_at_ > 5.0 ||
+        (scheduler_->state() == av::StepwiseState::FAULT && transport_->quiescent()))
+        {
+          recovery_in_progress_ = false;
+          response->message = "Driver recovery failed: measured stop was not confirmed.";
+          return;
+        }
+        response->message = "RECOVERY_PENDING: waiting for fresh measured stop confirmation.";
       });
     if (connect_hardware) {
       av::TransportOptions options;
@@ -605,6 +659,8 @@ private:
   std::unique_ptr<av::StepwiseScheduler> scheduler_;
   std::unique_ptr<av::StepwiseTransport> transport_;
   bool connected_{false}, enable_motion_{false}, session_enabled_{false};
+  bool recovery_in_progress_{false};
+  double recovery_started_at_{0.0};
   bool health_status_published_{false}, published_healthy_{false};
   double last_diagnostic_at_{0.0};
   std::string last_diagnostic_phase_, last_health_failure_;
@@ -639,7 +695,7 @@ private:
   rclcpp::Subscription<fr_traction::msg::TractionCommand>::SharedPtr mode_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr velocity_sub_;
   rclcpp::Service<controller_manager_msgs::srv::SwitchController>::SharedPtr switch_service_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_service_, recover_service_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 

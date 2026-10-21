@@ -582,6 +582,44 @@ def test_position_fr5_arrival_window_requests_stop_before_waiting_for_idle(manag
     assert not manager.status_history[-1].position_reached
 
 
+@pytest.mark.parametrize('mode', [0, 1, 2])
+def test_fault_reset_requires_health_then_new_calibration_and_start(manager, mode):
+    """All modes leave fault without restarting, but cannot reuse the old task."""
+    manager.wait_ready()
+    assert manager.set_operation_mode(mode).success
+    assert manager.trigger('/traction/prepare').success
+    if mode != 2:
+        manager.wrench_force = (3.0, 0.0, 0.0)
+        manager.pump(duration_s=0.2)
+        assert manager.trigger('/traction/calibrate_direction').success
+        manager.wait_status(TractionStatus.DIRECTION_LOCKED, timeout_s=4.0)
+        assert manager.set_target_force(5.0).success
+    assert manager.trigger('/traction/start').success
+    manager.wait_status(TractionStatus.DRAGGING if mode == 2 else TractionStatus.TRACTION)
+    manager.hardware_health = False
+    manager.wait_status(TractionStatus.FAULT)
+    assert not manager.trigger('/traction/reset_fault').success
+    manager.hardware_health = True
+    manager.wrench_force = (0.0, 0.0, 0.0)
+    manager.pump(duration_s=0.2)
+    assert manager.trigger('/traction/reset_fault').success
+    manager.wait_ready()
+    assert not manager.trigger('/traction/start').success
+    assert manager.trigger('/traction/prepare').success
+    manager.wait_status(TractionStatus.MANUAL_SETUP)
+    if mode != 2:
+        assert not manager.trigger('/traction/start').success
+        manager.wrench_force = (3.0, 0.0, 0.0)
+        manager.pump(duration_s=0.2)
+        calibration_mark = manager.mark()
+        assert manager.trigger('/traction/calibrate_direction').success
+        manager.wait_status(TractionStatus.DIRECTION_LOCKED, timeout_s=4.0, after=calibration_mark)
+        assert manager.set_target_force(5.0).success
+    assert manager.trigger('/traction/start').success
+    manager.wait_status(TractionStatus.DRAGGING if mode == 2 else TractionStatus.TRACTION,
+                        after=manager.mark())
+
+
 def test_session_bound_waits_for_actual_stop_and_allows_next_prepare(manager):
     """Reaching an operational session boundary is not an unrecoverable device fault."""
     manager.wait_ready()

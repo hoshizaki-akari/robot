@@ -33,6 +33,7 @@ let pendingStart = false;
 let startRequestGeneration = 0;
 let finishRequested = false;
 let emergencyPending = false;
+let recoveryPending = false;
 let AUBO_MOTION_PORT_VERIFIED = false;
 const MODE_LABELS = { 0: '恒力牵引', 1: '位置牵引', 2: '省力拖拽' };
 
@@ -100,6 +101,9 @@ function simpleReason(value) {
 
 function simpleErrorMessage(error) {
   const text = String(error?.message || '');
+  if (/Driver recovery rejected: live telemetry/.test(text)) return '设备实时状态未恢复，请检查机械臂和通信后再复位';
+  if (/Driver recovery failed: measured stop/.test(text)) return '机械臂停稳尚未确认，复位未完成，请检查设备后重试';
+  if (/Driver recovery rejected: hardware disconnected/.test(text)) return '机械臂未连接，暂不能故障复位';
   if (/target|目标牵引力|1 N and 100|1～100/i.test(text)) return `目标牵引力需在1～${tractionForceLimit}N`;
   if (/mode|模式/i.test(text)) return '当前状态不能切换模式';
   if (/direction|calibrat/i.test(text)) return '请先完成方向确认';
@@ -158,13 +162,17 @@ function applyPermissions() {
   const liveTractionAdjustment =
     (operationMode === 0 && tractionState === 6) ||
     (operationMode === 1 && [6, 12].includes(tractionState));
-  $('settingsBtn').disabled = !permission.settings || motionActive;
-  $('targetForceVal').disabled = !AUBO_MOTION_PORT_VERIFIED || !permission.adjust || operationMode === 2 ||
+  $('settingsBtn').disabled = !permission.settings || motionActive || recoveryPending;
+  $('targetForceVal').disabled = !AUBO_MOTION_PORT_VERIFIED || !permission.adjust || recoveryPending || operationMode === 2 ||
     (motionActive && !liveTractionAdjustment);
   const startStateReady = operationMode === 2 ? tractionState === 2 : tractionState === 5;
   $('startBtn').disabled = !AUBO_MOTION_PORT_VERIFIED || !permission.operate || !startStateReady || !dataOnline || pendingStart;
   $('stopBtn').disabled = !AUBO_MOTION_PORT_VERIFIED || !permission.operate || (!pendingStart && ![6, 11, 12, 13].includes(tractionState)) || !dataOnline;
-  if ($('prepareBtn')) $('prepareBtn').disabled = !AUBO_MOTION_PORT_VERIFIED || !permission.operate || !dataOnline || ![1, 2, 5, 8, 9].includes(tractionState);
+  if ($('prepareBtn')) {
+    $('prepareBtn').disabled = !AUBO_MOTION_PORT_VERIFIED || !permission.operate || !dataOnline || recoveryPending || ![1, 2, 5, 8, 9].includes(tractionState);
+    $('prepareBtn').querySelector('.btn-label').textContent = recoveryPending ? '正在复位' : tractionState === 9 ? '故障复位' : '初始校准';
+    $('prepareBtn').title = tractionState === 9 ? '复位后需重新初始校准，不会自动启动牵引' : '牵引带松弛时点击';
+  }
   if ($('calibrateBtn')) $('calibrateBtn').disabled = !AUBO_MOTION_PORT_VERIFIED || !permission.operate || !dataOnline || operationMode === 2 || tractionState !== 2;
   const showDirectionAction = operationMode !== 2 && tractionState === 2;
   $('prepareBtn').classList.toggle('slot-hidden', showDirectionAction);
@@ -852,7 +860,25 @@ const callTraction = async path => {
     return null;
   }
 };
-if ($('prepareBtn')) $('prepareBtn').addEventListener('click', () => callTraction('/api/traction/prepare'));
+if ($('prepareBtn')) $('prepareBtn').addEventListener('click', async () => {
+  if (recoveryPending) return;
+  if (tractionState !== 9) return callTraction('/api/traction/prepare');
+  recoveryPending = true;
+  queuedTarget = null;
+  clearTimeout(targetUpdateTimer);
+  ++startRequestGeneration;
+  pendingStart = false;
+  applyPermissions();
+  try {
+    const result = await postJson('/api/traction/reset-fault');
+    toast(result.message || '故障复位完成，请重新初始校准');
+  } catch (error) {
+    toast(simpleErrorMessage(error));
+  } finally {
+    recoveryPending = false;
+    applyPermissions();
+  }
+});
 if ($('calibrateBtn')) {
   $('calibrateBtn').addEventListener('click', () => callTraction('/api/traction/calibrate-direction'));
 }

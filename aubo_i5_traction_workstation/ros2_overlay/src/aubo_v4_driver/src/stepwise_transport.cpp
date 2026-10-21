@@ -795,6 +795,13 @@ bool StepwiseTransport::submit(const StepwiseCommand & command, const std::array
   impl_->changed.notify_all();
   return true;
 }
+bool StepwiseTransport::quiescent() const
+{
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  return !impl_->allowed && !impl_->busy && !impl_->job && !impl_->stop_job &&
+         !impl_->stop_in_progress && impl_->results.empty();
+}
+
 void StepwiseTransport::cancel_and_stop(std::uint64_t epoch)
 {
   impl_->allowed = false;

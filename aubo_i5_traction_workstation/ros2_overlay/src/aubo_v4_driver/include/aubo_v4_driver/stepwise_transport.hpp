@@ -78,6 +78,7 @@ public:
   StepwiseTransport & operator=(const StepwiseTransport &) = delete;
   bool connect(const TransportOptions & options, std::string & error);
   TransportSample sample() const;
+  bool quiescent() const;
   bool submit(const StepwiseCommand & command, const std::array<double, 6> & seed);
   void cancel_and_stop(std::uint64_t epoch);
   std::optional<TransportResult> take_result();

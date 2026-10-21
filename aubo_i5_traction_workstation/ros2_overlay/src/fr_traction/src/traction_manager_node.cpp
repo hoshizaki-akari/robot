@@ -702,7 +702,7 @@ private:
     const auto state = state_machine_.state();
     if (state != TractionState::READY && state != TractionState::COMPLETED &&
       state != TractionState::MANUAL_SETUP && state != TractionState::DIRECTION_LOCKED &&
-      state != TractionState::FAULT && state != TractionState::EMERGENCY_STOP)
+      state != TractionState::FAULT)
     {
       response->success = false;
       response->message = state_and_allowed("initial calibration while traction is stopped");
@@ -986,10 +986,10 @@ private:
   void handle_reset_fault(const std_srvs::srv::Trigger::Response::SharedPtr response)
   {
     const auto state = state_machine_.state();
-    const bool emergency_recovery = state == TractionState::EMERGENCY_STOP;
-    if (state != TractionState::FAULT && state != TractionState::EMERGENCY_STOP) {
+    if (state != TractionState::FAULT) {
       response->success = false;
-      response->message = state_and_allowed("reset_fault only from FAULT or EMERGENCY_STOP");
+      response->message = state_and_allowed(
+        "reset_fault only from FAULT; emergency needs pendant recovery");
       return;
     }
     if (!live_controller() || !live_hardware() || !live_wrench() || !live_joint() ||
@@ -1008,10 +1008,10 @@ private:
     }
     fault_code_.clear();
     stop_reason_.clear();
+    reset_session_state();
+    publish_disabled();
     response->success = true;
-    response->message = emergency_recovery ?
-      "Emergency stop recovered. Initial calibration is required before motion." :
-      "Fault reset. Initial calibration is required before motion.";
+    response->message = "Fault reset. Initial calibration is required before motion.";
   }
 
   void handle_set_target(
@@ -2203,7 +2203,7 @@ private:
         break;
       case TractionState::RELEASING: status.message = "已停止力控，正在返回牵引起始位置"; break;
       case TractionState::COMPLETED: status.message = "牵引完成"; break;
-      case TractionState::FAULT: status.message = "设备故障；确认安全后重新初始校准"; break;
+      case TractionState::FAULT: status.message = "设备故障；点击故障复位后重新初始校准"; break;
       case TractionState::EMERGENCY_STOP: status.message = "软件急停已锁定；查看恢复说明，软件不会自动解锁"; break;
       case TractionState::PRETENSION: status.message = "正在自动预张紧"; break;
       case TractionState::DRAGGING:
