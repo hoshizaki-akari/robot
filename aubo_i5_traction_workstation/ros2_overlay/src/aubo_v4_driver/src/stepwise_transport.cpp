@@ -65,6 +65,7 @@ struct StepwiseTransport::Impl
   std::unique_ptr<TcpCanDragSession> tcp_can;
   TcpCanPacing tcp_can_pacing;  // Accessed only by the serialized sender/stop path.
   bool tcp_can_entry_buffer_checked{false};
+  std::vector<int> tcp_peer_descriptors;
 
   TcpCanIo tcp_can_io(bool confirmed_buffer = false)
   {
@@ -120,15 +121,18 @@ struct StepwiseTransport::Impl
         for (std::size_t i = 0; i < points.size(); ++i) {
           std::copy(points[i].begin(), points[i].end(), batch[i].jointpos);
         }
+        tune_tcp_peers(tcp_peer_descriptors, options.host, options.port);
         const double started = steady_seconds();
         if (tcp_can_pacing.initialized() && tcp_can_pacing.queued(started) == 0) {
           return -7101;  // Planning missed the deadline: never send a late catch-up batch.
         }
         const int code = send->robotServiceSetRobotPosData2Canbus(batch);
         const double finished = steady_seconds();
+        const auto network = tune_tcp_peers(tcp_peer_descriptors, options.host, options.port);
         const bool timely = code != 0 || tcp_can_pacing.accept(
           static_cast<unsigned>(points.size()), started, finished);
         std::lock_guard<std::mutex> lock(mutex);
+        latest.tcp_latency = network;
         latest.tcp_can_send_duration_s = finished - started;
         latest.motion_call_duration_s = latest.tcp_can_send_duration_s;
         latest.maximum_motion_call_duration_s = std::max(
@@ -1209,6 +1213,11 @@ bool StepwiseTransport::connect(const TransportOptions & options, std::string & 
     {
       error = "stepwise SDK login failed; no automatic retry";
       return false;
+    }
+    if (self.tcp_can) {
+      self.tcp_peer_descriptors = find_tcp_peers(options.host, options.port);
+      self.latest.tcp_latency = tune_tcp_peers(
+        self.tcp_peer_descriptors, options.host, options.port);
     }
     bool real = false;
     vendor::RobotWorkMode mode = vendor::RobotModeSimulator;

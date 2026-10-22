@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include "aubo_v4_driver/stepwise_scheduler.hpp"
+#include "aubo_v4_driver/tcp_latency.hpp"
 
 namespace aubo_v4_driver
 {
@@ -83,6 +84,7 @@ struct TransportSample
   double tcp_can_cycle_duration_s{0.0}, tcp_can_send_duration_s{0.0};
   double tcp_can_buffer_query_duration_s{0.0};
   unsigned tcp_can_observed_buffer_values{0};
+  TcpLatencySample tcp_latency;
   std::string error;
 };
 struct TransportResult

@@ -1,0 +1,50 @@
+===== SEND-LATENCY FAILURE: 1792651898377 =====
+Actual backend: tcp2can_experimental, including e27064a queue-source fields.
+Peak session force: 1.336541 N. This fault was NOT an excessive-force trip.
+First batch: 10 points, nominal 50 ms, SDK call 8.558 ms.
+Second send: 298.408 ms; cycle 298.483 ms; estimated queue 3 at entry.
+Stop: TCP2CAN feeder missed timing deadline -> ROS2_CONTROL_ERROR.
+One pose/sensor mismatch resumed after approximately 8.5 ms; not the latched cause.
+
+Correction to the previous conclusion:
+Moving diagnosis RPCs out of the refill loop was insufficient. The batch-send
+RPC itself can exceed the entire short-buffer duration. The new report proves
+that the previous offline tests did not establish physical operability.
+
+Additional investigation, no arm movement:
+SDK binary: setRobotPosData2Canbus -> moveProfileAndWaypointsFormatCommunication
+-> requestServiceOnlyCheckSendResultMode -> sendRequestWaitResponse.
+The send path waits for an SDK/controller response, despite its method name.
+SDK socket setup sets receive/send timeouts, not TCP_NODELAY.
+Passive live ss: 3 owner sockets to 192.168.1.40:8899; RTT 2-9 ms,
+minimum RTT ~0.2 ms, ACK timeout fields 40/56/80 ms.
+Brief passive strace captured syscall times/counts only, no payload; detached.
+These observations suggest TCP delayed-ACK/Nagle interaction as ONE possible
+contributor. They do NOT prove it caused all 298 ms of the send call.
+
+Patch:
+Experimental backend only: find this process's already-connected exact peer
+TCP sockets; enable and read back TCP_NODELAY; rearm transient TCP_QUICKACK
+before/after batch sends. Do not open sockets, send bytes, change timeout,
+global sysctl, routing, firmware or motion limits in this helper.
+Report matched/tuned socket counts, TCP RTT, retransmissions and unacked data.
+Keep genuine missed-deadline/ambiguous-send stop and no-resend semantics.
+Default FollowMode backend and original FR5 workspace unchanged.
+
+Validation:
+Driver build passed. 212 test reports, 0 errors, 0 failures, 23 skipped.
+Workstation Python: 68 passed, lint passed.
+New socket tests use loopback only; verify exact peer/type filtering, readback,
+invalid/closed/listening descriptors and repeated QUICKACK application.
+The recorded 298.408 ms send is explicitly covered as a missed deadline,
+not relabelled as a successful timely command.
+
+Status: COMMUNICATION_CANDIDATE_REQUIRES_HARDWARE_ACCEPTANCE.
+Loaded workstation: session_20261022_150051_workstation, READY.
+Real diagnostics confirm matched=3, NODELAY readback=3, QUICKACK calls=3.
+tcp_can_active=0, batches=0: no traction or TCP2CAN entry was initiated.
+This patch is NOT proof that the controller's send-call latency is now bounded.
+Do not declare the drag problem solved until a new real drag export confirms
+continuous movement, direction/release behavior and bounded send latency.
+Run: bash start_workstation.sh --tcp-can-drag
+Reference: https://man7.org/linux/man-pages/man7/tcp.7.html

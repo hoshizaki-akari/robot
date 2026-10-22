@@ -743,6 +743,12 @@ private:
         std::to_string(sample.tcp_can_buffer_query_duration_s));
       add("tcp_can_status", sample.tcp_can_status);
       add("tcp_can_fault", sample.tcp_can_fault ? "1" : "0");
+      add("tcp_low_latency_matched", std::to_string(sample.tcp_latency.matched));
+      add("tcp_nodelay_verified", std::to_string(sample.tcp_latency.nodelay));
+      add("tcp_quickack_rearmed", std::to_string(sample.tcp_latency.quickack));
+      add("tcp_maximum_rtt_s", std::to_string(sample.tcp_latency.maximum_rtt_s));
+      add("tcp_total_retransmissions", std::to_string(sample.tcp_latency.retransmissions));
+      add("tcp_unacked_segments", std::to_string(sample.tcp_latency.unacked));
       add("tcp_can_cycle_duration_s", std::to_string(sample.tcp_can_cycle_duration_s));
       add("tcp_can_send_duration_s", std::to_string(sample.tcp_can_send_duration_s));
       add("follow_joint_speed_max_radps", std::to_string(sample.follow_joint_speed_max_radps));

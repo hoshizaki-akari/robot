@@ -30,7 +30,7 @@ if(NOT AUBO_V4_INCLUDE_DIR OR NOT AUBO_V4_CONTROLLER_LIBRARY OR NOT AUBO_V4_CONF
     "AUBOPE V4 SDK is incomplete under AUBO_V4_SDK_ROOT='${AUBO_V4_SDK_ROOT}'."
   )
 endif()
-add_library(aubo_v4_state_validation SHARED src/state_validation.cpp src/stepwise_scheduler.cpp src/tcp_can_drag.cpp)
+add_library(aubo_v4_state_validation SHARED src/state_validation.cpp src/stepwise_scheduler.cpp src/tcp_can_drag.cpp src/tcp_latency.cpp)
 target_include_directories(aubo_v4_state_validation PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
@@ -80,6 +80,8 @@ if(BUILD_TESTING)
   target_link_libraries(test_aubo_drag_reference aubo_v4_state_validation)
   ament_add_gtest(test_tcp_can_drag test/test_tcp_can_drag.cpp)
   target_link_libraries(test_tcp_can_drag aubo_v4_state_validation)
+  ament_add_gtest(test_tcp_latency test/test_tcp_latency.cpp)
+  target_link_libraries(test_tcp_latency aubo_v4_state_validation)
   # Only this automated test target overrides the SDK header. Never link the
   # vendor library or install this test double into an operational package.
   ament_add_gtest(test_stepwise_transport test/test_stepwise_transport.cpp src/stepwise_transport.cpp)

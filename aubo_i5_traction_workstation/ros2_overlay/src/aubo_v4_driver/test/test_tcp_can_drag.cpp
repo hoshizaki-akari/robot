@@ -103,6 +103,9 @@ TEST(TcpCanPacing, SlowSendOrInvalidTimesNeverProduceCatchUpCredit)
   EXPECT_FALSE(pacing.accept(10, 1, NAN));
   ASSERT_TRUE(pacing.accept(10, 2, 2.005));
   EXPECT_FALSE(pacing.accept(6, 2.049, 2.055));
+  // Regression from session_1792651898377: the SEND itself, not a query,
+  // lasted 298.408 ms. A 50 ms stream must not call that a timely ACK.
+  EXPECT_FALSE(pacing.accept(7, 2.035, 2.333408));
 }
 
 TEST(TcpCanPacing, LongRunWithFiveMillisecondRepliesKeepsBoundedReserveWithoutDrift)
