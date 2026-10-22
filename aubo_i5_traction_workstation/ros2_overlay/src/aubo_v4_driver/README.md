@@ -1,5 +1,20 @@
 # AUBOPE V4 state adapter
 
+## Workstation transport qualification, 2026-10-22
+
+The live workstation's `aubo_v4_stepwise_node` now withdraws experimental
+TCP2CAN drag even when `experimental_tcp_can_drag:=true` is requested. Real
+sessions reproduced 298–300 ms batch calls against its 50 ms buffer contract,
+including after NODELAY/QUICKACK were confirmed on all three sockets. The
+production node selects the existing native FollowMode backend **before any
+motion**; it never switches protocols during an active session. Diagnostics
+separately expose the request, effective backend, qualification and reason.
+The old `--tcp-can-drag` startup flag is a compatibility alias, not permission
+to re-enable this candidate. Use `bash start_workstation.sh` normally.
+Pure TCP2CAN code/tests are retained for research, not a hardware-ready claim.
+This rollback removes the reproduced experimental deadline failure; smooth
+physical drag performance still requires a real acceptance test.
+
 `aubo_v4_state_node` owns one legacy AUBOPE V4 `ServiceInterface` session. By default it exposes only state polling and operator-requested hardware stop. Setting `enable_motion_interface:=true` additionally exposes a Cartesian-velocity command subscriber and a controller-switch service backed by TCP2CAN joint streaming. This motion path has been built and unit-tested but has **not yet passed a live continuous-stream acceptance test**.
 
 - Real V4 `wayPoint_S` data is published as `/joint_states` and `/controller_manager/ee_state` (`fr_traction/msg/EndEffectorState`).

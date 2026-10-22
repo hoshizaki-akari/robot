@@ -5,6 +5,15 @@
 #include "aubo_v4_driver/tcp_can_drag.hpp"
 
 namespace av = aubo_v4_driver;
+TEST(DragBackendSelection, ReproducedIncompatibleStreamCannotBeEnabledByAnOptIn)
+{
+  EXPECT_FALSE(av::select_drag_backend(false).use_tcp_can);
+  const auto requested = av::select_drag_backend(true);
+  EXPECT_FALSE(requested.use_tcp_can);
+  EXPECT_NE(requested.reason.find("withdrawn"), std::string::npos);
+  EXPECT_NE(requested.reason.find("FollowMode"), std::string::npos);
+}
+
 namespace
 {
 // Explicit unit-test algebra stub, not a model of any robot and never used by

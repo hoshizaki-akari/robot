@@ -73,7 +73,7 @@ BIN="$PROJECT_DIR/ros2_overlay/install"
 experimental_parameters=()
 if [[ "${AUBO_TCP_CAN_DRAG:-0}" == 1 ]]; then
   experimental_parameters=(--params-file "$PROJECT_DIR/config/tcp_can_drag.experimental.yaml")
-  echo 'Experimental TCP2CAN drag selected; no traction or mode entry until an operator starts drag.'
+  echo 'TCP2CAN candidate withdrawn after repeated real send delays. Compatibility flag retained; driver selects native FollowMode BEFORE any motion. No traction is started.'
 fi
 launch robot "$BIN/aubo_v4_driver/lib/aubo_v4_driver/aubo_v4_stepwise_node" \
   --ros-args -p connect_hardware:=true -p enable_motion_interface:=true \

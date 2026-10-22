@@ -327,6 +327,58 @@ TEST_F(StepwiseTransportTest, SlowDiagnosticRpcCannotBlockReleaseBufferRefill)
   EXPECT_TRUE(stopped->success) << stopped->detail;
 }
 
+TEST_F(
+  StepwiseTransportTest,
+  NativeFollowAcceptsRecordedThreeHundredMillisecondReplyWithoutTcpDeadline)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = settings.fixed_follow_profile = true;
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error)) << error;
+  aubo_v4_test_sdk::emit_waypoint(valid_waypoint());
+  ASSERT_TRUE(wait_for_diagnosis(transport, 1s));
+  auto & state = aubo_v4_test_sdk::state();
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.block_line_move = true;
+  }
+  auto value = command(1, 1);
+  value.follow_joint_mode = value.assisted_drag = true;
+  ASSERT_TRUE(transport.submit(value, seed));
+  bool entered;
+  {
+    std::unique_lock<std::mutex> lock(state.mutex);
+    entered = state.changed.wait_for(lock, 1s, [&]() {return state.line_move_entered;});
+  }
+  if (entered) {
+    auto waiting = value;
+    waiting.id = 2;
+    EXPECT_EQ(transport.try_submit(waiting, seed), aubo_v4_driver::SubmitStatus::BUSY);
+    waiting.speed_mps = 0;
+    EXPECT_EQ(transport.try_submit(waiting, seed), aubo_v4_driver::SubmitStatus::REJECTED);
+    EXPECT_EQ(transport.try_submit(value, seed), aubo_v4_driver::SubmitStatus::REJECTED);
+    std::this_thread::sleep_for(300ms);
+  }
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.release_line_move = true;
+    state.changed.notify_all();
+  }
+  ASSERT_TRUE(entered);
+  const auto reply = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(reply);
+  ASSERT_TRUE(reply->success) << reply->detail;
+  const auto sample = transport.sample();
+  EXPECT_FALSE(sample.tcp_can_fault);
+  EXPECT_FALSE(sample.tcp_can_active);
+  EXPECT_GE(sample.motion_call_duration_s, 0.29);
+  std::lock_guard<std::mutex> lock(state.mutex);
+  EXPECT_EQ(state.follow_move_count, 1);
+  EXPECT_EQ(state.tcp_enter_count, 0);
+  EXPECT_EQ(state.tcp_batch_count, 0);
+}
+
 TEST_F(StepwiseTransportTest, CommandSpeedIsAppliedAndReportedBeforeMotion)
 {
   StepwiseTransport transport;

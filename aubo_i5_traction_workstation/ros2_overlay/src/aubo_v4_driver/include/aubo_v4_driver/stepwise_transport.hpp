@@ -85,6 +85,7 @@ struct TransportSample
   double tcp_can_buffer_query_duration_s{0.0};
   unsigned tcp_can_observed_buffer_values{0};
   TcpLatencySample tcp_latency;
+  std::string last_submission_detail;
   std::string error;
 };
 struct TransportResult
@@ -95,6 +96,8 @@ struct TransportResult
   bool superseded{false};
   std::string detail;
 };
+
+enum class SubmitStatus {ACCEPTED, BUSY, REJECTED};
 
 // One owner, separate SDK sessions for send/read/urgent-stop. Construction
 // alone never creates an SDK object. Only explicitly calling connect() does.
@@ -109,6 +112,7 @@ public:
   TransportSample sample() const;
   bool quiescent() const;
   bool submit(const StepwiseCommand & command, const std::array<double, 6> & seed);
+  SubmitStatus try_submit(const StepwiseCommand & command, const std::array<double, 6> & seed);
   bool update_drag_intent(
     const std::array<double, 3> & velocity, std::uint64_t epoch, double received_at);
   void cancel_and_stop(std::uint64_t epoch);

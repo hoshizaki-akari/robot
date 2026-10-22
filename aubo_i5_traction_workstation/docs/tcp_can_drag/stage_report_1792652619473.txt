@@ -1,0 +1,55 @@
+===== 1792652619473: TRANSPORT / STATE-MACHINE REVIEW =====
+Evidence from the new ZIP:
+Backend tcp2can_experimental; NODELAY=3, QUICKACK=3, retransmissions=0.
+First SDK send 20.633 ms; second send 300.168 ms; nominal buffer only 50 ms.
+Peak force 1.056837 N. No excessive-force trip is recorded.
+At 1792652622.9844: STOPPING, fault_reason='command acknowledgement failed',
+TCP2CAN fault=0, send duration still the previous 20.633 ms.
+At 1792652623.0880: the later deadline failure becomes visible, TCP fault=1.
+Therefore the first generic submission fault must not be explained away as
+just the later SDK deadline fault. Previous analysis was incomplete.
+
+Confirmed code defects / compatibility problem:
+1. Production selected an unqualified 50 ms stream despite repeated ~300 ms
+   SDK calls. Local elapsed time was not proof of controller buffer consumption.
+   Socket tuning applied correctly but did not establish timing compatibility.
+2. Node treated a boolean submit(false) as an SDK acknowledgement failure.
+   That boolean conflated temporary BUSY with invalid/stale/revoked requests.
+   The old export cannot identify which individual reject guard fired.
+   This absence of evidence is not labelled as a proven network/robot fault.
+
+Changes:
+- Withdraw TCP2CAN from the production workstation node, including when old
+  CLI/ROS experimental opt-ins are requested. Select existing native FollowMode
+  BEFORE motion; never automatically switch protocols during an active session.
+- Preserve candidate pure tests/code for investigation, not live qualification.
+- Typed ACCEPTED/BUSY/REJECTED submission. One bounded, UNSUBMITTED pending slot
+  may wait for a busy transport. It is cleared on stop/revoked epoch; existing
+  ACK/freshness deadlines remain. No retry of a command accepted by SDK/transport.
+- Real rejection records its exact guard: stopping, duplicate ID, revoked epoch,
+  invalid flags/speed, nonfinite inputs or geometry/horizon/step validation.
+- Diagnostics distinguish requested/effective backend, qualification, selection
+  reason, pending backpressure and last submission detail.
+- No force/speed/travel/ACK/health bounds were enlarged or real alarms hidden.
+- FR5 checkout and original workstation were not modified.
+
+Validation:
+Driver: 215 reports, zero errors/failures, 23 skipped.
+Traction core: 246 reports, zero errors/failures, 27 skipped.
+Workstation Python: 68 passed, lint passed.
+Actual ROS node linked ONLY to named SDK doubles covers all three modes with
+300 ms busy SDK replies, requested experimental flag, zero TCP2CAN entries,
+stop/recovery/operator-restart and real alarm handling.
+Additional tests cover typed BUSY vs invalid/duplicate requests, native slow
+reply acceptance and unchanged scheduler ACK/freshness rules.
+Offline tests are NOT proof of physical hand-guiding performance.
+
+Run: bash start_workstation.sh
+Old --tcp-can-drag command remains a compatibility alias and reports withdrawal.
+Status: WAITING_PHYSICAL_ACCEPTANCE, not a claim of complete smooth-drag success.
+Live startup session_20261022_152140_workstation: READY, robot/sensor connected.
+Verified despite old opt-in: requested=1, qualified=0, backend=follow_mode,
+TCP2CAN active/batches=0, motion ACKs=0, waiting/backpressure=0.
+Remaining unknown: why the real SDK/controller request took ~300 ms. No evidence
+supports claiming a firmware/network fix. The incompatible production dependency
+has been removed; native physical drag/release still needs operator acceptance.

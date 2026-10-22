@@ -1287,36 +1287,49 @@ TransportSample StepwiseTransport::sample() const
 }
 bool StepwiseTransport::submit(const StepwiseCommand & command, const std::array<double, 6> & seed)
 {
+  return try_submit(command, seed) == SubmitStatus::ACCEPTED;
+}
+
+SubmitStatus StepwiseTransport::try_submit(
+  const StepwiseCommand & command, const std::array<double, 6> & seed)
+{
   std::lock_guard<std::mutex> lock(impl_->mutex);
   const bool admissible_during_feed = impl_->continuation_busy && command.assisted_drag &&
     command.epoch == impl_->allowed_epoch;
-  if (impl_->shutdown || (impl_->busy && !admissible_during_feed) || impl_->job ||
-    impl_->stop_job ||
-    (command.follow_joint_mode && !impl_->options.allow_follow_mode) ||
+  const auto rejected = [this](const std::string & detail) {
+      impl_->latest.last_submission_detail = detail;
+      return SubmitStatus::REJECTED;
+    };
+  if (impl_->shutdown || impl_->stop_job || impl_->stop_in_progress ||
+    !impl_->sender.joinable())
+  {return rejected("transport stopping, disconnected or shut down; command not dispatched");}
+  if (command.id <= impl_->last_submitted_id)
+  {return rejected("duplicate/non-increasing command ID; command not dispatched");}
+  if (command.epoch < impl_->allowed_epoch)
+  {return rejected("revoked command epoch; command not dispatched");}
+  if ((command.follow_joint_mode && !impl_->options.allow_follow_mode) ||
     (command.hold_position && !command.follow_joint_mode) ||
     (command.assisted_drag && !command.follow_joint_mode) ||
     !std::isfinite(command.speed_mps) || command.speed_mps <= 0.0 ||
-    command.speed_mps > impl_->options.speed_mps ||
-    impl_->stop_in_progress || !impl_->sender.joinable() ||
-    command.id <= impl_->last_submitted_id || command.epoch < impl_->allowed_epoch)
+    command.speed_mps > impl_->options.speed_mps)
   {
-    return false;
+    return rejected("unsupported motion flags or invalid requested speed; command not dispatched");
   }
   double squared_step = 0.0, quaternion_norm = 0.0;
   for (std::size_t index = 0; index < 3; ++index) {
     if (!std::isfinite(command.start[index]) || !std::isfinite(command.target[index])) {
-      return false;
+      return rejected("non-finite start/target; command not dispatched");
     }
     const double delta = command.target[index] - command.start[index];
     squared_step += delta * delta;
   }
   for (double value : command.orientation) {
-    if (!std::isfinite(value)) {return false;}
+    if (!std::isfinite(value)) {return rejected("non-finite orientation; command not dispatched");}
     quaternion_norm += value * value;
   }
   for (double value : seed) {
     if (!std::isfinite(value)) {
-      return false;
+      return rejected("non-finite joint seed; command not dispatched");
     }
   }
   if (!std::isfinite(squared_step) ||
@@ -1328,13 +1341,19 @@ bool StepwiseTransport::submit(const StepwiseCommand & command, const std::array
     squared_step > std::pow(
       command.assisted_drag ? impl_->options.maximum_drag_step_m :
       impl_->options.maximum_step_m, 2) * (1.0 + 1e-9) ||
-    !std::isfinite(quaternion_norm) || std::abs(quaternion_norm - 1.0) > 1e-3) {return false;}
+    !std::isfinite(quaternion_norm) || std::abs(quaternion_norm - 1.0) > 1e-3)
+  {return rejected("invalid geometry, horizon or step bounds; command not dispatched");}
+  if ((impl_->busy && !admissible_during_feed) || impl_->job) {
+    impl_->latest.last_submission_detail = "transport busy; command not accepted or dispatched";
+    return SubmitStatus::BUSY;
+  }
   impl_->last_submitted_id = command.id;
   impl_->allowed_epoch = command.epoch;
   impl_->allowed = true;
   impl_->job = Impl::Job{command, seed};
+  impl_->latest.last_submission_detail = "accepted into single transport mailbox";
   impl_->changed.notify_all();
-  return true;
+  return SubmitStatus::ACCEPTED;
 }
 bool StepwiseTransport::update_drag_intent(
   const std::array<double, 3> & velocity, std::uint64_t epoch, double received_at)

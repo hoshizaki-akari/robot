@@ -8,6 +8,22 @@
 
 namespace aubo_v4_driver
 {
+struct DragBackendSelection
+{
+  bool use_tcp_can{false};
+  std::string reason;
+};
+// Production qualification gate. Repeated real 298-300 ms send calls violate
+// the 50 ms candidate contract. No command-line/ROS opt-in may bypass this
+// withdrawal. Keep the pure candidate/tests for investigation, not live use.
+inline DragBackendSelection select_drag_backend(bool requested_tcp_can)
+{
+  return {false, requested_tcp_can ?
+    "TCP2CAN candidate withdrawn: measured SDK send latency exceeds short buffer; native FollowMode selected before motion"
+    :
+    "native FollowMode selected"};
+}
+
 // Sender-local pacing ledger, NOT a measurement of controller occupancy or
 // physical arrival. Only SDK-accepted 5 ms points extend the deadline. Slow
 // diagnostic RPCs must never run between short-buffer replenishments.

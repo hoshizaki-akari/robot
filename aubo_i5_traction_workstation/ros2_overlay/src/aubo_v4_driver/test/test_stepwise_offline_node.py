@@ -111,6 +111,11 @@ def test_offline_node_refuses_motion_and_publishes_no_fake_pose(monkeypatch, exp
         assert float(values["maximum_speed_mps"]) == 0.05
         assert float(values["maximum_session_travel_m"]) == 0.0
         assert "OFFLINE" in values["last_hardware_health_failure"]
+        assert values["drag_execution_transport"] == "follow_mode"
+        assert values["tcp_can_requested"] == ("1" if experimental else "0")
+        assert values["tcp_can_qualified"] == "0"
+        if experimental:
+            assert "withdrawn" in values["drag_backend_selection_reason"]
         assert switch.wait_for_service(timeout_sec=2)
         request = SwitchController.Request()
         request.start_controllers = ["cartesian_velocity_controller"]

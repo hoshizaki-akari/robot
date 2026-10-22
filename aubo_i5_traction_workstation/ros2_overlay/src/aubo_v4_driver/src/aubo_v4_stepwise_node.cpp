@@ -20,6 +20,7 @@
 #include "aubo_v4_driver/stepwise_scheduler.hpp"
 #include "aubo_v4_driver/stepwise_transport.hpp"
 #include "aubo_v4_driver/stop_handoff.hpp"
+#include "aubo_v4_driver/tcp_can_drag.hpp"
 
 namespace av = aubo_v4_driver;
 namespace
@@ -53,7 +54,13 @@ public:
     // Same ROS identity/service names as the legacy backend, but never launch
     // both. Two independent opt-ins protect against accidental hardware use.
     const bool connect_hardware = declare_parameter<bool>("connect_hardware", false);
-    experimental_tcp_can_drag_ = declare_parameter("experimental_tcp_can_drag", false);
+    requested_tcp_can_drag_ = declare_parameter("experimental_tcp_can_drag", false);
+    const auto backend = av::select_drag_backend(requested_tcp_can_drag_);
+    experimental_tcp_can_drag_ = backend.use_tcp_can;
+    backend_selection_reason_ = backend.reason;
+    if (requested_tcp_can_drag_) {
+      RCLCPP_WARN(get_logger(), "%s", backend_selection_reason_.c_str());
+    }
     enable_motion_ = declare_parameter<bool>("enable_motion_interface", false);
     enable_follow_drag_ = declare_parameter<bool>("enable_follow_drag", false);
     enable_follow_traction_ = declare_parameter<bool>("enable_follow_traction", false);
@@ -454,8 +461,18 @@ private:
     {
       scheduler_->set_enabled(true, av::steady_seconds());
     }
+    if (!session_enabled_ || scheduler_->state() != av::StepwiseState::SENDING ||
+      (deferred_command_ && deferred_command_->epoch != scheduler_->epoch()))
+    {
+      deferred_command_.reset();
+    }
     if (session_enabled_ && enable_motion_) {
-      if (auto command = scheduler_->take_command(av::steady_seconds())) {
+      // This slot contains ONLY a command which transport has not accepted.
+      // It is bounded by the existing scheduler ACK/freshness deadlines and
+      // cleared on stop/mode change. Never retry an SDK-dispatched command.
+      auto command = deferred_command_ ? deferred_command_ :
+        scheduler_->take_command(av::steady_seconds());
+      if (command) {
         // Keep the original session orientation even across internal zero/
         // watchdog pauses; measured IK error must not become the next target.
         if (!command->hold_position) {command->orientation = session_orientation_;}
@@ -485,8 +502,19 @@ private:
             scheduler_->request_stop(
               av::steady_seconds(), "session-limit stop handoff unavailable", true);
           }
-        } else if (!transport_->submit(*command, sample.joints)) {
-          scheduler_->acknowledge(command->id, command->epoch, false, av::steady_seconds());
+        } else {
+          const auto submitted = transport_->try_submit(*command, sample.joints);
+          if (submitted == av::SubmitStatus::BUSY) {
+            if (!deferred_command_) {++transport_backpressure_count_;}
+            deferred_command_ = command;
+          } else {
+            deferred_command_.reset();
+            if (submitted == av::SubmitStatus::REJECTED) {
+              scheduler_->acknowledge(
+                command->id, command->epoch, false, av::steady_seconds(),
+                transport_->sample().last_submission_detail);
+            }
+          }
         }
       }
     }
@@ -683,9 +711,18 @@ private:
     add(
       "drag_reference_model", config_.independent_drag_reference ?
       "aubo_cartesian_admittance_v2" : "legacy_follow_reference");
+    add(
+      "drag_execution_transport",
+      experimental_tcp_can_drag_ ? "tcp2can_experimental" : "follow_mode");
+    add("tcp_can_requested", requested_tcp_can_drag_ ? "1" : "0");
+    add("tcp_can_qualified", "0");
+    add("drag_backend_selection_reason", backend_selection_reason_);
+    add("command_waiting_for_transport", deferred_command_ ? "1" : "0");
+    add("transport_backpressure_count", std::to_string(transport_backpressure_count_));
     if (transport_) {
       const auto sample = transport_->sample();
       add("sdk_profile_speed_mps", std::to_string(sample.sdk_speed_mps));
+      add("last_submission_detail", sample.last_submission_detail);
       add("sdk_profile_acceleration_mps2", std::to_string(sample.sdk_acceleration_mps2));
       add("waypoint_interval_s", std::to_string(sample.waypoint_interval_s));
       add("waypoint_sequence", std::to_string(sample.feedback.sequence));
@@ -729,9 +766,6 @@ private:
       add("drag_intent_refreshes", std::to_string(sample.drag_intent_refreshes));
       add("drag_intent_age_s", std::to_string(sample.drag_intent_age_s));
       add("drag_superseded_commands", std::to_string(sample.drag_superseded_commands));
-      add(
-        "drag_execution_transport",
-        experimental_tcp_can_drag_ ? "tcp2can_experimental" : "follow_mode");
       add("tcp_can_active", sample.tcp_can_active ? "1" : "0");
       add("tcp_can_batches", std::to_string(sample.tcp_can_batches));
       add("tcp_can_points", std::to_string(sample.tcp_can_points));
@@ -780,6 +814,10 @@ private:
   rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture session_limit_future_;
   bool enable_follow_drag_{false};
   bool experimental_tcp_can_drag_{false};
+  bool requested_tcp_can_drag_{false};
+  std::string backend_selection_reason_;
+  std::optional<av::StepwiseCommand> deferred_command_;
+  std::uint64_t transport_backpressure_count_{0};
   bool enable_follow_traction_{false};
   double telemetry_timeout_s_{0.5};
   unsigned last_command_mode_{0};

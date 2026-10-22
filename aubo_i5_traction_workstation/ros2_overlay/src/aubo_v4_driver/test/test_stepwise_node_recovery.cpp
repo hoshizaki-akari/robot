@@ -18,6 +18,7 @@ TEST(StepwiseNodeRecovery, ThreeModesPauseRecoverAndRequireOperatorAfterHardFaul
   const char * args[] = {"offline_node_recovery", "--ros-args", "-p", "connect_hardware:=true",
     "-p", "enable_motion_interface:=true", "-p", "enable_follow_drag:=true",
     "-p", "enable_follow_traction:=true", "-p", "follow_hold_enabled:=true",
+    "-p", "experimental_tcp_can_drag:=true",
     "-p", "single_stop_when_quiescent:=true", "-p", "state_poll_interval_s:=0.02"};
   rclcpp::init(static_cast<int>(sizeof(args) / sizeof(args[0])), args);
   aubo_v4_test_sdk::reset();
@@ -69,13 +70,34 @@ TEST(StepwiseNodeRecovery, ThreeModesPauseRecoverAndRequireOperatorAfterHardFaul
       fr_traction::msg::TractionCommand::POSITIONING, fr_traction::msg::TractionCommand::DRAG})
   {
     mode = selected;
+    {
+      auto & state = aubo_v4_test_sdk::state();
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.block_line_move = true;
+      state.release_line_move = false;
+    }
+    const int before = count();
     auto request = std::make_shared<controller_manager_msgs::srv::SwitchController::Request>();
     request->start_controllers = {"cartesian_velocity_controller"};
     auto started = switch_client->async_send_request(request);
     ASSERT_TRUE(wait([&]() {return started.wait_for(0ms) == std::future_status::ready;}));
     EXPECT_TRUE(started.get()->ok);
-    const int before = count();
     EXPECT_TRUE(wait([&]() {return count() > before;}));
+    bool false_fault = false;
+    const auto delayed_reply_until = std::chrono::steady_clock::now() + 300ms;
+    while (std::chrono::steady_clock::now() < delayed_reply_until) {
+      pump();  // Actual ROS input/feedback continues while SDK double is busy.
+      false_fault = false_fault || phase == "FAULT" || phase == "STOPPING";
+    }
+    {
+      auto & state = aubo_v4_test_sdk::state();
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.release_line_move = true;
+      state.changed.notify_all();
+      EXPECT_EQ(state.tcp_enter_count, 0);
+      EXPECT_EQ(state.tcp_batch_count, 0);
+    }
+    EXPECT_FALSE(false_fault);  // All three modes tolerate the recorded delay.
     {
       auto & state = aubo_v4_test_sdk::state();
       std::lock_guard<std::mutex> lock(state.mutex);

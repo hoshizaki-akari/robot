@@ -567,6 +567,26 @@ TEST(StepwiseFollowResponse, DelayedSdkReplyDoesNotAccumulateACatchupJump)
   EXPECT_NEAR(next->target[0] - first.target[0], 0.0012, 1e-12);
 }
 
+TEST(StepwiseFollowResponse, RecordedThreeHundredMillisecondAckIsNotAProtocolDeadlineFault)
+{
+  StepwiseConfig config;
+  config.maximum_step_m = 0.005;
+  config.maximum_speed_mps = 0.15;
+  config.follow_reference_enabled = true;
+  config.ack_timeout_s = 2.0;  // Existing contract, not enlarged for this repair.
+  StepwiseScheduler scheduler(config);
+  arm(scheduler);
+  scheduler.set_follow_mode(true, 0);
+  const auto first = send(scheduler, {0.02, 0, 0});
+  scheduler.set_feedback(feedback(2, 0.15, false, 0.02, first.target), 0.15);
+  scheduler.set_velocity({0.02, 0, 0}, 0.15);
+  scheduler.set_feedback(feedback(3, 0.30, false, 0.02, first.target), 0.30);
+  scheduler.set_velocity({0.02, 0, 0}, 0.30);
+  scheduler.acknowledge(first.id, first.epoch, true, 0.300168);
+  EXPECT_NE(scheduler.state(), StepwiseState::FAULT);
+  EXPECT_NE(scheduler.state(), StepwiseState::STOPPING);
+}
+
 TEST(SessionStopHandoff, RejectedAndMissingRepliesCannotBecomeNormalCompletion)
 {
   using aubo_v4_driver::StopHandoff;
