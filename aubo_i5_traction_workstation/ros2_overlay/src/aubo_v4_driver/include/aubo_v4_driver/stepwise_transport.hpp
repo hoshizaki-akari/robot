@@ -81,6 +81,8 @@ struct TransportSample
   unsigned tcp_can_queued_points{0};
   std::string tcp_can_status;
   double tcp_can_cycle_duration_s{0.0}, tcp_can_send_duration_s{0.0};
+  double tcp_can_buffer_query_duration_s{0.0};
+  unsigned tcp_can_observed_buffer_values{0};
   std::string error;
 };
 struct TransportResult

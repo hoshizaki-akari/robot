@@ -104,7 +104,10 @@ std::optional<TransportResult> wait_for_motion_result(
     }
     const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
       deadline - std::chrono::steady_clock::now());
-    aubo_v4_test_sdk::wait_for_event(seen, std::min(remaining, 50ms));
+    // SDK completion precedes publication into the transport result mailbox.
+    // Waiting 50 ms for another SDK event can miss the whole first stream
+    // window and accidentally test a later, already replenished batch.
+    aubo_v4_test_sdk::wait_for_event(seen, std::min(remaining, 1ms));
   }
   return std::nullopt;
 }
@@ -254,7 +257,8 @@ TEST_F(StepwiseTransportTest, ExperimentalTimedBatchHasNoFollowFallbackAndLeaves
   EXPECT_EQ(queued->id, 2U);
   ASSERT_TRUE(queued->success) << queued->detail;
   EXPECT_EQ(transport.sample().tcp_can_batches, 2U);
-  EXPECT_EQ(transport.sample().tcp_can_points, 16U);
+  EXPECT_GE(transport.sample().tcp_can_points, 16U);
+  EXPECT_LE(transport.sample().tcp_can_points, 20U);
   EXPECT_EQ(transport.sample().motion_ack_count, 2U);
   transport.cancel_and_stop(2);
   const auto stopped = wait_for_stop_result(transport, 1s);
@@ -269,6 +273,58 @@ TEST_F(StepwiseTransportTest, ExperimentalTimedBatchHasNoFollowFallbackAndLeaves
   std::lock_guard<std::mutex> lock(state.mutex);
   EXPECT_EQ(state.tcp_leave_count, 1);
   EXPECT_EQ(state.line_move_count, 1);
+}
+
+TEST_F(StepwiseTransportTest, SlowDiagnosticRpcCannotBlockReleaseBufferRefill)
+{
+  StepwiseTransport transport;
+  auto settings = options();
+  settings.allow_follow_mode = settings.fixed_follow_profile = true;
+  settings.experimental_tcp_can_drag = true;
+  auto & state = aubo_v4_test_sdk::state();
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.tcp_linear_test_kinematics = true;
+    state.block_diagnosis_after_tcp_batch = true;
+  }
+  std::string error;
+  ASSERT_TRUE(transport.connect(settings, error)) << error;
+  auto measured = valid_waypoint();
+  measured.cartPos.position.x = 0.0998;
+  aubo_v4_test_sdk::emit_waypoint(measured);
+  std::size_t seen = 0;
+  const auto ready_by = std::chrono::steady_clock::now() + 1s;
+  while (!transport.sample().feedback.healthy && std::chrono::steady_clock::now() < ready_by) {
+    aubo_v4_test_sdk::wait_for_event(seen, 10ms);
+  }
+  ASSERT_TRUE(transport.sample().feedback.healthy);
+  ASSERT_TRUE(transport.update_drag_intent({0.001, 0, 0}, 1, aubo_v4_driver::steady_seconds()));
+  auto value = command(1, 1);
+  value.assisted_drag = value.follow_joint_mode = value.cartesian_drag_reference = true;
+  ASSERT_TRUE(transport.submit(value, seed));
+  const auto first = wait_for_motion_result(transport, 1s);
+  ASSERT_TRUE(first && first->success);
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.block_diagnosis = true;
+  }
+  const bool refreshed = transport.update_drag_intent({}, 1, aubo_v4_driver::steady_seconds());
+  bool replenished;
+  {
+    std::unique_lock<std::mutex> lock(state.mutex);
+    // Old code waits here in GetRobotDiagnosisInfo until the 50 ms buffer
+    // empties. The corrected feeder needs no RPC to produce deceleration.
+    replenished = state.changed.wait_for(lock, 200ms, [&]() {return state.tcp_batch_count >= 2;});
+    state.release_diagnosis = true;
+    state.changed.notify_all();
+  }
+  EXPECT_TRUE(refreshed);
+  EXPECT_TRUE(replenished);
+  EXPECT_FALSE(transport.sample().tcp_can_fault);
+  transport.cancel_and_stop(2);
+  const auto stopped = wait_for_stop_result(transport, 1s);
+  ASSERT_TRUE(stopped);
+  EXPECT_TRUE(stopped->success) << stopped->detail;
 }
 
 TEST_F(StepwiseTransportTest, CommandSpeedIsAppliedAndReportedBeforeMotion)

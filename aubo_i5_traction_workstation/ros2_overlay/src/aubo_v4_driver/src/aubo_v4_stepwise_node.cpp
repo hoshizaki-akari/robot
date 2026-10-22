@@ -736,6 +736,11 @@ private:
       add("tcp_can_batches", std::to_string(sample.tcp_can_batches));
       add("tcp_can_points", std::to_string(sample.tcp_can_points));
       add("tcp_can_queued_points", std::to_string(sample.tcp_can_queued_points));
+      add("tcp_can_queue_source", "accepted_points_5ms_pacing_estimate_not_feedback");
+      add("tcp_can_observed_buffer_values", std::to_string(sample.tcp_can_observed_buffer_values));
+      add(
+        "tcp_can_buffer_query_duration_s",
+        std::to_string(sample.tcp_can_buffer_query_duration_s));
       add("tcp_can_status", sample.tcp_can_status);
       add("tcp_can_fault", sample.tcp_can_fault ? "1" : "0");
       add("tcp_can_cycle_duration_s", std::to_string(sample.tcp_can_cycle_duration_s));

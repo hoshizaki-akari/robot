@@ -76,6 +76,56 @@ TEST(TcpCanDrag, ExplicitEntryAndBoundedFiveMillisecondSamples)
   EXPECT_EQ(stub.enters, 1);
 }
 
+TEST(TcpCanPacing, AckLatencyDoesNotInventBufferReserve)
+{
+  av::TcpCanPacing pacing;
+  EXPECT_EQ(pacing.queued(1), 0U);
+  ASSERT_TRUE(pacing.accept(10, 1, 1.005));
+  EXPECT_EQ(pacing.queued(1.005), 9U);
+  EXPECT_EQ(pacing.queued(1.03), 4U);
+  ASSERT_TRUE(pacing.accept(6, 1.031, 1.036));
+  EXPECT_EQ(pacing.queued(1.05), 6U);
+  EXPECT_EQ(pacing.queued(1.08), 0U);
+  EXPECT_FALSE(pacing.accept(10, 1.10, 1.105));
+  pacing.reset();
+  EXPECT_TRUE(pacing.accept(10, 2, 2.005));
+}
+
+TEST(TcpCanPacing, SlowSendOrInvalidTimesNeverProduceCatchUpCredit)
+{
+  av::TcpCanPacing pacing;
+  EXPECT_FALSE(pacing.accept(10, 1, 1.2));
+  EXPECT_FALSE(pacing.initialized());
+  EXPECT_FALSE(pacing.accept(0, 1, 1.001));
+  EXPECT_FALSE(pacing.accept(11, 1, 1.001));
+  EXPECT_FALSE(pacing.accept(10, 1, 0.9));
+  EXPECT_FALSE(pacing.accept(10, NAN, 1));
+  EXPECT_FALSE(pacing.accept(10, 1, NAN));
+  ASSERT_TRUE(pacing.accept(10, 2, 2.005));
+  EXPECT_FALSE(pacing.accept(6, 2.049, 2.055));
+}
+
+TEST(TcpCanPacing, LongRunWithFiveMillisecondRepliesKeepsBoundedReserveWithoutDrift)
+{
+  av::TcpCanPacing pacing;
+  double now = 10.0;
+  ASSERT_TRUE(pacing.accept(10, now, now + 0.005));
+  unsigned sent = 10;
+  // Explicit time-arithmetic regression, not robot simulation. A slow
+  // diagnostic worker does not participate in the sender clock at all.
+  for (unsigned i = 0; i < 10000; ++i) {
+    now += 0.01;
+    const unsigned left = pacing.queued(now);
+    ASSERT_GT(left, 0U);
+    ASSERT_LE(left, 10U);
+    if (left <= 4) {
+      ASSERT_TRUE(pacing.accept(10 - left, now + 0.001, now + 0.006));
+      sent += 10 - left;
+    }
+  }
+  EXPECT_NEAR(sent * 0.005 - (now - 10.0), 0.04, 0.015);
+}
+
 TEST(TcpCanDrag, DirectionChangesRespectJointAccelerationWithoutPositionReset)
 {
   av::TcpCanDragSession session;

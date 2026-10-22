@@ -63,17 +63,31 @@ struct StepwiseTransport::Impl
   bool joint_profile_cached{false};
   std::atomic<bool> invalidate_follow_profile{true};
   std::unique_ptr<TcpCanDragSession> tcp_can;
+  TcpCanPacing tcp_can_pacing;  // Accessed only by the serialized sender/stop path.
+  bool tcp_can_entry_buffer_checked{false};
 
-  TcpCanIo tcp_can_io()
+  TcpCanIo tcp_can_io(bool confirmed_buffer = false)
   {
     TcpCanIo io;
     io.enter = [this]() {return send->robotServiceEnterTcp2CanbusMode();};
     io.leave = [this]() {return send->robotServiceLeaveTcp2CanbusMode();};
-    io.queued_points = [this](unsigned & points) {
+    io.queued_points = [this, confirmed_buffer](unsigned & points) {
+        if (!confirmed_buffer && tcp_can_entry_buffer_checked) {
+          points = tcp_can_pacing.queued(steady_seconds());
+          if (points == 0) {tcp_can_pacing.reset();}
+          return true;
+        }
         vendor::RobotDiagnosis diagnosis{};
-        if (send->robotServiceGetRobotDiagnosisInfo(diagnosis) != 0 ||
+        const double started = steady_seconds();
+        const int code = send->robotServiceGetRobotDiagnosisInfo(diagnosis);
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          latest.tcp_can_buffer_query_duration_s = steady_seconds() - started;
+        }
+        if (code != 0 ||
           diagnosis.macTargetPosDataSize % 6 != 0) {return false;}
         points = static_cast<unsigned>(diagnosis.macTargetPosDataSize / 6);
+        if (!confirmed_buffer && points == 0) {tcp_can_entry_buffer_checked = true;}
         return true;
       };
     io.forward = [this](const std::array<double, 6> & joints, StreamPose & pose) {
@@ -107,9 +121,15 @@ struct StepwiseTransport::Impl
           std::copy(points[i].begin(), points[i].end(), batch[i].jointpos);
         }
         const double started = steady_seconds();
+        if (tcp_can_pacing.initialized() && tcp_can_pacing.queued(started) == 0) {
+          return -7101;  // Planning missed the deadline: never send a late catch-up batch.
+        }
         const int code = send->robotServiceSetRobotPosData2Canbus(batch);
+        const double finished = steady_seconds();
+        const bool timely = code != 0 || tcp_can_pacing.accept(
+          static_cast<unsigned>(points.size()), started, finished);
         std::lock_guard<std::mutex> lock(mutex);
-        latest.tcp_can_send_duration_s = steady_seconds() - started;
+        latest.tcp_can_send_duration_s = finished - started;
         latest.motion_call_duration_s = latest.tcp_can_send_duration_s;
         latest.maximum_motion_call_duration_s = std::max(
           latest.maximum_motion_call_duration_s,
@@ -120,7 +140,9 @@ struct StepwiseTransport::Impl
           latest.maximum_dispatch_interval_s,
           latest.dispatch_interval_s);
         previous_dispatch_at = started;
-        return code;
+        // An accepted batch with an expired deadline is still ambiguous motion,
+        // not a retryable failure. The existing stop/leave path owns recovery.
+        return timely ? code : -7102;
       };
     return io;
   }
@@ -152,7 +174,7 @@ struct StepwiseTransport::Impl
                drag_intent->epoch == epoch && time >= drag_intent->received_at &&
                time - drag_intent->received_at <= options.drag_intent_timeout_s &&
                time - latest.feedback.received_at <= options.feedback_timeout_s &&
-               pose_valid && latest.diagnosis_ok && state_valid &&
+               pose_valid && latest.diagnosis_ok && state_valid && !latest.tcp_can_fault &&
                (!options.adaptive_follow_ik || latest.kinematics_verified);
       };
     const double started = steady_seconds();
@@ -167,11 +189,11 @@ struct StepwiseTransport::Impl
     {
       std::lock_guard<std::mutex> lock(mutex);
       latest.tcp_can_active = tcp_can->active();
-      latest.tcp_can_fault = tcp_can->faulted();
+      if (!latest.tcp_can_fault) {latest.tcp_can_status = accepted.detail;}
+      latest.tcp_can_fault = latest.tcp_can_fault || tcp_can->faulted();
       latest.tcp_can_batches = tcp_can->batches();
       latest.tcp_can_points = tcp_can->points();
       latest.tcp_can_queued_points = accepted.queued_points;
-      latest.tcp_can_status = accepted.detail;
       latest.last_command_id = current.command.id;
       latest.requested_speed_mps = std::hypot(velocity[0], velocity[1], velocity[2]);
       latest.tcp_can_cycle_duration_s = steady_seconds() - started;
@@ -183,7 +205,11 @@ struct StepwiseTransport::Impl
   bool leave_tcp_can_after_stop()
   {
     if (!tcp_can) {return true;}
-    const bool left = tcp_can->leave_after_stop(tcp_can_io());
+    const bool left = tcp_can->leave_after_stop(tcp_can_io(true));
+    if (left) {
+      tcp_can_pacing.reset();
+      tcp_can_entry_buffer_checked = false;
+    }
     std::lock_guard<std::mutex> lock(mutex);
     latest.tcp_can_active = tcp_can->active();
     latest.tcp_can_fault = tcp_can->faulted();
@@ -981,9 +1007,11 @@ struct StepwiseTransport::Impl
     while (!shutdown) {
       // Yield normal queries to a queued motion; never block the ROS executor.
       bool streaming;
+      std::uint64_t streaming_epoch;
       {
         std::lock_guard<std::mutex> lock(mutex);
         streaming = latest.tcp_can_active;
+        streaming_epoch = allowed_epoch;
       }
       std::unique_lock<std::mutex> request_lock(request_mutex, std::defer_lock);
       if (!streaming) {request_lock.try_lock();}
@@ -1035,6 +1063,17 @@ struct StepwiseTransport::Impl
         latest.diagnosis_result = diagnosis_rc;
         if (diagnosis_rc == vendor::ErrCode_RequestTimeout) {++latest.diagnosis_read_timeouts;}
         if (diagnosis_rc == vendor::ErrnoSucc) {latest.diagnosis_at = diagnosis_time;}
+        if (streaming && latest.tcp_can_active && allowed_epoch == streaming_epoch &&
+          diagnosis_rc == vendor::ErrnoSucc)
+        {
+          latest.tcp_can_observed_buffer_values = raw.macTargetPosDataSize;
+          // Real controller occupancy remains independently supervised. This
+          // value is not replaced by the sender's time-based pacing estimate.
+          if (raw.macTargetPosDataSize > 72 || raw.macTargetPosDataSize % 6 != 0) {
+            latest.tcp_can_fault = true;
+            latest.tcp_can_status = "TCP2CAN observed buffer inconsistent with bounded feeder";
+          }
+        }
         latest.error = good ? std::string{} : "telemetry unavailable or unhealthy: " + reason;
         if (!good) {
           latest.last_telemetry_failure = latest.error + " diagnosis_rc=" +

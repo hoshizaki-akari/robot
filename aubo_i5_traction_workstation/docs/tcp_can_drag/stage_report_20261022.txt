@@ -1,0 +1,42 @@
+===== TCP2CAN FEEDER FAULT =====
+Evidence:
+The supplied session_1792586527443_full_log.zip is the previously supplied
+FollowMode session, not a new TCP2CAN failure export.
+New local sessions 1792589003328 and 1792589012165 both entered FAULT.
+robot.log: TCP2CAN moving buffer underrun; stop required.
+First accepted batches: 10 points, nominal 50 ms.
+SDK batch send: 5.251 / 5.413 ms.
+Subsequent feeder cycle: 226.969 / 110.039 ms; buffer became empty.
+Real waypoint intervals near failure: approximately 28 / 34 ms.
+
+Cause and change:
+A synchronous GetRobotDiagnosisInfo network request was in every refill.
+SDK binary inspection confirms diagnosis is an RPC; FK/IK use local RobotUtil.
+Refill no longer waits for a diagnostic RPC during a stream or zero-force idle.
+Entry and post-stop leave still require a real empty-buffer query.
+Sender pacing uses SDK-accepted points at nominal 5 ms, anchored to send start,
+not ACK time. It is explicitly an estimate, not measured buffer occupancy.
+Independent real diagnosis remains active; inconsistent/oversized observed
+buffer is latched, not overwritten by a concurrent successful send.
+Missed send deadlines still require stop; no stale catch-up or timeout resend.
+No speed/force/position limits were enlarged. FR5 checkout unchanged.
+
+Validation:
+Offline build and driver tests: 203 reports, 0 errors, 0 failures, 20 skipped.
+Includes blocked-diagnosis/refill regression, 100-second deterministic pacing
+arithmetic, ACK-delay drift, deadline miss, stop/leave and default backend tests.
+Blocked-diagnosis/refill regression repeated 10 times: all passed.
+Workstation Python checks: 68 passed; lint checks passed.
+These are SDK doubles and arithmetic tests, NOT hardware verification.
+
+Run:
+bash start_workstation.sh --tcp-can-drag
+Default backend remains unchanged: bash start_workstation.sh
+
+Status: WAITING_HARDWARE_CHECKPOINT
+Workstation was stopped when inspected. No controller connection or motion
+was initiated for this repair. Physical acceptance must confirm continuous
+X/Y/Z and diagonal drag, reversal, release and real queue/query/send timings.
+Nominal 200 Hz controller consumption remains an experimental-backend
+assumption; offline timing tests cannot establish actual firmware timing.
+Reference: https://github.com/AuboRobot/aubo_robot/blob/Noetic/aubo_robot/aubo_driver/src/aubo_driver.cpp

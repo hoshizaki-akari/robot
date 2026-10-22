@@ -32,6 +32,28 @@ bool valid(const StreamPose & p)
 }
 }
 
+unsigned TcpCanPacing::queued(double now) const
+{
+  if (!initialized_ || !std::isfinite(now) || now >= deadline_) {return 0;}
+  const double remaining = std::ceil((deadline_ - now) / 0.005 - 1e-9);
+  // Reject a regressed/unrepresentable caller clock in the core's existing
+  // oversized-buffer check rather than narrowing an unbounded double.
+  return remaining > 10 ? 11U : static_cast<unsigned>(remaining);
+}
+
+bool TcpCanPacing::accept(unsigned count, double started, double finished)
+{
+  if (count == 0 || count > 10 || !std::isfinite(started) || !std::isfinite(finished) ||
+    finished < started || (initialized_ && finished >= deadline_)) {return false;}
+  // Start, not ACK time: otherwise each 5 ms SDK reply would silently add
+  // another 5 ms of imagined reserve and eventually cause an actual underrun.
+  const double next = (initialized_ ? deadline_ : started) + count * 0.005;
+  if (finished >= next) {return false;}
+  deadline_ = next;
+  initialized_ = true;
+  return true;
+}
+
 TcpCanDragSession::TcpCanDragSession(TcpCanConfig config)
 : config_(config)
 {
@@ -181,6 +203,9 @@ TcpCanResult TcpCanDragSession::update(
     if (!authorized()) {return fail("TCP2CAN revoked before send");}
     const int code = io.send(batch);
     if (code != 0) {
+      if (code == -7101 || code == -7102) {
+        return fail("TCP2CAN feeder missed timing deadline; stop required, no catch-up resend");
+      }
       return fail("TCP2CAN send result " + std::to_string(code) + "; batch will not be resent");
     }
     // Commit the tail only after SDK acceptance. An ambiguous timeout is latched,

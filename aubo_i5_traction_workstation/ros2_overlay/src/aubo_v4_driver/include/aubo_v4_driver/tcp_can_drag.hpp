@@ -8,6 +8,22 @@
 
 namespace aubo_v4_driver
 {
+// Sender-local pacing ledger, NOT a measurement of controller occupancy or
+// physical arrival. Only SDK-accepted 5 ms points extend the deadline. Slow
+// diagnostic RPCs must never run between short-buffer replenishments.
+class TcpCanPacing
+{
+public:
+  bool initialized() const {return initialized_;}
+  unsigned queued(double now) const;
+  bool accept(unsigned count, double started, double finished);
+  void reset() {initialized_ = false; deadline_ = 0.0;}
+
+private:
+  bool initialized_{false};
+  double deadline_{0.0};
+};
+
 struct StreamPose
 {
   std::array<double, 6> joints{};

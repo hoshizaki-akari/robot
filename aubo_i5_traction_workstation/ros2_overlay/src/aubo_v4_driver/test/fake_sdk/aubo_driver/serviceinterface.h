@@ -29,6 +29,8 @@ namespace aubo_v4_test_sdk
     int line_move_completed_count {0};
     int stop_count {0};
     int diagnosis_count {0};
+    bool block_diagnosis {false}, release_diagnosis {false};
+    bool block_diagnosis_after_tcp_batch {false};
     double profile_speed {0.0}, profile_acceleration {0.0};
     bool bad_profile_readback {false};
     bool block_profile {false}, profile_entered {false}, release_profile {false};
@@ -93,6 +95,8 @@ namespace aubo_v4_test_sdk
       line_move_completed_count = 0;
       stop_count = 0;
       diagnosis_count = 0;
+      block_diagnosis = release_diagnosis = false;
+      block_diagnosis_after_tcp_batch = false;
       profile_speed = profile_acceleration = 0.0;
       bad_profile_readback = false;
       block_profile = profile_entered = release_profile = false;
@@ -451,6 +455,7 @@ public:
       State & s = state();
       std::lock_guard < std::mutex > lock(s.mutex);
       ++s.tcp_batch_count;
+      if (s.block_diagnosis_after_tcp_batch) {s.block_diagnosis = true;}
       if (s.tcp_send_result == 0) {
         s.diagnosis.macTargetPosDataSize = static_cast <
           decltype(s.diagnosis.macTargetPosDataSize) > (
@@ -574,7 +579,8 @@ public:
     int robotServiceGetRobotDiagnosisInfo(aubo_robot_namespace::RobotDiagnosis & value)
     {
       State & s = state();
-      std::lock_guard < std::mutex > lock(s.mutex);
+      std::unique_lock < std::mutex > lock(s.mutex);
+      s.changed.wait(lock, [&s]() {return !s.block_diagnosis || s.release_diagnosis;});
       value = s.diagnosis;
       ++s.diagnosis_count;
       s.notify("diagnosis");
