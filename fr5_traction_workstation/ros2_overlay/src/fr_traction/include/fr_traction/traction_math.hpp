@@ -93,11 +93,11 @@ enum class PositionControlPhase : unsigned char
 
 struct PositionControlConfig
 {
-  double tolerance_n = 0.20;
+  double tolerance_n = 2.5;
   double maximum_speed_mps = 0.020;
   double far_gain_mps_per_n = 0.0060;
   double near_gain_mps_per_n = 0.0045;
-  double near_window_n = 2.0;
+  double near_window_n = 5.0;
   double prediction_horizon_s = 0.15;
   double prediction_limit_n = 2.0;
   double force_rate_cutoff_hz = 2.0;

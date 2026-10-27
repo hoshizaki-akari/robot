@@ -7,14 +7,16 @@ import asyncio
 import csv
 import io
 import json
+import math
 import os
 import signal
 import tempfile
 import threading
 import time
 import zipfile
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from typing import Literal
 from urllib.parse import unquote
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -41,21 +43,20 @@ SETTINGS_PATH = Path(
     )
 ).expanduser()
 SETTINGS_LOCK = threading.Lock()
+SETTINGS_UPDATE_LOCK = threading.Lock()
 DEFAULT_SETTINGS = {"traction_force_limit_n": 100.0}
 bridge = RosBridge()
 
 OPERATION_NAMES = {
-    "/api/traction/prepare": "初始校准",
-    "/api/traction/calibrate-direction": "方向确定",
+    "/api/traction/prepare": "重新校准",
     "/api/traction/target": "设置目标力",
     "/api/traction/mode": "切换工作模式",
     "/api/traction/start": "开始牵引",
-    "/api/traction/stop": "结束牵引",
+    "/api/traction/stop": "结束任务",
+    "/api/traction/unload": "卸力",
     "/api/traction/emergency-stop": "急停",
     "/api/traction/emergency-recover": "急停恢复",
     "/api/traction/reset-fault": "故障复位",
-    "/api/traction/set-zero": "设置当前位置为零位",
-    "/api/traction/return-zero": "回零",
     "/api/settings": "保存参数",
     "/api/system/shutdown": "关闭程序",
 }
@@ -68,10 +69,12 @@ def _read_settings() -> dict[str, float]:
         except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError):
             return dict(DEFAULT_SETTINGS)
     try:
-        limit = float(raw.get("traction_force_limit_n", 100.0))
+        limit = float(raw.get("traction_force_limit_n", 100.0)) if isinstance(raw, dict) else 100.0
     except (TypeError, ValueError):
         limit = 100.0
-    return {"traction_force_limit_n": min(100.0, max(1.0, limit))}
+    if not math.isfinite(limit):
+        limit = 100.0
+    return {"traction_force_limit_n": max(1.0, limit)}
 
 
 def _write_settings(settings: dict[str, float]) -> None:
@@ -160,12 +163,40 @@ def _operations_in_session(summary: dict, operations: list[dict]) -> list[dict]:
     ]
 
 
+def _apply_persisted_force_limit() -> None:
+    with SETTINGS_UPDATE_LOCK:
+        traction = bridge.snapshot().get("traction", {})
+        reported_limit = traction.get("target_force_max_n")
+        if not traction.get("connected") or reported_limit is None:
+            return
+        desired_limit = _read_settings()["traction_force_limit_n"]
+        if reported_limit != desired_limit:
+            bridge.set_target_force_limit(desired_limit)
+
+
+async def _sync_startup_settings() -> None:
+    # A ROS manager can restart while the web server stays open. Compare its
+    # fresh reported range with the persisted setting throughout this process;
+    # matching states and disconnected managers receive no parameter writes.
+    # This task only synchronizes a parameter and never performs calibration.
+    while True:
+        try:
+            await asyncio.to_thread(_apply_persisted_force_limit)
+        except RosBridgeError:
+            pass
+        await asyncio.sleep(2.0)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     bridge.start()
+    settings_sync = asyncio.create_task(_sync_startup_settings())
     try:
         yield
     finally:
+        settings_sync.cancel()
+        with suppress(asyncio.CancelledError):
+            await settings_sync
         bridge.stop()
 
 
@@ -193,15 +224,15 @@ async def record_operation(request: Request, call_next):
 
 
 class TargetRequest(BaseModel):
-    target_force_n: float = Field(ge=1.0, le=100.0)
+    target_force_n: float = Field(ge=1.0, allow_inf_nan=False)
 
 
 class SettingsRequest(BaseModel):
-    traction_force_limit_n: float = Field(ge=1.0, le=100.0)
+    traction_force_limit_n: float = Field(ge=1.0, allow_inf_nan=False)
 
 
 class OperationModeRequest(BaseModel):
-    mode: int = Field(ge=0, le=2)
+    mode: Literal[1, 2, 3]
 
 
 @app.get("/")
@@ -233,7 +264,12 @@ def get_settings() -> dict:
 @app.post("/api/settings")
 def save_settings(request: SettingsRequest) -> dict:
     settings = {"traction_force_limit_n": float(request.traction_force_limit_n)}
-    _write_settings(settings)
+    with SETTINGS_UPDATE_LOCK:
+        try:
+            bridge.set_target_force_limit(settings["traction_force_limit_n"])
+        except RosBridgeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        _write_settings(settings)
     return settings
 
 
@@ -284,11 +320,6 @@ def prepare() -> dict:
     return _call("prepare")
 
 
-@app.post("/api/traction/calibrate-direction")
-def calibrate_direction() -> dict:
-    return _call("calibrate_direction")
-
-
 @app.post("/api/traction/target")
 def set_target(request: TargetRequest) -> dict:
     configured_limit = _read_settings()["traction_force_limit_n"]
@@ -316,6 +347,11 @@ def start() -> dict:
 @app.post("/api/traction/stop")
 def stop() -> dict:
     return _call("stop")
+
+
+@app.post("/api/traction/unload")
+def unload() -> dict:
+    return _call("unload")
 
 
 @app.post("/api/traction/emergency-stop")
@@ -355,22 +391,6 @@ def emergency_recover() -> dict:
 @app.post("/api/traction/reset-fault")
 def reset_fault() -> dict:
     return _call("reset_fault")
-
-
-@app.post("/api/traction/set-zero")
-def set_zero(request: Request) -> dict:
-    role = unquote(request.headers.get("x-role", ""))
-    if role != "管理员":
-        raise HTTPException(status_code=403, detail="仅管理员可以设置零位")
-    state = bridge.snapshot().get("traction", {}).get("state")
-    if state not in (1, 2, 5, 8):
-        raise HTTPException(status_code=409, detail="请先停止机械臂，再设置当前位置为零位")
-    return _call("set_zero_pose")
-
-
-@app.post("/api/traction/return-zero")
-def return_zero() -> dict:
-    return _call("return_zero_pose")
 
 
 @app.post("/api/traction/heartbeat")

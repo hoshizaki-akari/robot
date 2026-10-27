@@ -34,9 +34,22 @@ bool can_transition(TractionState from, TractionState to)
   if (to == TractionState::EMERGENCY_STOP && from != TractionState::EMERGENCY_STOP) {
     return true;
   }
-  if ((is_motion_state(from) || from == TractionState::MANUAL_SETUP ||
-    from == TractionState::CALIBRATING || from == TractionState::DIRECTION_LOCKED) &&
+  if (from != TractionState::FAULT && from != TractionState::EMERGENCY_STOP &&
     to == TractionState::FAULT)
+  {
+    return true;
+  }
+  if (to == TractionState::RELEASING &&
+    (from == TractionState::READY || from == TractionState::MANUAL_SETUP ||
+    from == TractionState::DIRECTION_LOCKED || from == TractionState::TRACTION ||
+    from == TractionState::POSITION_HOLD || from == TractionState::DRAGGING ||
+    from == TractionState::COMPLETED))
+  {
+    return true;
+  }
+  if (to == TractionState::COMPLETED &&
+    (from == TractionState::MANUAL_SETUP || from == TractionState::DIRECTION_LOCKED ||
+    from == TractionState::PRETENSION))
   {
     return true;
   }
@@ -48,13 +61,16 @@ bool can_transition(TractionState from, TractionState to)
   switch (from) {
     case TractionState::INITIALIZING: return to == TractionState::READY;
     case TractionState::READY:
-      return to == TractionState::MANUAL_SETUP || to == TractionState::DRAGGING;
+      return to == TractionState::MANUAL_SETUP || to == TractionState::DRAGGING ||
+             to == TractionState::DIRECTION_LOCKED || to == TractionState::PRETENSION;
     // Manual teach-pendant setup can lock a direction directly from the
     // measured force; the legacy automatic pretension path remains available.
     case TractionState::MANUAL_SETUP:
       return to == TractionState::PRETENSION || to == TractionState::CALIBRATING ||
-             to == TractionState::READY || to == TractionState::DRAGGING;
-    case TractionState::PRETENSION: return to == TractionState::CALIBRATING;
+             to == TractionState::READY || to == TractionState::DRAGGING ||
+             to == TractionState::DIRECTION_LOCKED;
+    case TractionState::PRETENSION:
+      return to == TractionState::CALIBRATING || to == TractionState::DIRECTION_LOCKED;
     case TractionState::CALIBRATING:
       return to == TractionState::DIRECTION_LOCKED || to == TractionState::MANUAL_SETUP;
     case TractionState::DIRECTION_LOCKED:

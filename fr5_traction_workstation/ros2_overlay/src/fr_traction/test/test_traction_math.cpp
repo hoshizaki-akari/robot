@@ -151,7 +151,7 @@ TEST(TractionMath, PositionControllerApproachesAndSettlesWithoutRepeatedOvershoo
     if (sign != 0 && previous_sign != 0 && sign != previous_sign) {++velocity_reversals;}
     if (sign != 0) {previous_sign = sign;}
     if (result.phase == PositionControlPhase::SETTLING &&
-      std::abs(force_n - target_force) <= 0.20)
+      std::abs(force_n - target_force) <= 2.5)
     {
       settling_elapsed_s += dt;
     } else {
@@ -161,7 +161,7 @@ TEST(TractionMath, PositionControllerApproachesAndSettlesWithoutRepeatedOvershoo
 
   EXPECT_LE(maximum_force_n, 10.5);
   EXPECT_LE(velocity_reversals, 1);
-  EXPECT_NEAR(force_n, target_force, 0.20);
+  EXPECT_NEAR(force_n, target_force, 2.5);
   EXPECT_GE(settling_elapsed_s, 0.50);
 }
 
@@ -187,7 +187,7 @@ TEST(TractionMath, PositionControllerReacquiresMovingTargetThenHoldsStable)
     actuator_velocity_mps += (result.velocity_mps - actuator_velocity_mps) * dt / 0.06;
     robot_position_m += actuator_velocity_mps * dt;
     if (time_s >= 6.0 && result.phase == PositionControlPhase::SETTLING &&
-      std::abs(force_n - target_force) <= 0.20)
+      std::abs(force_n - target_force) <= 2.5)
     {
       settling_elapsed_s += dt;
     } else if (time_s >= 6.0) {
@@ -195,7 +195,7 @@ TEST(TractionMath, PositionControllerReacquiresMovingTargetThenHoldsStable)
     }
   }
 
-  EXPECT_NEAR(force_n, target_force, 0.20);
+  EXPECT_NEAR(force_n, target_force, 2.5);
   EXPECT_GE(settling_elapsed_s, 0.50);
 }
 
@@ -223,6 +223,25 @@ TEST(TractionMath, PositionControllerDoesNotSettleWithResidualVelocity)
   EXPECT_LT(settling_wait_steps, 200);
 }
 
+TEST(TractionMath, PositionControllerAcceptsTwoPointFiveNewtonBand)
+{
+  PositionTractionController controller;
+  for (double force_n : {7.5, 10.0, 12.5}) {
+    controller.reset();
+    EXPECT_TRUE(controller.update(10.0, force_n, 0.01).valid);
+    const auto output = controller.update(10.0, force_n, 0.01);
+    ASSERT_TRUE(output.valid);
+    EXPECT_EQ(output.phase, PositionControlPhase::SETTLING);
+    EXPECT_DOUBLE_EQ(output.velocity_mps, 0.0);
+  }
+  controller.reset();
+  controller.update(10.0, 7.4, 0.01);
+  EXPECT_GT(controller.update(10.0, 7.4, 0.01).velocity_mps, 0.0);
+  controller.reset();
+  controller.update(10.0, 12.6, 0.01);
+  EXPECT_LT(controller.update(10.0, 12.6, 0.01).velocity_mps, 0.0);
+}
+
 TEST(TractionMath, PositionControllerSettlesFifteenNewtonsWithinFiveSeconds)
 {
   PositionTractionController controller;
@@ -245,7 +264,7 @@ TEST(TractionMath, PositionControllerSettlesFifteenNewtonsWithinFiveSeconds)
     position_m += actuator_velocity_mps * dt;
     maximum_force_n = std::max(maximum_force_n, measured_force_n);
     if (result.phase == PositionControlPhase::SETTLING &&
-      std::abs(measured_force_n - target_force) <= 0.20)
+      std::abs(measured_force_n - target_force) <= 2.5)
     {
       stable_elapsed_s += dt;
       if (stable_elapsed_s >= 0.50 && reached_at_s > 99.0) {reached_at_s = time_s;}

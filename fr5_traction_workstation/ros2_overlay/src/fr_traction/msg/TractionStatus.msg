@@ -17,12 +17,17 @@ uint8 POSITION_HOLD=12
 uint8 CONSTANT_FORCE=0
 uint8 POSITION_TRACTION=1
 uint8 ASSISTED_DRAG=2
+uint8 UNLOADING=3
 
 uint8 state
 uint8 operation_mode
 bool position_reached
 bool ready
+bool calibrated
+bool direction_available
+bool direction_locked
 float64 target_force_n
+float64 target_force_max_n
 float64 actual_force_n
 float64 lateral_force_n
 float64 fx

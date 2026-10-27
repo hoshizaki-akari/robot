@@ -11,14 +11,13 @@ const permissions = {
 
 let sessionUser = null;
 const TARGET_FORCE_MIN = 1;
-const TARGET_FORCE_ABSOLUTE_MAX = 100;
 let tractionForceLimit = 100;
 let currentForce = 10;
 let confirmedForce = 10;
 let targetUpdatePending = false;
 let queuedTarget = null;
 let targetUpdateTimer = null;
-let operationMode = 0;
+let operationMode = 2;
 let actualForce = 0;
 let activeRecord = null;
 let timerHandle = null;
@@ -27,43 +26,46 @@ let stateSocket = null;
 let reconnectHandle = null;
 let lastStateAt = 0;
 let dataOnline = false;
+let calibrated = false;
+let directionAvailable = false;
 let directionLocked = false;
 let tractionState = 0;
-let previousDirectionTrackState = 4;
 let pendingStart = false;
 let finishRequested = false;
 let emergencyPending = false;
-const MODE_LABELS = { 0: '恒力牵引', 1: '位置牵引', 2: '省力拖拽' };
+let unloadPending = false;
+const MODE_LABELS = { 0: '恒力牵引（历史）', 1: '目标牵引', 2: '省力拖拽', 3: '卸力' };
+const ACTIVE_STATES = [3, 6, 7, 11, 12];
+const IDLE_STATES = [1, 2, 5, 8];
 
 const TRACTION_STATE_LABELS = {
   0: '连接中',
-  1: '未初始化',
-  2: '未初始化',
-  3: '未初始化',
-  4: '未初始化',
+  1: '等待校准',
+  2: '准备就绪',
+  3: '正在获取方向',
+  4: '正在校准',
   5: '牵引停止',
   6: '牵引中',
-  7: '正在结束',
+  7: '卸力中',
   8: '牵引停止',
   9: '故障',
   10: '已急停',
   11: '拖拽中',
-  12: '已到位'
+  12: '已到达'
 };
 const ACTION_SUCCESS_MESSAGES = {
-  '/api/traction/prepare': '初始校准完成',
-  '/api/traction/calibrate-direction': '方向已确定',
+  '/api/traction/prepare': '重新校准完成',
   '/api/traction/start': '开始牵引',
-  '/api/traction/stop': '正在结束牵引',
+  '/api/traction/stop': '正在结束任务',
+  '/api/traction/unload': '开始卸力',
   '/api/traction/emergency-stop': '已急停',
-  '/api/traction/emergency-recover': '急停已恢复',
-  '/api/traction/set-zero': '当前位置已设为零位',
-  '/api/traction/return-zero': '正在回零'
+  '/api/traction/emergency-recover': '急停已恢复'
 };
 const REASON_LABELS = {
   WRENCH_TIMEOUT: '力数据超时',
   EE_STATE_TIMEOUT: '位置数据超时',
   ROS2_CONTROL_ERROR: '运动控制异常',
+  CARTESIAN_STOP_FAILED: '伺服停止未确认，请检查控制器后恢复',
   CALIBRATION_TOO_FEW_SAMPLES: '方向数据不足',
   LATERAL_FORCE_LIMIT: '横向力过大',
   LATERAL_FORCE: '横向力过大',
@@ -71,8 +73,18 @@ const REASON_LABELS = {
   NORMAL_RELEASE_COMPLETED: '已正常结束',
   CONSTANT_FORCE_STOPPED: '恒力牵引已结束',
   DRAG_COMPLETED: '拖拽已完成',
-  POSITION_TRACTION_COMPLETED: '位置牵引已完成',
-  POSITION_TRACTION_STOPPED: '位置牵引已结束'
+  POSITION_TRACTION_COMPLETED: '目标牵引已完成',
+  POSITION_TRACTION_STOPPED: '目标牵引已结束',
+  UNLOAD_COMPLETED: '卸力完成',
+  UNLOAD_BELOW_5N: '卸力完成',
+  UNLOAD_TIMEOUT: '卸力超时已停止',
+  TARGET_TRACTION_STOPPED: '目标牵引已结束',
+  SWITCHED_TO_UNLOADING: '已切换卸力',
+  DIRECTION_SEARCH_NO_FORCE: '未检测到有效受力，请调整绳带后重试',
+  DIRECTION_SEARCH_CANCELLED: '已取消方向获取',
+  DIRECTION_SEARCH_FEEDBACK_INTERRUPTED: '方向获取因反馈中断而停止',
+  UNLOAD_STOPPED: '卸力已结束',
+  DIRECTION_SEARCH_EXHAUSTED: '未检测到有效受力，请调整绳带后重试'
 };
 
 const $ = id => document.getElementById(id);
@@ -97,7 +109,9 @@ function simpleErrorMessage(error) {
   const text = String(error?.message || '');
   if (/target|目标牵引力|1 N and 100|1～100/i.test(text)) return `目标牵引力需在1～${tractionForceLimit}N`;
   if (/mode|模式/i.test(text)) return '当前状态不能切换模式';
-  if (/direction|calibrat/i.test(text)) return '请先完成方向确认';
+  if (/direction/i.test(text)) return '暂无有效方向，请选择目标牵引开始获取方向';
+  if (/calibrat/i.test(text)) return '自动校准尚未完成，请检查设备状态';
+  if (/unload|release/i.test(text)) return '卸力需已有有效方向且当前受力至少5N';
   if (/state|rejected|not available|unavailable|不可用/i.test(text)) return '当前状态不能执行';
   return /[一-鿿]/.test(text) ? text : '操作失败，请检查设备';
 }
@@ -144,45 +158,48 @@ function login() {
   toast('登录成功');
 }
 
+function motionStateActive() {
+  return ACTIVE_STATES.includes(tractionState) || (tractionState === 5 && directionLocked);
+}
+
+function canUnload() {
+  return calibrated && directionAvailable && actualForce >= 5 &&
+    [1, 2, 5, 6, 8, 11, 12].includes(tractionState) && !pendingStart && !unloadPending;
+}
+
 function applyPermissions() {
   if (!sessionUser) return;
   const permission = permissions[sessionUser.role];
   $('currentUser').textContent = sessionUser.name;
   $('currentRole').textContent = sessionUser.role;
-  const motionActive = [6, 7, 11, 12].includes(tractionState) || pendingStart;
-  const liveTractionAdjustment =
-    (operationMode === 0 && tractionState === 6) ||
-    (operationMode === 1 && [6, 12].includes(tractionState));
-  $('settingsBtn').disabled = !permission.settings || motionActive;
-  $('targetForceVal').disabled = !permission.adjust || operationMode === 2 ||
+  const motionActive = motionStateActive() || pendingStart || unloadPending;
+  const liveTractionAdjustment = operationMode === 1 && [6, 12].includes(tractionState);
+  $('settingsBtn').disabled = !permission.settings || !dataOnline || motionActive;
+  $('targetForceVal').disabled = !permission.adjust || operationMode !== 1 ||
     (motionActive && !liveTractionAdjustment);
-  const startStateReady = operationMode === 2 ? tractionState === 2 : tractionState === 5;
+  const startStateReady = calibrated && !directionLocked && IDLE_STATES.includes(tractionState) &&
+    (operationMode !== 3 || canUnload());
   $('startBtn').disabled = !permission.operate || !startStateReady || !dataOnline || pendingStart;
-  $('stopBtn').disabled = !permission.operate || ![6, 11, 12].includes(tractionState) || !dataOnline;
-  if ($('prepareBtn')) $('prepareBtn').disabled = !permission.operate || !dataOnline || ![1, 2, 5, 8, 9].includes(tractionState);
-  if ($('calibrateBtn')) $('calibrateBtn').disabled = !permission.operate || !dataOnline || operationMode === 2 || tractionState !== 2;
-  const showDirectionAction = operationMode !== 2 && tractionState === 2;
-  $('prepareBtn').classList.toggle('slot-hidden', showDirectionAction);
-  $('calibrateBtn').classList.toggle('slot-hidden', !showDirectionAction);
-  const showStopAction = [6, 7, 11, 12].includes(tractionState);
+  $('stopBtn').disabled = !permission.operate || !motionStateActive() || !dataOnline;
+  $('prepareBtn').disabled = !permission.operate || !dataOnline || motionActive ||
+    !IDLE_STATES.includes(tractionState);
+  $('unloadBtn').disabled = !permission.operate || !dataOnline || !canUnload();
+  const showStopAction = motionStateActive() || pendingStart || unloadPending;
   $('startBtn').classList.toggle('slot-hidden', showStopAction);
   $('stopBtn').classList.toggle('slot-hidden', !showStopAction);
-  if ($('emergencyBtn')) {
-    const recovering = tractionState === 10;
-    $('emergencyBtn').disabled = !permission.operate || !dataOnline || emergencyPending;
-    $('emergencyLabel').textContent = recovering ? '急停恢复' : '急停';
-    $('emergencyBtn').classList.toggle('recover', recovering);
-  }
-  if ($('returnZeroBtn')) $('returnZeroBtn').disabled = !permission.operate || !dataOnline || motionActive || ![1, 2, 5, 8].includes(tractionState);
-  if ($('setZeroPoseBtn')) {
-    $('setZeroPoseBtn').disabled = sessionUser.role !== '管理员' || !dataOnline || motionActive || ![1, 2, 5, 8].includes(tractionState);
-  }
+  const recovering = tractionState === 10 || tractionState === 9;
+  $('emergencyBtn').disabled = !permission.operate || !dataOnline || emergencyPending;
+  $('emergencyLabel').textContent = tractionState === 9 ? '故障恢复' : (recovering ? '急停恢复' : '急停');
+  $('emergencyBtn').classList.toggle('recover', recovering);
   document.querySelectorAll('.mode-btn').forEach(button => {
-    button.disabled = !permission.operate || !dataOnline || motionActive || ![1, 2, 5, 8].includes(tractionState);
+    button.disabled = !permission.operate || !dataOnline || motionActive ||
+      !IDLE_STATES.includes(tractionState);
     button.classList.toggle('active', Number(button.dataset.mode) === operationMode);
   });
-  $('startLabel').textContent = operationMode === 2 ? '开始拖拽' : '开始牵引';
-  $('stopLabel').textContent = operationMode === 2 ? '结束拖拽' : '结束牵引';
+  $('startLabel').textContent = operationMode === 2 ? '开始拖拽' :
+    (operationMode === 3 ? '开始卸力' : '开始牵引');
+  $('stopLabel').textContent = tractionState === 7 ? '停止卸力' :
+    (operationMode === 2 ? '结束拖拽' : '结束牵引');
   $('recordsBtn').disabled = !permission.records;
 }
 
@@ -228,10 +245,7 @@ async function changeTarget(nextTarget) {
   if (!sessionUser || !permissions[sessionUser.role].adjust) {
     return toast('当前角色无权修改牵引参数');
   }
-  const liveUpdateAllowed = activeRecord && (
-    (operationMode === 0 && tractionState === 6) ||
-    (operationMode === 1 && [6, 12].includes(tractionState))
-  );
+  const liveUpdateAllowed = activeRecord && operationMode === 1 && [6, 12].includes(tractionState);
   if (activeRecord && !liveUpdateAllowed) return toast('当前模式运行中不能修改目标');
   const numericTarget = Number(nextTarget);
   if (!Number.isFinite(numericTarget) || numericTarget < TARGET_FORCE_MIN || numericTarget > tractionForceLimit) {
@@ -288,8 +302,9 @@ function queueSliderTarget(rawTarget, immediate = false) {
 }
 
 function applyForceLimit(limit) {
-  tractionForceLimit = Math.max(TARGET_FORCE_MIN,
-    Math.min(TARGET_FORCE_ABSOLUTE_MAX, Math.round(Number(limit) || 100)));
+  const numericLimit = Number(limit);
+  tractionForceLimit = Number.isFinite(numericLimit) && numericLimit >= TARGET_FORCE_MIN
+    ? Math.floor(numericLimit) : 100;
   if (currentForce > tractionForceLimit) currentForce = tractionForceLimit;
   updateForceDisplay();
 }
@@ -309,55 +324,63 @@ async function startTraction() {
   if (!sessionUser || !permissions[sessionUser.role].operate) return;
   if (pendingStart) return toast('正在等待控制器接管');
   if (!dataOnline) return toast('设备未连接');
-  if (operationMode === 2) {
-    if (tractionState !== 2) return toast('请先完成初始校准');
-    finishRequested = false;
-    pendingStart = true;
-    applyPermissions();
-    try {
-      await postJson('/api/traction/start');
-    } catch (error) {
-      pendingStart = false;
-      applyPermissions();
-      return toast(simpleErrorMessage(error));
-    }
-    toast('开始拖拽');
-    return;
+  if (!calibrated || !IDLE_STATES.includes(tractionState)) {
+    return toast('设备尚未就绪，请等待自动校准或检查设备状态');
   }
+  if (operationMode === 3) return unloadTraction();
+  if (![1, 2].includes(operationMode)) return toast('请选择当前支持的牵引模式');
   const requestedTarget = Number($('targetForceVal').value);
-  if (!Number.isFinite(requestedTarget) || requestedTarget < TARGET_FORCE_MIN || requestedTarget > tractionForceLimit) {
+  if (operationMode === 1 && (!Number.isFinite(requestedTarget) ||
+      requestedTarget < TARGET_FORCE_MIN || requestedTarget > tractionForceLimit)) {
     return toast(`目标牵引力请输入 1～${tractionForceLimit} N`);
   }
-  if (tractionState !== 5) return toast('请先完成方向标定并锁定方向');
-  // A new run must not inherit the previous run's completion request/status.
+  // The manager locks an available direction, or searches along tool -Z.
+  // Direction discovery never requires a separate browser confirmation.
   finishRequested = false;
   pendingStart = true;
   $('workStatus').textContent = '正在开始';
   $('workStatus').classList.add('running');
   applyPermissions();
   try {
-    // Always send the value currently shown in the input immediately before
-    // each run. This is what makes the second and later runs independent of
-    // the previous run's target.
-    currentForce = Math.round(requestedTarget);
-    updateForceDisplay();
-    await postJson('/api/traction/target', { target_force_n: currentForce });
+    if (operationMode === 1) {
+      // Always send the value currently shown before each new run.
+      currentForce = Math.round(requestedTarget);
+      updateForceDisplay();
+      await postJson('/api/traction/target', { target_force_n: currentForce });
+    }
     await postJson('/api/traction/start');
   } catch (error) {
     pendingStart = false;
     applyPermissions();
     return toast(simpleErrorMessage(error));
   }
-
   applyPermissions();
-  toast('开始牵引');
+  toast(operationMode === 2 ? '开始拖拽' : '开始牵引；无有效方向时将自动获取');
+}
+
+async function unloadTraction() {
+  if (!sessionUser || !permissions[sessionUser.role].operate || !dataOnline) return;
+  if (!canUnload()) return toast('卸力需已有有效方向且当前受力至少5N');
+  unloadPending = true;
+  finishRequested = false;
+  applyPermissions();
+  try {
+    await postJson('/api/traction/unload');
+    toast('开始卸力，低于5N自动停止');
+  } catch (error) {
+    toast(simpleErrorMessage(error));
+  } finally {
+    unloadPending = false;
+    applyPermissions();
+  }
 }
 
 function beginLocalRecord() {
   if (activeRecord) return;
   pendingStart = false;
   activeRecord = { startedAt: Date.now() };
-  $('workStatus').textContent = operationMode === 2 ? '拖拽中' : '牵引中';
+  $('workStatus').textContent = tractionState === 3 ? '正在获取方向' :
+    (tractionState === 7 ? '卸力中' : (operationMode === 2 ? '拖拽中' : '牵引中'));
   $('workStatus').classList.add('running');
   const startAt = Date.now();
   timerHandle = setInterval(() => {
@@ -382,7 +405,7 @@ function saveFinishedRecord(status) {
 }
 
 async function finishTraction(status = '已完成') {
-  if (![6, 11, 12].includes(tractionState)) return toast('当前没有正在执行的任务');
+  if (!motionStateActive()) return toast('当前没有正在执行的任务');
   try {
     await postJson('/api/traction/stop');
   } catch (error) {
@@ -396,7 +419,7 @@ async function finishTraction(status = '已完成') {
 }
 
 async function emergencyStop() {
-  const recovering = tractionState === 10;
+  const recovering = tractionState === 10 || tractionState === 9;
   emergencyPending = true;
   applyPermissions();
   try {
@@ -413,7 +436,7 @@ async function emergencyStop() {
   emergencyPending = false;
   if (recovering) {
     finishRequested = false;
-    $('workStatus').textContent = '未初始化';
+    $('workStatus').textContent = '设备恢复中';
     applyPermissions();
     return toast('急停已恢复');
   }
@@ -451,7 +474,7 @@ async function refreshHistory() {
       .filter(summary => summary.stop_reason !== 'PREPARE_RESTARTED_AFTER_BASELINE_RESET')
       .map(summary => ({
         id: summary.session_id || '--',
-        mode: MODE_LABELS[Number(summary.operation_mode || 0)] || '恒力牵引',
+        mode: MODE_LABELS[Number(summary.operation_mode ?? 0)] || '未知模式',
         start: builtinTimeText(summary.start_time),
         end: builtinTimeText(summary.end_time),
         operator: summary.operator || '--',
@@ -596,7 +619,10 @@ function handleState(state) {
   lastStateAt = Date.now();
   const traction = state.traction || {};
   tractionState = Number(traction.state || 0);
-  operationMode = Number(traction.operation_mode || 0);
+  operationMode = Number(traction.operation_mode ?? 2);
+  calibrated = traction.calibrated === true;
+  directionAvailable = traction.direction_available === true;
+  directionLocked = traction.direction_locked === true;
   const rosTargetForce = Number(traction.target_force_n);
   if (!targetUpdatePending && queuedTarget === null && document.activeElement !== $('targetForceVal') &&
       Number.isFinite(rosTargetForce) &&
@@ -605,8 +631,8 @@ function handleState(state) {
     confirmedForce = currentForce;
     updateForceDisplay();
   }
-  if ([6, 11].includes(tractionState)) beginLocalRecord();
-  if (finishRequested && [1, 5, 8].includes(tractionState) && activeRecord) {
+  if (motionStateActive()) beginLocalRecord();
+  if (IDLE_STATES.includes(tractionState) && !directionLocked && activeRecord) {
     saveFinishedRecord('已完成');
   }
   if (activeRecord && [9, 10].includes(tractionState) && !pendingStart) {
@@ -628,43 +654,31 @@ function handleState(state) {
     window.updateAG95(state.ag95.position_raw);
   }
 
-  directionLocked = [5, 6, 7, 12].includes(tractionState);
-  const measuredDirection = Array.isArray(traction.force_direction_base)
-    ? traction.force_direction_base : null;
   const lockedDirection = Array.isArray(traction.locked_direction_base)
     ? traction.locked_direction_base : null;
-  const fallbackDirection = Array.isArray(traction.increase_direction_base)
-    ? traction.increase_direction_base : null;
   if (window.updateTractionDirection) {
-    window.updateTractionDirection(measuredDirection, lockedDirection, fallbackDirection);
+    // The displayed arrow follows the manager's two-second direction sample,
+    // then remains fixed for the complete run, including the hold phase.
+    window.updateTractionDirection(directionAvailable ? lockedDirection : null);
   }
   actualForce = Number(traction.actual_force_n || 0);
   $('actualForceVal').textContent = actualForce.toFixed(1);
   const tensionDetected = actualForce >= 1.0;
   $('tensionState').textContent = tensionDetected ? '张紧' : '松弛';
   $('tensionState').classList.toggle('tight', tensionDetected);
-  const directionTrackState = Number(traction.direction_track_state ?? 4);
-  const adaptiveTraction = tractionState === 6 && operationMode === 0;
-  const directionWaiting = adaptiveTraction && directionTrackState === 4;
-  const directionFollowing = adaptiveTraction && ![0, 4].includes(directionTrackState);
-  if (adaptiveTraction && directionTrackState === 2 && previousDirectionTrackState !== 2) {
-    toast('新方向已确认');
-  }
-  if (adaptiveTraction && directionTrackState === 0 && [2, 3].includes(previousDirectionTrackState)) {
-    toast('方向校准成功');
-  }
-  $('directionState').textContent = directionWaiting
-    ? '等待张紧'
-    : (directionFollowing ? '正在跟随方向' : '方向稳定');
-  $('directionState').classList.toggle('following', directionFollowing);
-  previousDirectionTrackState = directionTrackState;
+  $('directionState').textContent = tractionState === 3 ? '正在获取方向' :
+    (directionLocked ? '方向已锁定' : (directionAvailable ? '方向已更新' : '等待施力'));
+  $('directionState').classList.toggle('following', tractionState === 3);
+  $('prepareBtn').title = calibrated
+    ? '已校准；仅在牵引带松弛且机械臂静止时重新校准'
+    : '等待后台完成自动校准；牵引带应保持松弛';
 
   if (activeRecord) {
     $('workStatus').textContent = tractionState === 7
-      ? '正在结束'
+      ? '卸力中'
       // The controller may still report the previous stop reason while a new
       // run is active. The live traction state always takes priority.
-      : ([6, 11, 12].includes(tractionState)
+      : (ACTIVE_STATES.includes(tractionState)
         ? TRACTION_STATE_LABELS[tractionState]
         : (simpleReason(traction.fault_code || traction.stop_reason) || '牵引中'));
     $('workStatus').classList.add('running');
@@ -731,6 +745,7 @@ $('confirmShutdownBtn').addEventListener('click', shutdownProgram);
 $('startBtn').addEventListener('click', startTraction);
 $('stopBtn').addEventListener('click', () => finishTraction('已完成'));
 $('emergencyBtn').addEventListener('click', emergencyStop);
+$('unloadBtn').addEventListener('click', unloadTraction);
 $('recordsBtn').addEventListener('click', () => {
   renderRecords();
   $('recordsModal').classList.remove('hidden');
@@ -747,8 +762,8 @@ $('settingsBtn').addEventListener('click', () => {
 $('saveSettingsBtn').addEventListener('click', async () => {
   const target = Number($('settingTarget').value);
   const limit = Number($('settingForceLimit').value);
-  if (!Number.isInteger(limit) || limit < TARGET_FORCE_MIN || limit > TARGET_FORCE_ABSOLUTE_MAX) {
-    return toast('牵引力上限必须是1～100N的整数');
+  if (!Number.isSafeInteger(limit) || limit < TARGET_FORCE_MIN) {
+    return toast('目标力调节上限必须是大于等于1N的整数');
   }
   if (!Number.isInteger(target) || target < TARGET_FORCE_MIN || target > limit) {
     return toast(`默认目标牵引力必须是1～${limit}N的整数`);
@@ -765,16 +780,6 @@ $('saveSettingsBtn').addEventListener('click', async () => {
   $('settingsModal').classList.add('hidden');
   toast('参数已保存');
 });
-if ($('setZeroPoseBtn')) {
-  $('setZeroPoseBtn').addEventListener('click', async () => {
-    if (!sessionUser || sessionUser.role !== '管理员') {
-      return toast('仅管理员可以设置零位');
-    }
-    if (!confirm('确认把机械臂当前位姿设为新的零位吗？以后点击“回零”将返回这里。')) return;
-    const result = await callTraction('/api/traction/set-zero');
-    if (result) $('settingsModal').classList.add('hidden');
-  });
-}
 $('recordSearch').addEventListener('input', renderRecords);
 $('recordStatusFilter').addEventListener('change', renderRecords);
 $('exportBtn').addEventListener('click', exportRecords);
@@ -799,9 +804,7 @@ const callTraction = async path => {
     const result = await postJson(path);
     const traction = result.snapshot && result.snapshot.traction;
     if (traction) {
-      tractionState = Number(traction.state || 0);
-      dataOnline = traction.valid === true;
-      applyPermissions();
+      handleState(result.snapshot);
     }
     toast(ACTION_SUCCESS_MESSAGES[path] || '操作完成');
     return result;
@@ -811,10 +814,6 @@ const callTraction = async path => {
   }
 };
 if ($('prepareBtn')) $('prepareBtn').addEventListener('click', () => callTraction('/api/traction/prepare'));
-if ($('calibrateBtn')) {
-  $('calibrateBtn').addEventListener('click', () => callTraction('/api/traction/calibrate-direction'));
-}
-if ($('returnZeroBtn')) $('returnZeroBtn').addEventListener('click', () => callTraction('/api/traction/return-zero'));
 document.querySelectorAll('.mode-btn').forEach(button => {
   button.addEventListener('click', async () => {
     const requestedMode = Number(button.dataset.mode);

@@ -61,7 +61,7 @@ TEST(TractionSafety, AxialForceDoesNotLatchAnOverforceFault)
   EXPECT_EQ(monitor.update(sample, 20.0, false), fr_traction::SafetyFault::NONE);
 }
 
-TEST(TractionSafety, HardOverforceRequiresContinuousConfirmation)
+TEST(TractionSafety, HighForceNeverBecomesAWorkstationFault)
 {
   fr_traction::SafetyLimits limits;
   limits.hard_overforce_n = 150.0;
@@ -80,7 +80,13 @@ TEST(TractionSafety, HardOverforceRequiresContinuousConfirmation)
   sample.raw_wrench = {0.0, 0.0, -151.0};
   sample.metrics.actual_force_n = 151.0;
   EXPECT_EQ(monitor.update(sample, 2.00, false), fr_traction::SafetyFault::NONE);
-  EXPECT_EQ(monitor.update(sample, 2.21, false), fr_traction::SafetyFault::HARD_OVERFORCE);
+  EXPECT_EQ(monitor.update(sample, 2.21, false), fr_traction::SafetyFault::NONE);
+  sample.raw_wrench = {0.0, 0.0, -500.0};
+  sample.metrics.actual_force_n = 500.0;
+  EXPECT_EQ(monitor.update(sample, 200.0, false), fr_traction::SafetyFault::NONE);
+  // Removing a force trip must not bypass communication or hardware faults.
+  sample.controller_healthy = false;
+  EXPECT_EQ(monitor.update(sample, 200.1, false), fr_traction::SafetyFault::ROS2_CONTROL_ERROR);
 }
 
 TEST(TractionSafety, ChecksOptionalUiHeartbeatWithoutSoftwareTravelLimit)

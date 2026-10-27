@@ -23,9 +23,8 @@ TEST(TractionStateMachine, RejectsIllegalEdgesWithoutChangingState)
   EXPECT_FALSE(machine.transition(TractionState::TRACTION));
   EXPECT_EQ(machine.state(), TractionState::INITIALIZING);
   EXPECT_TRUE(machine.transition(TractionState::READY));
-  for (const auto illegal : {TractionState::INITIALIZING, TractionState::PRETENSION,
-      TractionState::CALIBRATING, TractionState::DIRECTION_LOCKED,
-      TractionState::TRACTION, TractionState::RELEASING, TractionState::COMPLETED})
+  for (const auto illegal : {TractionState::INITIALIZING, TractionState::CALIBRATING,
+      TractionState::TRACTION, TractionState::COMPLETED})
   {
     EXPECT_FALSE(machine.transition(illegal));
     EXPECT_EQ(machine.state(), TractionState::READY);
@@ -89,6 +88,31 @@ TEST(TractionStateMachine, SupportsAssistedDragAndPositionHoldFlows)
   {
     EXPECT_TRUE(position.transition(next));
   }
+}
+
+TEST(TractionStateMachine, AutomaticDirectionAndBoundedSearchNeedNoManualCalibration)
+{
+  StateMachine machine;
+  for (const auto next : {TractionState::READY, TractionState::PRETENSION,
+      TractionState::DIRECTION_LOCKED, TractionState::TRACTION,
+      TractionState::COMPLETED, TractionState::READY, TractionState::DIRECTION_LOCKED,
+      TractionState::TRACTION, TractionState::POSITION_HOLD})
+  {
+    ASSERT_TRUE(machine.transition(next));
+  }
+  EXPECT_TRUE(machine.transition(TractionState::FAULT));
+}
+
+TEST(TractionStateMachine, UnloadingCanInterruptTractionDragOrPositionHold)
+{
+  for (const auto state : {TractionState::READY, TractionState::TRACTION,
+      TractionState::DRAGGING, TractionState::POSITION_HOLD})
+  {
+    EXPECT_TRUE(can_transition(state, TractionState::RELEASING));
+  }
+  EXPECT_FALSE(can_transition(TractionState::FAULT, TractionState::RELEASING));
+  EXPECT_FALSE(can_transition(TractionState::EMERGENCY_STOP, TractionState::RELEASING));
+  EXPECT_TRUE(can_transition(TractionState::PRETENSION, TractionState::COMPLETED));
 }
 
 }  // namespace fr_traction

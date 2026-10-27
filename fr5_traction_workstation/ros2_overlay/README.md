@@ -4,19 +4,18 @@
 FR5 消息接口和 FR5 模型配置。它们属于用户仓库中的新项目目录，不属于旧的
 `platform_b`。
 
-真实 FR5 的官方 SDK 二进制和基础硬件包仍由机器上的 FR5 基础工作区提供，
-默认位置是 `/home/zhj/projects/fr5_learning/robot_ws_backup/new_fairino_ws`。
-这是运行依赖，不是本项目的提交目标；尤其不要把本项目推送到
-`lny20000101-coder/robot_ws_backup`。
+当前运行与开发请参阅 [接手总览](../docs/handover/README.md)、
+[控制说明](../docs/handover/CONTROL.md) 和 [运行手册](../docs/handover/RUNBOOK.md)。
+正式入口为工作站的 `scripts/start_ros_stack.sh 2`，source 本目录 `install/setup.bash`。
 
-`reference/` 保存了硬件包中为“示教器手动操作 → Cartesian 控制器接管”所需的
-接口源码参考。运行前，基础工作区必须包含同样的硬件接口改动，并重新编译。
-启动脚本支持用 `FR5_ROS_WS` 指向实际的基础工作区。
+正式启动中唯一的 Fairino SDK 连接者是 `fr_traction/scripts/fr5_direct_driver_node.py`，
+使用工作站 vendor 下固定版本的官方 Python SDK。FastAPI/rclpy 只订阅 ROS 状态并调用服务。
+驱动直接提供 `/controller_manager/wrench`、`/controller_manager/ee_state` 和兼容的
+控制器切换服务；这些名称不表示当前运行了完整 ros2_control controller_manager。
 
-应用层不连接 Fairino SDK。SDK 连接者只有 ROS2 `fairino_hardware`，网页只通过
-FastAPI/rclpy 订阅真实状态并调用牵引管理服务。
+`fr_controllers` 和 `reference/` 保留旧 ros2_control/C++ 硬件链路的控制器与源码参考，
+当前部署脚本和正式 launch 不加载它们。过去使用的外部 FR5 基础工作区与 SDK 二进制
+不是当前直连模式的运行前提；恢复旧链路需要另行补齐硬件包和依赖，不能与直连驱动并行。
 
-当前基础工作区的 Humble ros2_control 会让控制器插件继承
-`/controller_manager` 节点名，所以牵引配置使用真实发布地址
-`/controller_manager/wrench`、`/controller_manager/ee_state`，而不是假设的
-控制器私有名称。
+版本 2 ROS 启动固定使用本目录；`FR5_ROS_WS` 只影响网页和预检的 source 路径。
+工作站代码属于 `hoshizaki-akari/robot` 仓库，不要推送到旧硬件参考仓库。

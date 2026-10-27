@@ -2,15 +2,15 @@ traction_controller:
   ros__parameters:
     control_rate_hz: 100.0
     force_filter_cutoff_hz: 5.0
-    # Assisted drag uses a faster, independent force path. Constant-force and
-    # position traction keep the existing 5 Hz filter and are not retuned.
+    # Assisted drag uses a faster, independent force path. Target traction
+    # retains the existing 5 Hz force filter.
     drag_force_filter_cutoff_hz: 12.0
     integral_gain_s_inv: 0.25
     integral_limit_n: 3.0
     virtual_mass: 10.0
     virtual_damping: 80.0
     force_deadband_n: 0.15
-    traction_max_speed_mps: 0.020
+    traction_max_speed_mps: 0.012
     traction_max_acc_mps2: 0.02
     drag_start_force_n: 0.5
     drag_release_force_n: 0.2
@@ -32,16 +32,16 @@ traction_controller:
     traction_sign_z: -1.0
     # Position traction uses a dedicated predictive velocity loop. It keeps
     # the 20 mm/s far-field response, brakes from the measured force trend,
-    # and enters the +/-1 N completion band only after motion settles.
-    position_tolerance_n: 1.0
+    # and enters the +/-2.5 N completion band only after motion settles.
+    position_tolerance_n: 2.5
     position_far_gain_mps_per_n: 0.0060
     position_near_gain_mps_per_n: 0.0045
-    position_near_window_n: 2.0
+    position_near_window_n: 5.0
     position_prediction_horizon_s: 0.15
     position_prediction_limit_n: 2.0
     position_force_rate_cutoff_hz: 2.0
-    position_max_acceleration_mps2: 0.080
-    position_max_deceleration_mps2: 0.160
+    position_max_acceleration_mps2: 0.025
+    position_max_deceleration_mps2: 0.050
     position_settling_speed_mps: 0.0005
     position_initial_stiffness_n_per_m: 300.0
     position_min_stiffness_n_per_m: 50.0
@@ -66,6 +66,16 @@ traction_controller:
 
 traction_manager:
   ros__parameters:
+    operation_mode: 2
+    # Calibrate slack once after startup. Target direction is refreshed only
+    # before traction starts, and is then locked until the session ends.
+    auto_calibration_window_s: 0.5
+    auto_direction_min_force_n: 3.0
+    auto_direction_update_s: 2.0
+    direction_search_distance_m: 0.30
+    direction_search_duration_s: 2.0
+    unload_stop_force_n: 5.0
+    unload_speed_mps: 0.020
     control_rate_hz: 100.0
     status_rate_hz: 20.0
     force_filter_cutoff_hz: 5.0
@@ -109,22 +119,19 @@ traction_manager:
     calibration_max_angle_p95_deg: 15.0
     target_force_min_n: 1.0
     target_force_max_n: 100.0
-    validated_target_max_n: 100.0
-    force_tolerance_n: 1.0
+    force_tolerance_n: 2.5
     # A 0.15 N deadband prevents the former 0.5 N shortfall while remaining
     # wider than the normal sensor noise after filtering.
     force_deadband_n: 0.15
     # Covers the longest configurable position-driven return plus generous
     # communication margin. Force control remains disabled throughout it.
     release_timeout_s: 300.0
-    # Position traction stops once total rope tension stays within ±1 N for
+    # Target traction stops once total rope tension stays within ±2.5 N for
     # 1 s. Later force changes do not restart control in this mode.
-    position_reached_tolerance_n: 1.0
+    position_reached_tolerance_n: 2.5
     position_reached_confirm_s: 1.0
-    # A single spike does not stop motion. The measured rope tension must stay
-    # above 150 N continuously for 0.2 s before a hard-overforce stop is latched.
-    hard_overforce_n: 150.0
-    hard_overforce_confirm_s: 0.20
+    # Actual force has no workstation fault threshold. The 100 N value above
+    # is only the default configurable maximum target force.
     # Two-stage stale-data handling: motion is disabled after 0.25 s, while
     # wrench/pose gaps still fault at 1.2 s. The FR5 SDK health heartbeat is
     # emitted by the same timer as ServoCart; a measured 0.607 s RPC gap needs

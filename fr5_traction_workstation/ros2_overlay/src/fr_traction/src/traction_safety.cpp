@@ -6,19 +6,18 @@ namespace fr_traction
 {
 
 SafetyMonitor::SafetyMonitor(const SafetyLimits & limits)
-: limits_(limits)
 {
+  (void)limits;
 }
 
 void SafetyMonitor::set_limits(const SafetyLimits & limits)
 {
-  limits_ = limits;
+  (void)limits;
   reset();
 }
 
 void SafetyMonitor::reset()
 {
-  hard_overforce_started_at_s_ = -1.0;
 }
 
 SafetyFault SafetyMonitor::update(
@@ -46,19 +45,8 @@ SafetyFault SafetyMonitor::update(
   {
     return SafetyFault::WRENCH_INVALID;
   }
-  if (sample.metrics.actual_force_n > limits_.hard_overforce_n) {
-    if (hard_overforce_started_at_s_ < 0.0) {
-      hard_overforce_started_at_s_ = now_s;
-    }
-    if (now_s - hard_overforce_started_at_s_ >= limits_.hard_overforce_confirm_s) {
-      return SafetyFault::HARD_OVERFORCE;
-    }
-  } else {
-    hard_overforce_started_at_s_ = -1.0;
-  }
-  // Lateral force and software travel remain control/diagnostic inputs. The
-  // only software force trip is the separately debounced 150 N hard limit;
-  // native controller reach protection remains in force as well.
+  // Force magnitude is a control/diagnostic input, never a workstation fault
+  // threshold. Invalid feedback and controller-native faults still stop it.
   if (require_ui_heartbeat && !sample.ui_heartbeat_fresh) {
     return SafetyFault::UI_HEARTBEAT_TIMEOUT;
   }

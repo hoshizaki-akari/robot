@@ -5,12 +5,12 @@ import inspect
 import json
 import math
 import os
-from pathlib import Path
 import sys
 import threading
 import time
 import types
 import xmlrpc.client
+from pathlib import Path
 
 import rclpy
 from controller_manager_msgs.srv import SwitchController
@@ -129,6 +129,17 @@ class Fr5DirectDriver(Node):
         self._max_speed = float(
             self.declare_parameter("max_linear_speed_mps", 0.025).value
         )
+        # The short Tool Z- direction search has its own planned profile.
+        # Keep its allowance separate from the normal traction speed bound.
+        self._direction_search_max_speed = self._bounded_positive_parameter(
+            "direction_search_max_speed_mps", 0.30, 0.30
+        )
+        self._direction_search_max_travel_m = self._bounded_positive_parameter(
+            "direction_search_max_travel_m", 0.30, 0.30
+        )
+        self._direction_search_max_duration_s = self._bounded_positive_parameter(
+            "direction_search_max_duration_s", 2.0, 2.0
+        )
         # The installed FR5 SDK reports the commanded incremental base pose
         # with the opposite sign to GetActualTCPPose on this controller. Keep
         # the compensation explicit so the force controller's physical
@@ -212,6 +223,14 @@ class Fr5DirectDriver(Node):
         self._native_drag_tool_xy_flip = bool(
             self.declare_parameter("native_drag_tool_xy_flip", True).value
         )
+        self._native_drag_start_confirm_timeout_s = float(
+            self.declare_parameter("native_drag_start_confirm_timeout_s", 2.0).value
+        )
+        if (
+            not math.isfinite(self._native_drag_start_confirm_timeout_s)
+            or self._native_drag_start_confirm_timeout_s <= 0.0
+        ):
+            raise ValueError("native_drag_start_confirm_timeout_s must be positive")
         if any(value <= 0.0 for value in self._native_drag_threshold):
             raise ValueError("native_drag_threshold must contain positive values")
         self._native_drag_max_force_n = float(
@@ -263,6 +282,14 @@ class Fr5DirectDriver(Node):
             )
             rcs_code = 0
         if rcs_code != 0:
+            if int(rcs_code) == 14:
+                raise RuntimeError(
+                    "FT_SetRCS(base_link) returned SDK error 14 (interface "
+                    "execution failed). Check the FR5 WebApp/teach pendant "
+                    "alarm and live controller status, clear the controller "
+                    "fault there, then restart the ROS stack. Startup is "
+                    "stopped because the force reference was not confirmed."
+                )
             raise RuntimeError(f"FT_SetRCS(base_link) failed: {rcs_code}")
         self._reset_command_proxy()
 
@@ -292,8 +319,6 @@ class Fr5DirectDriver(Node):
             "/controller_manager/switch_controller",
             self._on_switch,
         )
-        self.create_service(Trigger, "/traction/set_zero_pose", self._on_set_zero)
-        self.create_service(Trigger, "/traction/return_zero_pose", self._on_return_zero)
         self.create_service(
             Trigger,
             "/traction/hardware_emergency_stop",
@@ -303,11 +328,6 @@ class Fr5DirectDriver(Node):
             Trigger,
             "/traction/hardware_emergency_recover",
             self._on_hardware_emergency_recover,
-        )
-        self.create_service(
-            Trigger,
-            "/traction/return_pretraction_pose",
-            self._on_return_pretraction,
         )
         self.create_service(
             Trigger,
@@ -348,11 +368,15 @@ class Fr5DirectDriver(Node):
 
         self._twist = Twist()
         self._traction_mode = TractionCommand.DISABLED
+        self._direction_search_started_at = None
+        self._direction_search_start_pose = None
+        self._direction_search_stopped = False
         self._last_command_at = 0.0
         self._last_motion_at = 0.0
         self._servo_enabled = False
         self._servo_cleanup_pending = False
         self._native_drag_active = False
+        self._last_native_drag_status = None
         self._force_reference_custom_active = False
         self._return_active = False
         self._return_started_at = 0.0
@@ -413,6 +437,12 @@ class Fr5DirectDriver(Node):
             raise ValueError(f"{name} must contain six finite values")
         return [float(value) for value in values]
 
+    def _bounded_positive_parameter(self, name, default, maximum):
+        value = float(self.declare_parameter(name, default).value)
+        if not math.isfinite(value) or not 0.0 < value <= maximum:
+            raise ValueError(f"{name} must be positive and at most {maximum}")
+        return value
+
     def _publish_health(self, value):
         self._healthy = bool(value)
         message = Bool()
@@ -468,8 +498,18 @@ class Fr5DirectDriver(Node):
             TractionCommand.RELEASING,
             TractionCommand.DRAG,
             TractionCommand.POSITIONING,
+            TractionCommand.UNLOADING,
+            TractionCommand.DIRECTION_SEARCH,
         ):
+            if message.mode != self._traction_mode:
+                # Repeated manager commands must never extend a search.
+                self._direction_search_started_at = None
+                self._direction_search_start_pose = None
+                self._direction_search_stopped = False
             self._traction_mode = message.mode
+            if message.mode == TractionCommand.DISABLED:
+                self._twist = Twist()
+                self._last_command_at = 0.0
 
     @staticmethod
     def _switch_lists(request):
@@ -489,9 +529,21 @@ class Fr5DirectDriver(Node):
         ):
             response.ok = False
             return response
-        if "cartesian_velocity_controller" in deactivate and self._servo_enabled:
+        if "cartesian_velocity_controller" in deactivate and (
+            self._servo_enabled or self._servo_cleanup_pending
+        ):
             code = self._end_servo("controller deactivation")
             if code != 0:
+                # The controller did not confirm ServoMoveEnd. Do not keep
+                # streaming Cartesian commands or report a clean stop.
+                self._twist = Twist()
+                self._last_command_at = 0.0
+                self._servo_enabled = False
+                self._hardware_fault_latched = True
+                self._hardware_emergency_latched = True
+                self._run_hardware_command("StopMotion")
+                self._run_hardware_command("RobotEnable", 0)
+                self._publish_health(False)
                 response.ok = False
                 return response
             self._servo_enabled = False
@@ -569,18 +621,60 @@ class Fr5DirectDriver(Node):
 
     def _native_drag_state(self):
         state = self._robot.GetForceAndTorqueDragState()
+        self._last_native_drag_status = state
+        if isinstance(state, int) and state != 0:
+            raise RuntimeError(f"FR5 native drag status failed: {state}")
         if not isinstance(state, (tuple, list)) or len(state) < 3:
             raise RuntimeError(f"FR5 native drag status is unavailable: {state}")
         if int(state[0]) != 0:
             raise RuntimeError(f"FR5 native drag status failed: {state[0]}")
+        if int(state[1]) not in (0, 1) or int(state[2]) not in (0, 1):
+            raise RuntimeError(f"FR5 native drag status is invalid: {state}")
         return int(state[1]) == 1
 
+    def _native_drag_diagnostics(self):
+        """Capture the failed transition before OFF/cleanup changes its state."""
+        status = self._last_native_drag_status
+        if isinstance(status, (tuple, list)) and len(status) >= 3:
+            drag_status = (
+                f"dragState={status[1]}, sixDimensionalDragState={status[2]}"
+            )
+        else:
+            drag_status = f"drag_status={status}"
+        state = self._robot.robot_state_pkg
+        fields = ("main_code", "sub_code", "robot_mode", "rbtEnableState",
+                  "ft_sensor_active", "EmergencyStop")
+        controller_status = ", ".join(
+            f"{name}={getattr(state, name, 'unavailable')}" for name in fields
+        )
+        feedback_age = time.monotonic() - self._last_realtime_state_at
+        return f"{drag_status}, {controller_status}, feedback_age_s={feedback_age:.3f}"
+
     def _wait_native_drag_state(self, expected):
-        for _ in range(4):
-            if self._native_drag_state() == expected:
+        # An accepted ON RPC can precede the controller's drag-state switch.
+        # Use elapsed time rather than four polls; retain the short OFF grace
+        # period so stop failures still trigger the existing disable fallback.
+        timeout_s = self._native_drag_start_confirm_timeout_s if expected else 0.4
+        deadline = time.monotonic() + timeout_s
+        while True:
+            active = self._native_drag_state()
+            if expected:
+                if self._hardware_fault_latched or self._hardware_emergency_latched:
+                    raise RuntimeError("FR5 native drag interrupted by a hardware fault.")
+                if (time.monotonic() - self._last_realtime_state_at
+                        > self._realtime_state_timeout_s):
+                    raise RuntimeError("FR5 realtime feedback is stale during drag activation.")
+                readiness_error = self._robot_motion_readiness_error(
+                    expected_mode=1, require_enabled=False
+                )
+                if readiness_error is not None:
+                    raise RuntimeError(readiness_error)
+            remaining = deadline - time.monotonic()
+            if active == expected and remaining >= 0.0:
                 return True
-            time.sleep(0.1)
-        return False
+            if remaining <= 0.0:
+                return False
+            time.sleep(min(0.1, remaining))
 
     def _stop_native_drag_best_effort(self, context):
         if not self._native_drag_active:
@@ -706,32 +800,49 @@ class Fr5DirectDriver(Node):
                 return response
             if self._native_drag_tool_xy_flip:
                 self._set_drag_force_reference(True)
+            # A lost ON reply does not mean the controller stayed OFF. Reserve
+            # ownership before the RPC so every failure must send/confirm OFF
+            # before restoring the force frame or allowing another motion.
+            self._last_native_drag_status = None
+            self._native_drag_active = True
+            self._twist = Twist()
+            self._last_command_at = 0.0
             code = self._set_native_drag(True)
         except Exception as error:  # noqa: BLE001 - vendor exceptions vary.
             self.get_logger().error(f"Native force drag start failed: {error}")
+            detail = (
+                f"FR5 native force drag start failed: {error}; "
+                f"{self._native_drag_diagnostics()}"
+            )
             self._reset_command_proxy()
             if self._stop_native_drag_best_effort("failed drag start") != 0:
                 self._disable_after_failed_native_stop("failed drag start")
             response.success = False
-            response.message = f"FR5 native force drag start failed: {error}"
+            response.message = detail
             return response
         if code != 0:
+            detail = (
+                f"EndForceDragControl start failed: {code}; "
+                f"{self._native_drag_diagnostics()}"
+            )
             if self._stop_native_drag_best_effort("rejected drag start") != 0:
                 self._disable_after_failed_native_stop("rejected drag start")
             response.success = False
-            response.message = f"EndForceDragControl start failed: {code}"
+            response.message = detail
             return response
-        self._native_drag_active = True
-        self._twist = Twist()
-        self._last_command_at = 0.0
         try:
             if not self._wait_native_drag_state(True):
-                raise RuntimeError("FR5 did not confirm native force drag activation")
+                raise RuntimeError(
+                    "FR5 did not confirm native force drag activation within "
+                    f"{self._native_drag_start_confirm_timeout_s:.2f} s"
+                )
         except Exception as error:  # noqa: BLE001 - status RPC failures vary.
+            detail = f"{error}; {self._native_drag_diagnostics()}"
+            self.get_logger().error(f"Native force drag activation failed: {detail}")
             if self._stop_native_drag_best_effort("unconfirmed drag activation") != 0:
                 self._disable_after_failed_native_stop("unconfirmed drag activation")
             response.success = False
-            response.message = str(error)
+            response.message = detail
             return response
         self._pretraction_pose = list(self._latest_pose)
         self._pretraction_joints = list(self._latest_joints or [])
@@ -1046,9 +1157,8 @@ class Fr5DirectDriver(Node):
                 "Slack calibration ignored because FR5 motion or feedback is active."
             )
             return
-        # Initial force calibration updates the sensor baseline in the manager,
-        # but must never redefine the fixed return-zero pose.
-        self.get_logger().info("Slack force calibration received; fixed zero pose unchanged.")
+        # Calibration only updates the manager's force baseline.
+        self.get_logger().info("Slack force calibration received.")
 
     def _on_return_zero(self, _request, response):
         return self._start_return_to_pose(
@@ -1281,6 +1391,39 @@ class Fr5DirectDriver(Node):
             )
         return code
 
+    def _limit_direction_search(self, linear, now):
+        if self._direction_search_stopped:
+            return [0.0, 0.0, 0.0]
+        if self._direction_search_started_at is None and not any(linear):
+            return linear
+        if self._latest_pose is None or len(self._latest_pose) < 3:
+            raise RuntimeError("FR5 TCP feedback is unavailable during direction search")
+        pose = [float(value) for value in self._latest_pose[:3]]
+        if not all(math.isfinite(value) for value in pose):
+            raise RuntimeError("FR5 TCP feedback is invalid during direction search")
+        if self._direction_search_started_at is None:
+            # Start the local guard with the first actual motion packet,
+            # after controller activation has finished.
+            self._direction_search_started_at = now
+            self._direction_search_start_pose = pose
+        elapsed = now - self._direction_search_started_at
+        travel_m = math.sqrt(sum(
+            ((position - start) / 1000.0) ** 2
+            for position, start in zip(pose, self._direction_search_start_pose)
+        ))
+        if (
+            elapsed >= self._direction_search_max_duration_s
+            or travel_m >= self._direction_search_max_travel_m
+        ):
+            self._direction_search_stopped = True
+            self.get_logger().warning(
+                "Direction search stopped at the driver bound: "
+                f"{elapsed:.3f} s, {travel_m:.4f} m; "
+                "waiting for the manager to finish the search."
+            )
+            return [0.0, 0.0, 0.0]
+        return linear
+
     def _send_motion(self, now, dt):
         # Assisted drag runs continuously inside the FR5 controller. Never
         # interleave host-side ServoCart packets with that controller mode.
@@ -1293,7 +1436,11 @@ class Fr5DirectDriver(Node):
         # arrive a fraction early, effectively halving the requested rate.
         motion_dt = now - self._last_motion_at if self._last_motion_at > 0.0 else dt
         self._last_motion_at = now
-        motion_dt = min(max(motion_dt, 0.0), 0.05)
+        # ServoCart executes each increment over cmdT (one send period).
+        # Never pack a delayed host interval into that single short command:
+        # after a 1 s RPC stall the old 50 ms cap could command 5x speed.
+        # Drop missed increments rather than attempting to catch up.
+        motion_dt = min(max(motion_dt, 0.0), self._motion_period_s)
 
         if self._auto_tension_active:
             displacement = [
@@ -1376,10 +1523,17 @@ class Fr5DirectDriver(Node):
         command_fresh = now - self._last_command_at <= self._command_timeout
         linear = [self._twist.linear.x, self._twist.linear.y, self._twist.linear.z]
         magnitude = math.sqrt(sum(value * value for value in linear))
-        if not command_fresh:
+        speed_limit = (
+            self._direction_search_max_speed
+            if self._traction_mode == TractionCommand.DIRECTION_SEARCH
+            else self._max_speed
+        )
+        if not command_fresh or self._traction_mode == TractionCommand.DISABLED:
             linear = [0.0, 0.0, 0.0]
-        elif magnitude > self._max_speed and magnitude > 0.0:
-            linear = [value * self._max_speed / magnitude for value in linear]
+        elif magnitude > speed_limit and magnitude > 0.0:
+            linear = [value * speed_limit / magnitude for value in linear]
+        if self._traction_mode == TractionCommand.DIRECTION_SEARCH:
+            linear = self._limit_direction_search(linear, now)
         # Assisted drag is generated in tool coordinates by the controller;
         # all other velocity commands remain base-coordinate increments.
         servo_mode = 2 if self._traction_mode == TractionCommand.DRAG else 1

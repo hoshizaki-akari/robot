@@ -81,6 +81,12 @@ def generate_launch_description():
             # vector sum through the direct driver without clipping it back
             # to the former 5 mm/s limit.
             "max_linear_speed_mps": 0.050,
+            # Manager/controller own the bounded 0.30 m / 2 s Tool Z- search.
+            # Its minimum-jerk peak speed is 0.28125 m/s; ordinary traction
+            # and unloading retain the separate normal speed bound above.
+            "direction_search_max_speed_mps": 0.30,
+            "direction_search_max_travel_m": 0.30,
+            "direction_search_max_duration_s": 2.0,
             # Assisted drag is executed by the FR5 controller instead of by
             # host-side ServoCart steps. These are vendor SDK native thresholds;
             # raw force-sensor payload must not be added to them.
@@ -90,24 +96,12 @@ def generate_launch_description():
             "native_drag_threshold": [5.0, 5.0, 5.0, 5.0, 5.0, 5.0],
             "native_drag_max_force_n": 50.0,
             "native_drag_max_joint_speed_deg_s": 50.0,
+            "native_drag_start_confirm_timeout_s": 2.0,
             # On this FR5, the live Y- tension search showed that a positive
             # base command must be passed through unchanged for the force
             # controller to move in the measured increasing-force direction.
             "base_servo_sign": 1.0,
-            # Position returns use a quintic minimum-jerk profile.
-            "return_speed_mm_s": 20.0,
-            "return_acceleration_mm_s2": 100.0,
             "tension_search_max_mm": 100.0,
-            # Fixed slack pose recorded on 2026-09-07. Force calibration does
-            # not overwrite this durable return-zero destination.
-            "fixed_zero_pose_mm_deg": [
-                500.7035522460938,
-                -371.84417724609375,
-                276.12460327148436,
-                -93.77832794189455,
-                1.9229726791381836,
-                -133.9364776611328,
-            ],
             "use_sim_time": use_sim_time,
         }],
     )

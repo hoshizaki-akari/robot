@@ -23,6 +23,8 @@ enum class SafetyFault : unsigned char
 
 struct SafetyLimits
 {
+  // Legacy API compatibility only. Actual-force thresholds no longer stop
+  // the workstation; controller-native hardware protection is independent.
   double hard_overforce_n = 150.0;
   double hard_overforce_confirm_s = 0.20;
 };
@@ -48,9 +50,6 @@ public:
   SafetyFault update(const SafetySample & sample, double now_s, bool require_ui_heartbeat);
   static const char * code(SafetyFault fault);
 
-private:
-  SafetyLimits limits_;
-  double hard_overforce_started_at_s_ = -1.0;
 };
 
 }  // namespace fr_traction

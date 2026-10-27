@@ -1,10 +1,12 @@
-"""Exercise native-drag SDK handoff without connecting to a real FR5."""
+"""Exercise driver motion handoff without connecting to a real FR5."""
 
+import ast
 import importlib.util
 import math
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 
 spec = importlib.util.spec_from_file_location(
     "fr5_direct_driver_node",
@@ -107,6 +109,8 @@ def fake_driver(sdk, raw_force):
         _native_drag_threshold=[5.0] * 6,
         _native_drag_max_force_n=50.0,
         _native_drag_max_joint_speed_deg_s=50.0,
+        _native_drag_start_confirm_timeout_s=2.0,
+        _last_native_drag_status=None,
         _startup_rpc_timeout_s=10.0,
         _native_drag_active=False,
         _servo_cleanup_pending=False,
@@ -122,6 +126,11 @@ def fake_driver(sdk, raw_force):
         _latest_joint_speeds=[0.0] * 6,
         _latest_wrench=list(raw_force),
         _traction_mode=module.TractionCommand.DISABLED,
+        _direction_search_started_at=None,
+        _direction_search_start_pose=None,
+        _direction_search_stopped=False,
+        _direction_search_max_travel_m=0.30,
+        _direction_search_max_duration_s=2.0,
         _last_realtime_state_at=module.time.monotonic(),
         _realtime_state_timeout_s=0.5,
     )
@@ -160,6 +169,9 @@ def fake_driver(sdk, raw_force):
         Fr5DirectDriver._set_drag_force_reference(driver, custom)
     )
     driver._native_drag_state = lambda: Fr5DirectDriver._native_drag_state(driver)
+    driver._native_drag_diagnostics = lambda: (
+        Fr5DirectDriver._native_drag_diagnostics(driver)
+    )
     driver._wait_native_drag_state = lambda expected: (
         Fr5DirectDriver._wait_native_drag_state(driver, expected)
     )
@@ -169,36 +181,212 @@ def fake_driver(sdk, raw_force):
     driver._disable_after_failed_native_stop = lambda context: (
         Fr5DirectDriver._disable_after_failed_native_stop(driver, context)
     )
+    driver._limit_direction_search = lambda linear, now: (
+        Fr5DirectDriver._limit_direction_search(driver, linear, now)
+    )
     return driver
 
 
-def test_set_zero_persists_current_stationary_pose(tmp_path):
+def test_driver_does_not_expose_zero_or_position_return_services():
+    # Check the public ROS contract without constructing a Node or SDK owner.
+    source = Path(spec.origin).read_text(encoding="utf-8")
+    service_names = {
+        call.args[1].value
+        for call in ast.walk(ast.parse(source))
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "create_service"
+        and len(call.args) >= 2
+        and isinstance(call.args[1], ast.Constant)
+    }
+    assert "/traction/native_drag_start" in service_names
+    assert not service_names.intersection({
+        "/traction/set_zero_pose",
+        "/traction/return_zero_pose",
+        "/traction/return_pretraction_pose",
+    })
+
+
+def motion_driver(mode, velocity):
     driver = fake_driver(OldSdk(), [0.0] * 6)
-    driver._latest_pose = [101.0, 202.0, 303.0, 1.0, 2.0, 3.0]
-    driver._zero_pose = [0.0] * 6
-    driver._zero_pose_file = tmp_path / "zero_pose.json"
-    driver._save_zero_pose = lambda pose: Fr5DirectDriver._save_zero_pose(driver, pose)
-    response = SimpleNamespace(success=False, message="")
+    driver._servo_enabled = True
+    driver._traction_mode = mode
+    driver._twist = module.Twist()
+    driver._twist.linear.x, driver._twist.linear.y, driver._twist.linear.z = velocity
+    driver._last_command_at = 100.0
+    driver._last_motion_at = 99.99
+    driver._command_timeout = 0.25
+    driver._max_speed = 0.05
+    driver._direction_search_max_speed = 0.30
+    driver._base_servo_sign = 1.0
+    driver.motion_commands = []
+    driver._servo_cart = lambda coordinate_mode, increment: (
+        driver.motion_commands.append((coordinate_mode, increment)) or 0
+    )
+    return driver
 
-    Fr5DirectDriver._on_set_zero(driver, None, response)
 
-    assert response.success
-    assert driver._zero_pose == driver._latest_pose
-    payload = module.json.loads(driver._zero_pose_file.read_text(encoding="utf-8"))
-    assert payload["pose_mm_deg"] == driver._latest_pose
-
-
-def test_set_zero_rejects_a_moving_robot(tmp_path):
+def test_driver_accepts_unloading_and_direction_search_command_modes():
     driver = fake_driver(OldSdk(), [0.0] * 6)
-    driver._latest_joint_speeds = [0.0, 0.0, 0.6, 0.0, 0.0, 0.0]
-    driver._zero_pose_file = tmp_path / "zero_pose.json"
-    driver._save_zero_pose = lambda pose: Fr5DirectDriver._save_zero_pose(driver, pose)
-    response = SimpleNamespace(success=False, message="")
+    for mode in (module.TractionCommand.UNLOADING, module.TractionCommand.DIRECTION_SEARCH):
+        Fr5DirectDriver._on_traction_command(driver, SimpleNamespace(mode=mode))
+        assert driver._traction_mode == mode
 
-    Fr5DirectDriver._on_set_zero(driver, None, response)
 
-    assert not response.success
-    assert not driver._zero_pose_file.exists()
+def test_direction_search_profile_peak_passes_without_traction_speed_clipping():
+    driver = motion_driver(module.TractionCommand.DIRECTION_SEARCH, [0.0, 0.0, -0.28125])
+
+    Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
+
+    coordinate_mode, increment = driver.motion_commands[-1]
+    assert coordinate_mode == 1
+    assert math.isclose(increment[2], -2.8125, abs_tol=1e-9)
+    assert increment[:2] == [0.0, 0.0]
+    assert increment[3:] == [0.0, 0.0, 0.0]
+
+
+def test_direction_search_still_bounds_vector_speed_at_its_own_limit():
+    driver = motion_driver(module.TractionCommand.DIRECTION_SEARCH, [0.4, 0.4, 0.0])
+
+    Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
+
+    _, increment = driver.motion_commands[-1]
+    assert math.isclose(math.hypot(*increment[:3]), 3.0, abs_tol=1e-9)
+
+
+def test_unloading_and_positioning_keep_normal_speed_bound_and_base_sign():
+    for mode in (module.TractionCommand.UNLOADING, module.TractionCommand.POSITIONING):
+        driver = motion_driver(mode, [0.0, 0.0, 0.28])
+        driver._base_servo_sign = -1.0
+
+        Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
+
+        coordinate_mode, increment = driver.motion_commands[-1]
+        assert coordinate_mode == 1
+        assert math.isclose(increment[2], -0.5, abs_tol=1e-9)
+
+
+def test_direction_search_stale_velocity_is_zero_even_with_higher_speed_limit():
+    driver = motion_driver(module.TractionCommand.DIRECTION_SEARCH, [0.0, 0.0, -0.28])
+    driver._last_command_at = 99.0
+
+    Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
+
+    assert driver.motion_commands[-1] == (1, [0.0] * 6)
+
+
+def test_native_drag_never_receives_host_search_packets():
+    driver = motion_driver(module.TractionCommand.DIRECTION_SEARCH, [0.0, 0.0, -0.28])
+    driver._native_drag_active = True
+
+    Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
+
+    assert driver.motion_commands == []
+
+
+def test_direction_search_stops_at_two_seconds_and_repeated_commands_cannot_extend_it():
+    driver = motion_driver(module.TractionCommand.DIRECTION_SEARCH, [0.0, 0.0, -0.28])
+    command = SimpleNamespace(mode=module.TractionCommand.DIRECTION_SEARCH)
+    Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
+
+    for now in (100.5, 101.0, 101.5, 102.0, 102.1):
+        Fr5DirectDriver._on_traction_command(driver, command)
+        driver._last_command_at = now
+        Fr5DirectDriver._send_motion(driver, now, 0.01)
+
+    assert driver._direction_search_started_at == 100.0
+    assert driver._direction_search_stopped
+    assert driver.motion_commands[-2:] == [(1, [0.0] * 6), (1, [0.0] * 6)]
+
+
+def test_direction_search_stops_at_actual_tcp_travel_and_stays_stopped_after_pose_returns():
+    driver = motion_driver(module.TractionCommand.DIRECTION_SEARCH, [0.0, 0.0, -0.28])
+    Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
+    driver._latest_pose = [0.0, 0.0, -300.0, 0.0, 0.0, 0.0]
+
+    Fr5DirectDriver._send_motion(driver, 100.01, 0.01)
+    assert driver._direction_search_stopped
+    assert driver.motion_commands[-1] == (1, [0.0] * 6)
+    driver._latest_pose = [0.0] * 6
+    Fr5DirectDriver._send_motion(driver, 100.02, 0.01)
+    assert driver.motion_commands[-1] == (1, [0.0] * 6)
+
+
+def test_direction_search_guard_starts_only_on_first_nonzero_fresh_velocity():
+    driver = motion_driver(module.TractionCommand.DIRECTION_SEARCH, [0.0, 0.0, 0.0])
+    Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
+    assert driver._direction_search_started_at is None
+    driver._twist.linear.z = -0.28
+    driver._last_command_at = 105.0
+
+    Fr5DirectDriver._send_motion(driver, 105.0, 0.01)
+
+    assert driver._direction_search_started_at == 105.0
+    assert driver.motion_commands[-1][1][2] < 0.0
+
+
+def test_exiting_search_resets_guard_and_disabled_immediately_clears_velocity():
+    driver = motion_driver(module.TractionCommand.DIRECTION_SEARCH, [0.0, 0.0, -0.28])
+    Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
+    driver._direction_search_stopped = True
+
+    Fr5DirectDriver._on_traction_command(
+        driver, SimpleNamespace(mode=module.TractionCommand.DISABLED)
+    )
+
+    assert driver._twist.linear.z == 0.0
+    assert driver._last_command_at == 0.0
+    assert driver._direction_search_started_at is None
+    assert not driver._direction_search_stopped
+    Fr5DirectDriver._on_traction_command(
+        driver, SimpleNamespace(mode=module.TractionCommand.DIRECTION_SEARCH)
+    )
+    driver._twist.linear.z = -0.28
+    driver._last_command_at = 101.0
+    Fr5DirectDriver._send_motion(driver, 101.0, 0.01)
+    assert driver._direction_search_started_at == 101.0
+    assert driver.motion_commands[-1][1][2] < 0.0
+
+
+def test_disabled_mode_rejects_even_a_fresh_late_velocity_packet():
+    driver = motion_driver(module.TractionCommand.DISABLED, [0.0, 0.0, -0.28])
+
+    Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
+
+    assert driver.motion_commands[-1] == (1, [0.0] * 6)
+
+
+@pytest.mark.parametrize("pose", [None, [math.nan, 0.0, 0.0, 0.0, 0.0, 0.0]])
+def test_direction_search_rejects_missing_or_invalid_tcp_feedback(pose):
+    driver = motion_driver(module.TractionCommand.DIRECTION_SEARCH, [0.0, 0.0, -0.28])
+    driver._latest_pose = pose
+
+    with pytest.raises(RuntimeError, match="TCP feedback"):
+        Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
+
+    assert driver.motion_commands == []
+
+
+@pytest.mark.parametrize("name,default,maximum", [
+    ("direction_search_max_speed_mps", 0.30, 0.30),
+    ("direction_search_max_travel_m", 0.30, 0.30),
+    ("direction_search_max_duration_s", 2.0, 2.0),
+])
+def test_direction_search_configuration_cannot_disable_or_enlarge_driver_bounds(
+    name, default, maximum,
+):
+    for value in (0.0, -1.0, math.nan, math.inf, maximum + 0.01):
+        driver = SimpleNamespace(
+            declare_parameter=lambda name, default, configured=value: SimpleNamespace(
+                value=configured
+            )
+        )
+        with pytest.raises(ValueError, match=name):
+            Fr5DirectDriver._bounded_positive_parameter(driver, name, default, maximum)
+    driver = SimpleNamespace(
+        declare_parameter=lambda name, default: SimpleNamespace(value=default)
+    )
+    assert Fr5DirectDriver._bounded_positive_parameter(driver, name, default, maximum) == default
 
 
 def test_old_sdk_uses_vendor_threshold_independent_of_raw_idle_bias():
@@ -225,6 +413,201 @@ def test_new_sdk_accepts_extra_controller_flags():
     Fr5DirectDriver._on_native_drag_start(driver, None, response)
     assert response.success
     assert sdk.calls[0][1][:3] == [5.0, 5.0, 5.0]
+
+
+def drag_clock(monkeypatch, driver, fresh_feedback=True):
+    now = [module.time.monotonic()]
+
+    def sleep(seconds):
+        now[0] += seconds
+        if fresh_feedback:
+            driver._last_realtime_state_at = now[0]
+
+    monkeypatch.setattr(
+        module, "time", SimpleNamespace(monotonic=lambda: now[0], sleep=sleep)
+    )
+    return now
+
+
+def test_delayed_drag_activation_is_confirmed_without_resending_start(monkeypatch):
+    sdk = OldSdk()
+    driver = fake_driver(sdk, [0.0] * 6)
+    now = drag_clock(monkeypatch, driver)
+    ready_at = now[0] + 0.8
+    sdk.GetForceAndTorqueDragState = lambda: (
+        0, int(sdk.drag_state == 1 and now[0] >= ready_at), 0
+    )
+    response = SimpleNamespace(success=False, message="")
+
+    Fr5DirectDriver._on_native_drag_start(driver, None, response)
+
+    assert response.success
+    assert now[0] >= ready_at
+    assert [call[0] for call in sdk.calls] == [1]
+    assert driver._native_drag_active
+
+
+def test_unconfirmed_drag_times_out_with_status_and_closes_before_frame_restore(monkeypatch):
+    sdk = OldSdk()
+    driver = fake_driver(sdk, [0.0] * 6)
+    now = drag_clock(monkeypatch, driver)
+    started = now[0]
+    sdk.GetForceAndTorqueDragState = lambda: (0, 0, 0)
+    restore = sdk.FT_SetRCS
+
+    def set_reference(ref, coord):
+        if ref == 1:
+            assert [call[0] for call in sdk.calls] == [1, 0]
+            assert sdk.drag_state == 0
+        return restore(ref, coord)
+
+    sdk.FT_SetRCS = set_reference
+    response = SimpleNamespace(success=False, message="")
+
+    Fr5DirectDriver._on_native_drag_start(driver, None, response)
+
+    assert not response.success
+    assert 2.0 <= now[0] - started < 2.01
+    assert "dragState=0" in response.message
+    assert "sixDimensionalDragState=0" in response.message
+    assert "main_code=0" in response.message
+    assert not driver._native_drag_active
+    assert not driver._hardware_emergency_latched
+    assert not driver._force_reference_custom_active
+
+
+class LostStartReplySdk(OldSdk):
+    def EndForceDragControl(self, *args):
+        code = super().EndForceDragControl(*args)
+        if args[0] == 1:
+            raise TimeoutError("start reply lost after controller enabled drag")
+        return code
+
+
+def test_lost_start_reply_still_sends_and_confirms_drag_off():
+    sdk = LostStartReplySdk()
+    driver = fake_driver(sdk, [0.0] * 6)
+    response = SimpleNamespace(success=False, message="")
+
+    Fr5DirectDriver._on_native_drag_start(driver, None, response)
+
+    assert not response.success
+    assert "start reply lost" in response.message
+    assert [call[0] for call in sdk.calls] == [1, 0]
+    assert sdk.drag_state == 0
+    assert not driver._native_drag_active
+    assert not driver._force_reference_custom_active
+
+
+def test_lost_start_reply_and_failed_stop_disable_robot():
+    class FailedCleanup(LostStartReplySdk):
+        def EndForceDragControl(self, *args):
+            if args[0] == 0:
+                return 42
+            return super().EndForceDragControl(*args)
+
+    sdk = FailedCleanup()
+    driver = fake_driver(sdk, [0.0] * 6)
+    commands = []
+    original_command = driver._run_hardware_command
+    driver._run_hardware_command = lambda command, *args: (
+        commands.append((command, args)) or original_command(command, *args)
+    )
+    response = SimpleNamespace(success=False, message="")
+
+    Fr5DirectDriver._on_native_drag_start(driver, None, response)
+
+    assert not response.success
+    assert driver._hardware_emergency_latched
+    assert driver._hardware_fault_latched
+    assert commands == [("StopMotion", ()), ("RobotEnable", (0,))]
+    assert driver._force_reference_custom_active
+
+
+def test_drag_confirmation_rejects_controller_error_even_with_on_flag(monkeypatch):
+    sdk = OldSdk()
+    driver = fake_driver(sdk, [0.0] * 6)
+    drag_clock(monkeypatch, driver)
+
+    def status():
+        sdk.robot_state_pkg.main_code = 123
+        sdk.robot_state_pkg.sub_code = 7
+        return 0, sdk.drag_state, 0
+
+    sdk.GetForceAndTorqueDragState = status
+    response = SimpleNamespace(success=False, message="")
+
+    Fr5DirectDriver._on_native_drag_start(driver, None, response)
+
+    assert not response.success
+    assert "123/7" in response.message
+    assert [call[0] for call in sdk.calls] == [1, 0]
+
+
+def test_drag_confirmation_rejects_feedback_loss_while_waiting(monkeypatch):
+    sdk = OldSdk()
+    driver = fake_driver(sdk, [0.0] * 6)
+    now = drag_clock(monkeypatch, driver, fresh_feedback=False)
+    started = now[0]
+    sdk.GetForceAndTorqueDragState = lambda: (0, 0, 0)
+    response = SimpleNamespace(success=False, message="")
+
+    Fr5DirectDriver._on_native_drag_start(driver, None, response)
+
+    assert not response.success
+    assert "stale" in response.message
+    assert now[0] - started < driver._native_drag_start_confirm_timeout_s
+    assert [call[0] for call in sdk.calls] == [1, 0]
+
+
+def test_unconfirmed_stop_keeps_short_deadline_and_disables_robot(monkeypatch):
+    sdk = OldSdk()
+    driver = fake_driver(sdk, [0.0] * 6)
+    now = drag_clock(monkeypatch, driver)
+    response = SimpleNamespace(success=False, message="")
+    Fr5DirectDriver._on_native_drag_start(driver, None, response)
+    assert response.success
+    sdk.GetForceAndTorqueDragState = lambda: (0, 1, 0)
+    started = now[0]
+
+    Fr5DirectDriver._on_native_drag_stop(driver, None, response)
+
+    assert not response.success
+    assert 0.39 <= now[0] - started < 0.41
+    assert driver._hardware_fault_latched
+    assert driver._hardware_emergency_latched
+    assert sdk.robot_state_pkg.rbtEnableState == 0
+    # Never restore a force frame while native drag could still be ON.
+    assert driver._force_reference_custom_active
+
+
+def test_status_rpc_error_is_preserved_and_does_not_report_success():
+    sdk = OldSdk()
+    driver = fake_driver(sdk, [0.0] * 6)
+    sdk.GetForceAndTorqueDragState = lambda: 64 if sdk.drag_state else (0, 0, 0)
+    response = SimpleNamespace(success=False, message="")
+
+    Fr5DirectDriver._on_native_drag_start(driver, None, response)
+
+    assert not response.success
+    assert "status failed: 64" in response.message
+    assert "drag_status=64" in response.message
+    assert [call[0] for call in sdk.calls] == [1, 0]
+    assert not driver._force_reference_custom_active
+
+
+def test_second_drag_mode_flag_does_not_confirm_native_drag(monkeypatch):
+    sdk = OldSdk()
+    driver = fake_driver(sdk, [0.0] * 6)
+    drag_clock(monkeypatch, driver)
+    sdk.GetForceAndTorqueDragState = lambda: (0, 0, 1) if sdk.drag_state else (0, 0, 0)
+    response = SimpleNamespace(success=False, message="")
+
+    Fr5DirectDriver._on_native_drag_start(driver, None, response)
+
+    assert not response.success
+    assert "sixDimensionalDragState=1" in response.message
+    assert [call[0] for call in sdk.calls] == [1, 0]
 
 
 def test_raw_sensor_payload_does_not_fault_drag_at_start():

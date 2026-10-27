@@ -1,6 +1,7 @@
 #include "fr_traction/traction_controller_core.hpp"
 
 #include <cmath>
+#include <limits>
 
 #include "gtest/gtest.h"
 
@@ -271,6 +272,122 @@ TEST(TractionControllerCore, ConstantForceRejectsHighStiffnessOscillation)
   EXPECT_LE(velocity_reversals, 2);
   EXPECT_LE(*final_range.second - *final_range.first, 0.40);
   EXPECT_NEAR(final_forces.back(), 15.0, 0.20);
+}
+
+TEST(TractionControllerCore, UnloadingUsesTotalTensionAndNeverPulls)
+{
+  TractionControllerCore core(10.0, 80.0, 0.15, 0.020, 0.02);
+  const Vec3 direction{0.0, 0.0, 1.0};
+  ControllerOutput output;
+  for (int step = 0; step < 100; ++step) {
+    output = core.update(
+      ControlMode::POSITIONING, direction, 50.0, {20.0, 0.0, 0.0}, 0.01);
+  }
+  ASSERT_GT(output.scalar_velocity_mps, 0.0);
+  // The force is perpendicular to the retained direction. Its norm still
+  // means the rope is loaded, and a mode change must remove prior pulling.
+  for (int step = 0; step < 100; ++step) {
+    output = core.update(
+      ControlMode::UNLOADING, direction, 0.0, {20.0, 0.0, 0.0}, 0.01);
+    ASSERT_TRUE(output.valid);
+    EXPECT_LE(output.scalar_velocity_mps, 0.0);
+    EXPECT_GE(output.scalar_velocity_mps, -0.020);
+    EXPECT_DOUBLE_EQ(output.linear_velocity.x, 0.0);
+    EXPECT_DOUBLE_EQ(output.linear_velocity.y, 0.0);
+  }
+  EXPECT_NEAR(output.scalar_velocity_mps, -0.020, 1e-12);
+
+  output = core.update(
+    ControlMode::UNLOADING, direction, 0.0, {0.0, 0.0, 4.99}, 0.01);
+  EXPECT_TRUE(output.valid);
+  EXPECT_DOUBLE_EQ(norm(output.linear_velocity), 0.0);
+}
+
+TEST(TractionControllerCore, UnloadingSlowsNearFiveNewtonsAndReachesStrictStop)
+{
+  TractionControllerCore core(10.0, 80.0, 0.15, 0.020, 0.02);
+  double force_n = 30.0;
+  bool stopped = false;
+  for (int step = 0; step < 1500; ++step) {
+    const auto output = core.update(
+      ControlMode::UNLOADING, {1.0, 0.0, 0.0}, 0.0, {force_n, 0.0, 0.0}, 0.01);
+    ASSERT_TRUE(output.valid);
+    EXPECT_LE(output.scalar_velocity_mps, 0.0);
+    EXPECT_GE(output.scalar_velocity_mps, -0.020);
+    if (force_n < 5.0) {
+      EXPECT_DOUBLE_EQ(output.scalar_velocity_mps, 0.0);
+      stopped = true;
+      break;
+    }
+    if (force_n < 6.0) {
+      EXPECT_LT(std::abs(output.scalar_velocity_mps), 0.010);
+    }
+    force_n += 300.0 * output.scalar_velocity_mps * 0.01;
+  }
+  EXPECT_TRUE(stopped);
+  EXPECT_LT(force_n, 5.0);
+}
+
+TEST(TractionControllerCore, UnloadingHonorsALowerConfiguredSpeed)
+{
+  TractionControllerCore core(10.0, 80.0, 0.15, 0.020, 0.02);
+  ControllerOutput output;
+  for (int step = 0; step < 100; ++step) {
+    output = core.update(
+      ControlMode::UNLOADING, {1.0, 0.0, 0.0}, 0.0, {40.0, 0.0, 0.0},
+      0.01, {}, 0.004);
+    ASSERT_TRUE(output.valid);
+    EXPECT_GE(output.scalar_velocity_mps, -0.004);
+    EXPECT_LE(output.scalar_velocity_mps, 0.0);
+  }
+  EXPECT_NEAR(output.scalar_velocity_mps, -0.004, 1e-12);
+}
+
+TEST(TractionControllerCore, SearchProfileReachesThirtyCentimetresInTwoSeconds)
+{
+  TractionControllerCore core(10.0, 80.0, 0.15, 0.020, 0.02);
+  double displacement_m = 0.0;
+  double maximum_speed_mps = 0.0;
+  constexpr double dt_s = 0.01;
+  for (int step = 0; step <= 200; ++step) {
+    const double fraction = step * dt_s / 2.0;
+    const double speed_mps = 0.30 / 2.0 *
+      30.0 * fraction * fraction * (1.0 - fraction) * (1.0 - fraction);
+    const auto output = core.update(
+      ControlMode::DIRECTION_SEARCH, {0.0, 0.0, -1.0}, 0.0, {},
+      dt_s, {}, speed_mps);
+    ASSERT_TRUE(output.valid);
+    EXPECT_DOUBLE_EQ(output.linear_velocity.x, 0.0);
+    EXPECT_DOUBLE_EQ(output.linear_velocity.y, 0.0);
+    EXPECT_NEAR(output.linear_velocity.z, -speed_mps, 1e-12);
+    displacement_m -= output.linear_velocity.z * dt_s;
+    maximum_speed_mps = std::max(maximum_speed_mps, output.scalar_velocity_mps);
+  }
+  EXPECT_NEAR(displacement_m, 0.30, 1e-8);
+  EXPECT_NEAR(maximum_speed_mps, 0.28125, 1e-12);
+
+  const auto stopped = core.update(ControlMode::DISABLED, {}, 0.0, {}, dt_s);
+  EXPECT_DOUBLE_EQ(norm(stopped.linear_velocity), 0.0);
+}
+
+TEST(TractionControllerCore, SearchRejectsInvalidInputsAndBoundsItsSpeed)
+{
+  TractionControllerCore core(10.0, 80.0, 0.15, 0.020, 0.02);
+  EXPECT_FALSE(
+    core.update(
+      ControlMode::DIRECTION_SEARCH, {}, 0.0, {}, 0.01, {}, 0.15).valid);
+  EXPECT_FALSE(
+    core.update(
+      ControlMode::DIRECTION_SEARCH, {1.0, 0.0, 0.0}, 0.0, {}, 0.01, {}, -0.15).valid);
+  EXPECT_FALSE(
+    core.update(
+      ControlMode::DIRECTION_SEARCH, {1.0, 0.0, 0.0}, 0.0, {}, 0.01, {},
+      std::numeric_limits<double>::infinity()).valid);
+  const auto output = core.update(
+    ControlMode::DIRECTION_SEARCH, {1.0, 0.0, 0.0}, 0.0, {}, 0.01, {}, 0.5);
+  ASSERT_TRUE(output.valid);
+  EXPECT_DOUBLE_EQ(output.scalar_velocity_mps, 0.30);
+  EXPECT_DOUBLE_EQ(output.linear_velocity.x, 0.30);
 }
 
 }  // namespace fr_traction

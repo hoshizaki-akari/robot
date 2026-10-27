@@ -32,11 +32,9 @@ STATE_NAMES = {
     12: "POSITION_HOLD",
 }
 
-# Most manager services respond immediately.  Return-zero is served by the
-# hardware driver and can legitimately wait behind the preceding ServoMoveEnd
-# RPC when the operator clicks Stop and Return in quick succession.
+# Manager services acknowledge requests immediately; hardware recovery may wait
+# for cleanup, sensor activation and fresh controller feedback.
 SERVICE_RESPONSE_TIMEOUT_S = {
-    "return_zero_pose": 8.0,
     # Recovery can wait for ServoMoveEnd, force-sensor activation and fresh
     # controller feedback. The old 2 s default returned an HTTP failure while
     # the hardware RPC was still running (leaving the manager in ESTOP).
@@ -74,6 +72,11 @@ class RosBridge:
             "state": 0,
             "state_name": "INITIALIZING",
             "ready": False,
+            "operation_mode": 2,
+            "calibrated": False,
+            "target_force_max_n": None,
+            "direction_available": False,
+            "direction_locked": False,
             "message": "等待 ROS2 牵引管理器状态",
         }
         self._history: dict[str, Any] = {"valid": False, "summaries": []}
@@ -83,6 +86,7 @@ class RosBridge:
             import rclpy
             from fr_traction.msg import TractionHistory, TractionStatus
             from fr_traction.srv import SetTargetForce
+            from rcl_interfaces.srv import SetParametersAtomically
             from sensor_msgs.msg import JointState
             from std_msgs.msg import Empty
             from std_srvs.srv import Trigger
@@ -119,11 +123,12 @@ class RosBridge:
         )
         self._clients = {
             "prepare": self._node.create_client(Trigger, "/traction/prepare"),
-            "calibrate_direction": self._node.create_client(
-                Trigger, "/traction/calibrate_direction"
-            ),
             "start": self._node.create_client(Trigger, "/traction/start"),
             "stop": self._node.create_client(Trigger, "/traction/stop"),
+            "unload": self._node.create_client(Trigger, "/traction/unload"),
+            "set_target_force_limit": self._node.create_client(
+                SetParametersAtomically, "/traction_manager/set_parameters_atomically"
+            ),
             "emergency_stop": self._node.create_client(
                 Trigger, "/traction/emergency_stop"
             ),
@@ -134,12 +139,6 @@ class RosBridge:
                 Trigger, "/traction/hardware_emergency_recover"
             ),
             "reset_fault": self._node.create_client(Trigger, "/traction/reset_fault"),
-            "set_zero_pose": self._node.create_client(
-                Trigger, "/traction/set_zero_pose"
-            ),
-            "return_zero_pose": self._node.create_client(
-                Trigger, "/traction/return_zero_pose"
-            ),
             "set_target_force": self._node.create_client(
                 SetTargetForce, "/traction/set_target_force"
             ),
@@ -210,6 +209,7 @@ class RosBridge:
             self._sequence += 1
 
     def _on_traction(self, message: Any) -> None:
+        reported_target_limit = getattr(message, "target_force_max_n", None)
         direction = message.locked_direction_base
         ee = message.ee_position_base
         force_vector = [float(message.fx), float(message.fy), float(message.fz)]
@@ -252,10 +252,16 @@ class RosBridge:
                 "valid": True,
                 "state": int(message.state),
                 "state_name": STATE_NAMES.get(int(message.state), "UNKNOWN"),
-                "operation_mode": int(getattr(message, "operation_mode", 0)),
+                "operation_mode": int(getattr(message, "operation_mode", 2)),
+                "calibrated": bool(getattr(message, "calibrated", False)),
+                "direction_available": bool(getattr(message, "direction_available", False)),
+                "direction_locked": bool(getattr(message, "direction_locked", False)),
                 "position_reached": bool(getattr(message, "position_reached", False)),
                 "ready": bool(message.ready),
                 "target_force_n": float(message.target_force_n),
+                "target_force_max_n": (
+                    float(reported_target_limit) if reported_target_limit is not None else None
+                ),
                 "actual_force_n": float(message.actual_force_n),
                 "lateral_force_n": float(message.lateral_force_n),
                 "force_vector_n": force_vector,
@@ -380,6 +386,24 @@ class RosBridge:
         if not response.success:
             raise RosBridgeError(response.message)
         return {"success": True, "message": response.message, "snapshot": self.snapshot()}
+
+    def set_target_force_limit(self, limit_n: float) -> None:
+        """Keep the manager's accepted targets aligned with the persisted UI range."""
+        if not self._started or self._node is None:
+            raise RosBridgeError("ROS2牵引系统不可用，目标力上限未保存")
+        client = self._clients.get("set_target_force_limit")
+        if client is None or not client.wait_for_service(timeout_sec=0.8):
+            raise RosBridgeError("目标力上限参数服务不可用，设置未保存")
+        from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+
+        request = client.srv_type.Request()
+        request.parameters = [Parameter(
+            name="target_force_max_n",
+            value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=float(limit_n)),
+        )]
+        response = self._wait_for_future(client.call_async(request), 2.0, "设置目标力上限")
+        if not response.result.successful:
+            raise RosBridgeError(response.result.reason or "控制器拒绝目标力上限，设置未保存")
 
     def set_operation_mode(self, mode: int) -> dict[str, Any]:
         if not self._started or self._node is None:

@@ -1,32 +1,22 @@
-import unittest
-from types import SimpleNamespace
-from unittest.mock import patch
+"""Regression coverage for removing zero-pose motion from the workstation API."""
 
-from fastapi import HTTPException
+import unittest
+from unittest.mock import patch
 
 import app
 
 
-class SetZeroTest(unittest.TestCase):
-    def test_admin_can_persist_zero_only_while_stopped(self):
-        request = SimpleNamespace(headers={"x-role": "%E7%AE%A1%E7%90%86%E5%91%98"})
-        snapshot = {"traction": {"state": 5}}
-        with patch.object(app.bridge, "snapshot", return_value=snapshot):
-            with patch.object(app, "_call", return_value={"success": True}) as invoke:
-                self.assertEqual({"success": True}, app.set_zero(request))
-        invoke.assert_called_once_with("set_zero_pose")
+class RemovedZeroPoseTest(unittest.TestCase):
+    def test_zero_pose_endpoints_are_removed(self):
+        routes = {route.path for route in app.app.routes}
+        self.assertNotIn("/api/traction/set-zero", routes)
+        self.assertNotIn("/api/traction/return-zero", routes)
+        self.assertNotIn("/api/traction/calibrate-direction", routes)
 
-    def test_non_admin_or_active_motion_is_rejected(self):
-        doctor = SimpleNamespace(headers={"x-role": "%E5%8C%BB%E7%94%9F"})
-        with self.assertRaises(HTTPException) as denied:
-            app.set_zero(doctor)
-        self.assertEqual(403, denied.exception.status_code)
-
-        admin = SimpleNamespace(headers={"x-role": "%E7%AE%A1%E7%90%86%E5%91%98"})
-        with patch.object(app.bridge, "snapshot", return_value={"traction": {"state": 6}}):
-            with self.assertRaises(HTTPException) as active:
-                app.set_zero(admin)
-        self.assertEqual(409, active.exception.status_code)
+    def test_unload_calls_manager_service(self):
+        with patch.object(app, "_call", return_value={"success": True}) as invoke:
+            self.assertEqual({"success": True}, app.unload())
+        invoke.assert_called_once_with("unload")
 
 
 if __name__ == "__main__":

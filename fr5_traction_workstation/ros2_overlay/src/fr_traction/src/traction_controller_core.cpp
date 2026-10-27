@@ -60,8 +60,12 @@ TractionControllerCore::TractionControllerCore(
   smoothing_max_acceleration_mps2_(smoothing_max_acceleration_mps2),
   smoothing_max_jerk_mps3_(smoothing_max_jerk_mps3),
   drag_max_acceleration_mps2_(drag_max_acceleration_mps2),
-  drag_max_jerk_mps3_(drag_max_jerk_mps3)
+  drag_max_jerk_mps3_(drag_max_jerk_mps3),
+  unloading_max_speed_mps_(std::min(max_speed_mps, 0.020))
 {
+  if (!std::isfinite(unloading_max_speed_mps_) || unloading_max_speed_mps_ <= 0.0) {
+    unloading_max_speed_mps_ = 0.020;
+  }
   if (!std::isfinite(drag_start_force_n_) || drag_start_force_n_ <= 0.0) {
     drag_start_force_n_ = 1.0;
   }
@@ -113,6 +117,7 @@ void TractionControllerCore::reset()
   drag_release_elapsed_s_ = 0.0;
   smoothed_velocity_ = {};
   smoothed_acceleration_ = {};
+  previous_mode_ = ControlMode::DISABLED;
 }
 
 Vec3 TractionControllerCore::smooth_velocity(
@@ -158,9 +163,16 @@ ControllerOutput TractionControllerCore::update(
   double target_force_n,
   const Vec3 & wrench,
   double dt_s,
-  const Vec3 & lateral_velocity)
+  const Vec3 & lateral_velocity,
+  double linear_speed_mps)
 {
   ControllerOutput result;
+  if (mode != previous_mode_) {
+    // A mode handover must not carry a prior pulling velocity into unloading
+    // or carry a search trajectory into normal traction.
+    reset();
+    previous_mode_ = mode;
+  }
   if (mode == ControlMode::DISABLED) {
     reset();
     result.valid = true;
@@ -209,6 +221,46 @@ ControllerOutput TractionControllerCore::update(
     result.linear_velocity = smooth_velocity(
       desired_velocity, dt_s, true, drag_max_acceleration_mps2_, drag_max_jerk_mps3_);
     result.scalar_velocity_mps = norm(result.linear_velocity);
+    result.valid = finite(result.linear_velocity);
+    return result;
+  }
+  if (mode == ControlMode::DIRECTION_SEARCH || mode == ControlMode::UNLOADING) {
+    Vec3 unit;
+    if (!normalize(direction, unit) || !finite(wrench) ||
+      !std::isfinite(dt_s) || dt_s <= 0.0 || dt_s > 0.25 ||
+      !std::isfinite(linear_speed_mps) || linear_speed_mps < 0.0)
+    {
+      reset();
+      return result;
+    }
+    if (mode == ControlMode::DIRECTION_SEARCH) {
+      // The manager supplies a bounded minimum-jerk search profile in base
+      // coordinates. Its 0.30 m/s ceiling is independent of traction speed.
+      result.scalar_velocity_mps = std::min(linear_speed_mps, 0.30);
+      result.linear_velocity = unit * result.scalar_velocity_mps;
+      result.valid = finite(result.linear_velocity);
+      return result;
+    }
+    const double force_n = norm(wrench);
+    if (!std::isfinite(force_n)) {
+      reset();
+      return result;
+    }
+    if (force_n < 5.0) {
+      reset();
+      result.valid = true;
+      return result;
+    }
+    // Unload only in the opposite sense to POSITIONING's increasing-force
+    // direction. Approach a 4.5 N setpoint so the strict <5 N stop remains
+    // reachable rather than approaching 5 N asymptotically forever.
+    const double speed_limit_mps = linear_speed_mps > 0.0 ?
+      std::min(unloading_max_speed_mps_, linear_speed_mps) : unloading_max_speed_mps_;
+    const double speed_mps = std::min(speed_limit_mps, 0.004 * (force_n - 4.5));
+    const Vec3 smoothed = smooth_velocity(unit * -speed_mps, dt_s);
+    result.scalar_velocity_mps = std::clamp(
+      dot(smoothed, unit), -speed_limit_mps, 0.0);
+    result.linear_velocity = unit * result.scalar_velocity_mps;
     result.valid = finite(result.linear_velocity);
     return result;
   }

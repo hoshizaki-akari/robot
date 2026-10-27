@@ -16,7 +16,7 @@ class ControlConfigurationContractTest(unittest.TestCase):
         self.assertIn("pretension_max_travel_m", manager)
         self.assertIn("tension_search_max_mm", driver)
 
-    def test_persistent_zero_and_motion_rate_are_configured(self):
+    def test_zero_pose_services_are_removed_and_motion_rate_is_preserved(self):
         launch = (ROS / "launch" / "traction_system.launch.py").read_text(encoding="utf-8")
         driver = (ROS / "scripts" / "fr5_direct_driver_node.py").read_text(encoding="utf-8")
         self.assertIn('"motion_rate_hz": 100.0', launch)
@@ -25,14 +25,11 @@ class ControlConfigurationContractTest(unittest.TestCase):
         self.assertNotIn("1.0 / self._rate_hz, self._tick", driver)
         self.assertNotIn("now - self._last_motion_at < self._motion_period_s", driver)
         self.assertIn("cmdT=self._motion_period_s", driver)
-        self.assertIn('"fixed_zero_pose_mm_deg"', launch)
-        self.assertIn("500.7035522460938", launch)
-        self.assertIn('"zero_pose_file"', driver)
-        self.assertIn("_load_zero_pose", driver)
-        self.assertIn("_save_zero_pose", driver)
-        self.assertIn("os.replace", driver)
+        self.assertNotIn('"fixed_zero_pose_mm_deg"', launch)
+        self.assertNotIn('"/traction/set_zero_pose"', driver)
+        self.assertNotIn('"/traction/return_zero_pose"', driver)
 
-    def test_driver_bounds_command_rpc_and_return_waits_for_stop_handoff(self):
+    def test_driver_bounds_command_rpc_and_recovery_waits_for_hardware(self):
         driver = (ROS / "scripts" / "fr5_direct_driver_node.py").read_text(encoding="utf-8")
         bridge = (ROOT / "backend" / "ros_bridge.py").read_text(encoding="utf-8")
         launch = (ROS / "launch" / "traction_system.launch.py").read_text(encoding="utf-8")
@@ -42,7 +39,8 @@ class ControlConfigurationContractTest(unittest.TestCase):
         self.assertIn("_TimeoutTransport", driver)
         self.assertIn('"startup_rpc_timeout_s": 10.0', launch)
         self.assertIn('"allow_existing_force_reference": True', launch)
-        self.assertIn('"return_zero_pose": 8.0', bridge)
+        self.assertNotIn('"return_zero_pose"', bridge)
+        self.assertIn('"hardware_emergency_recover": 20.0', bridge)
 
     def test_emergency_button_controls_real_fr5_enable_state(self):
         driver = (ROS / "scripts" / "fr5_direct_driver_node.py").read_text(
@@ -126,7 +124,7 @@ class ControlConfigurationContractTest(unittest.TestCase):
     def test_all_three_modes_have_ros_interfaces(self):
         service = (ROS / "srv" / "SetOperationMode.srv").read_text(encoding="utf-8")
         status = (ROS / "msg" / "TractionStatus.msg").read_text(encoding="utf-8")
-        for name in ("CONSTANT_FORCE", "POSITION_TRACTION", "ASSISTED_DRAG"):
+        for name in ("POSITION_TRACTION", "ASSISTED_DRAG", "UNLOADING"):
             self.assertIn(name, service)
             self.assertIn(name, status)
 
@@ -153,8 +151,8 @@ class ControlConfigurationContractTest(unittest.TestCase):
         ).read_text(encoding="utf-8"))
         self.assertIn("TractionCommand::POSITIONING", manager)
         self.assertIn("PositionControlDiagnostics::SETTLING", manager)
-        self.assertIn("position_tolerance_n: 1.0", parameters)
-        self.assertIn("position_reached_tolerance_n: 1.0", parameters)
+        self.assertIn("position_tolerance_n: 2.5", parameters)
+        self.assertIn("position_reached_tolerance_n: 2.5", parameters)
         self.assertIn("position_reached_confirm_s: 1.0", parameters)
         self.assertIn("traction_max_speed_mps: 0.020", parameters)
         self.assertIn("position_far_gain_mps_per_n: 0.0060", parameters)
@@ -180,12 +178,10 @@ class ControlConfigurationContractTest(unittest.TestCase):
         stop_handler = manager.split("void handle_stop", 1)[1].split(
             "void handle_emergency", 1
         )[0]
-        self.assertIn("OperationMode::POSITION_TRACTION", stop_handler)
-        self.assertIn("OperationMode::CONSTANT_FORCE", stop_handler)
-        self.assertIn("request_controller_stop();", stop_handler)
-        self.assertIn("CONSTANT_FORCE_STOPPED", stop_handler)
-        self.assertIn("stopped at the current pose", stop_handler)
-        self.assertNotIn("TractionState::RELEASING", stop_handler)
+        self.assertIn("complete_motion(", stop_handler)
+        self.assertIn("TARGET_TRACTION_STOPPED", stop_handler)
+        self.assertIn("UNLOAD_STOPPED", stop_handler)
+        self.assertIn("publish_disabled();", stop_handler)
         self.assertNotIn("request_pretraction_return", stop_handler)
 
     def test_web_runtime_defaults_to_current_overlay(self):

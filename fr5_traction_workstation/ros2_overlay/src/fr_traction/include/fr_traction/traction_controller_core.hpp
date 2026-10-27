@@ -13,7 +13,9 @@ enum class ControlMode : unsigned char
   TRACTION = 2,
   RELEASING = 3,
   DRAGGING = 4,
-  POSITIONING = 5
+  POSITIONING = 5,
+  UNLOADING = 6,
+  DIRECTION_SEARCH = 7
 };
 
 struct ControllerOutput
@@ -56,7 +58,8 @@ public:
     double target_force_n,
     const Vec3 & wrench,
     double dt_s,
-    const Vec3 & lateral_velocity = {});
+    const Vec3 & lateral_velocity = {},
+    double linear_speed_mps = 0.0);
 
 private:
   Vec3 smooth_velocity(
@@ -78,6 +81,8 @@ private:
   double smoothing_max_jerk_mps3_;
   double drag_max_acceleration_mps2_;
   double drag_max_jerk_mps3_;
+  double unloading_max_speed_mps_;
+  ControlMode previous_mode_ = ControlMode::DISABLED;
   bool drag_active_ = false;
   double drag_release_elapsed_s_ = 0.0;
   Vec3 smoothed_velocity_;

@@ -1,5 +1,6 @@
 #include "fr_traction/traction_controller_core.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -52,12 +53,12 @@ public:
     traction_sign_x_ = declare_parameter("traction_sign_x", 1.0);
     traction_sign_y_ = declare_parameter("traction_sign_y", 1.0);
     traction_sign_z_ = declare_parameter("traction_sign_z", -1.0);
-    position_tolerance_n_ = declare_parameter("position_tolerance_n", 1.0);
+    position_tolerance_n_ = declare_parameter("position_tolerance_n", 2.5);
     position_far_gain_mps_per_n_ = declare_parameter(
       "position_far_gain_mps_per_n", 0.0060);
     position_near_gain_mps_per_n_ = declare_parameter(
       "position_near_gain_mps_per_n", 0.0045);
-    position_near_window_n_ = declare_parameter("position_near_window_n", 2.0);
+    position_near_window_n_ = declare_parameter("position_near_window_n", 5.0);
     position_prediction_horizon_s_ = declare_parameter(
       "position_prediction_horizon_s", 0.15);
     position_prediction_limit_n_ = declare_parameter("position_prediction_limit_n", 2.0);
@@ -264,9 +265,10 @@ private:
     last_command_at_ = now();
     last_command_steady_at_ = std::chrono::steady_clock::now();
     ++command_generation_;
-    command_valid_ = message.mode <= msg::TractionCommand::POSITIONING &&
+    command_valid_ = message.mode <= msg::TractionCommand::DIRECTION_SEARCH &&
       message.direction_correction_mode <= msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE &&
       std::isfinite(message.target_force_n) && message.target_force_n >= 0.0 &&
+      std::isfinite(message.linear_speed_mps) && message.linear_speed_mps >= 0.0 &&
       finite(vector_from_message(message.locked_direction_base)) &&
       finite(vector_from_message(message.lateral_velocity_base));
   }
@@ -389,6 +391,11 @@ private:
       drag_force_filter_.update(latest_wrench_, dt_s) :
       force_filter_.update(latest_wrench_, dt_s);
     Vec3 controller_wrench = filtered_wrench;
+    if (mode == ControlMode::UNLOADING && norm(latest_wrench_) < 5.0) {
+      // A falling force must stop unloading immediately, without waiting for
+      // the normal low-pass filter to catch up with the unloaded rope.
+      controller_wrench = latest_wrench_;
+    }
     if (mode == ControlMode::DRAGGING) {
       if (!ee_orientation_valid_ ||
         !rotate_base_to_tool(filtered_wrench, latest_ee_orientation_, controller_wrench))
@@ -410,7 +417,7 @@ private:
     }
     const ControllerOutput output = core_.update(
       mode, vector_from_message(command_.locked_direction_base), command_.target_force_n,
-      controller_wrench, dt_s, lateral_velocity);
+      controller_wrench, dt_s, lateral_velocity, command_.linear_speed_mps);
     if (!output.valid) {
       RCLCPP_ERROR(
         get_logger(),
@@ -435,7 +442,8 @@ private:
       }
     }
     if (mode == ControlMode::PRETENSION || mode == ControlMode::TRACTION ||
-      mode == ControlMode::RELEASING || mode == ControlMode::POSITIONING)
+      mode == ControlMode::RELEASING || mode == ControlMode::POSITIONING ||
+      mode == ControlMode::UNLOADING)
     {
       // The KWR75D's physically verified assisted-drag mapping means that an
       // increasing-tension move is +X, +Y and -Z in tool coordinates.  The
@@ -465,12 +473,16 @@ private:
       }
       bounded_output.linear_velocity = calibrated_base_velocity;
     }
+    // DIRECTION_SEARCH is already the physical tool Z- axis expressed in
+    // base_link. Applying traction_sign_* here would reverse its meaning.
     if (mode == ControlMode::TRACTION || mode == ControlMode::RELEASING ||
-      mode == ControlMode::DRAGGING || mode == ControlMode::POSITIONING)
+      mode == ControlMode::DRAGGING || mode == ControlMode::POSITIONING ||
+      mode == ControlMode::UNLOADING || mode == ControlMode::DIRECTION_SEARCH)
     {
       const double combined_speed = norm(bounded_output.linear_velocity);
-      const double mode_speed_limit = mode == ControlMode::DRAGGING ?
-        drag_max_speed_mps_ : combined_max_speed_mps_;
+      const double mode_speed_limit = mode == ControlMode::DIRECTION_SEARCH ? 0.30 :
+        (mode == ControlMode::UNLOADING ? std::min(max_speed_mps_, 0.020) :
+        (mode == ControlMode::DRAGGING ? drag_max_speed_mps_ : combined_max_speed_mps_));
       if (combined_speed > mode_speed_limit) {
         const double scale = mode_speed_limit / combined_speed;
         bounded_output.linear_velocity = bounded_output.linear_velocity * scale;
@@ -504,10 +516,10 @@ private:
   double traction_sign_x_ = 1.0;
   double traction_sign_y_ = 1.0;
   double traction_sign_z_ = -1.0;
-  double position_tolerance_n_ = 1.0;
+  double position_tolerance_n_ = 2.5;
   double position_far_gain_mps_per_n_ = 0.0040;
   double position_near_gain_mps_per_n_ = 0.0015;
-  double position_near_window_n_ = 2.0;
+  double position_near_window_n_ = 5.0;
   double position_prediction_horizon_s_ = 0.25;
   double position_prediction_limit_n_ = 2.0;
   double position_force_rate_cutoff_hz_ = 3.0;

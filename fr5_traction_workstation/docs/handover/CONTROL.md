@@ -1,0 +1,161 @@
+# ROS 2 控制、算法与接口接管说明
+
+当前行为更新：2026-10-27，分支 `feat/multi-mode-traction` 工作树。本文描述本次新源码，不能据此认定既有运行进程已加载新版本。新构建尚未替换原真机运行栈；未执行本次新流程的实机运动验收。最终构建与测试结果见 [MACHINE_AND_VALIDATION](MACHINE_AND_VALIDATION.md)。
+
+## 1. 正式控制链和修改入口
+
+```text
+浏览器 → app.py → backend/ros_bridge.py → traction_manager_node
+                                               ├─ 基线/流程/方向/到位/记录
+                                               ├─ /traction/command
+                                               ↓
+                                      traction_controller_node
+                                               ├─ 滤波/纯C++算法/坐标符号/限速
+                                               ↓
+                            /controller_manager/command_cart_vel
+                                               ↓
+                                 fr5_direct_driver_node.py
+                                               ↓
+                                       FR5 / KWR75D
+```
+
+Python direct driver 是唯一 SDK 所有者。`/controller_manager/*` 是兼容命名空间，由 direct driver 提供，不意味着当前运行标准 ros2_control 硬件插件。原生省力拖拽由 `EndForceDragControl` 在控制柜内执行，不使用 C++ 主机侧拖拽速度；目标牵引、方向搜索和卸力通过 `ServoCart` 执行。
+
+以下路径均相对 `ros2_overlay/src/fr_traction/`：
+
+| 文件 | 当前职责 |
+| --- | --- |
+| `src/traction_manager_node.cpp` | 自动/手动基线、操作模式、待机方向、启动锁定、搜索/卸力、异步控制权交接、安全与记录 |
+| `src/traction_controller_node.cpp` | 100 Hz ROS 适配、力滤波、姿态/符号变换、各模式独立限速、过期置零 |
+| `src/traction_controller_core.cpp` | POSITIONING、UNLOADING、DIRECTION_SEARCH；保留的历史算法实例 |
+| `src/traction_math.cpp` / `.hpp` | 向量、低通、稳健方向估计、目标牵引预测速度控制 |
+| `src/traction_safety.cpp` | 有限值、新鲜度、健康与可选 UI 心跳；没有实际受力幅值故障门槛 |
+| `src/traction_state_machine.cpp` | 合法状态边、运动状态分类；新增流程必须补状态与集成测试 |
+| `scripts/fr5_direct_driver_node.py` | 唯一 SDK 连接、真实反馈、servo/native drag 接管、搜索独立约束、急停/恢复 |
+| `config/traction_params.yaml`、`launch/traction_system.launch.py` | 分别提供管理器/控制器参数、driver 正式参数；以实际加载配置为准 |
+| `msg/*.msg`、`srv/*.srv` | ROS 接口契约，修改后须重新生成并重启所有依赖进程 |
+
+## 2. 三种公开操作模式
+
+操作模式与控制命令模式是两组不同数字，不能混用。
+
+| 操作模式 | 数值 | 行为 |
+| --- | --- | --- |
+| 目标牵引 `POSITION_TRACTION` | 1 | 原位置牵引算法，开始时锁方向，达到目标 ±2.5 N 且稳定后保持当前位置 |
+| 省力拖拽 `ASSISTED_DRAG` | 2，默认 | FR5 控制柜原生辅助拖拽，无需目标力或锁定方向 |
+| 卸力 `UNLOADING` | 3 | 优先沿上次牵引方向的减力方向运动，否则用最新有效方向；真实合力 <5 N 停止并保位 |
+
+恒力 `CONSTANT_FORCE=0` 仅保留历史常量/算法，当前模式接口不接受。公开回零、设置零点、返回牵引前姿态及手动“方向确定”接口均已移除。普通结束始终停在当前位置，不执行返回运动。
+
+## 3. 基线只建立一次
+
+1. `INITIALIZING` 等待 controller、driver、正确坐标系的力、关节和末端反馈就绪，进入 `READY`。
+2. 启动时自动采集静止反馈：持续至少 `auto_calibration_window_s=0.5 s`、至少 20 个新 wrench 序号样本，取原始力均值作为松绳软件基线。
+3. `calibrated=true` 后，结束、切模式、故障/急停恢复或同一管理器进程内的反馈重连不会重复基线采集。重启整个 manager 是新程序启动，会重新采集一次，因此启动时按约定保持绳带松弛。
+4. 顶栏“重新校准”调用 `/traction/prepare`，仅设备健康、反馈新鲜、机器人停止且无控制权交接时允许，显式替换基线并清除旧方向。运动中禁用。
+
+`latest_wrench = raw_wrench - baseline`，只扣力三分量；力矩保持原值并检查有限性。`/traction/corrected_wrench` 是去基线但未低通的流。manager 和 controller 各自对该流做 5 Hz 低通，两者不是串联。软件基线不等于 SDK 硬件 `FT_SetZero`，也不是完整重力补偿模型；带载手动重新校准会将当时张力一并当成零偏。
+
+## 4. 待机方向、开始锁定与一次性搜索
+
+目标牵引模式待机时，采集总力至少 `auto_direction_min_force_n=3 N` 的方向样本，每 `auto_direction_update_s=2 s` 做一次稳健估计。算法归一化每个样本、剔除角度离群；张力幅值变化本身不代表方向变化。低力或本窗口没有可靠方向时保留最新有效方向，提示等待有效施力。
+
+点击开始时锁定最新有效方向；若当前已张紧但尚未赶上下一次 2 秒更新，可立即从当前有效受力方向取得方向。目标牵引及到达后的 `POSITION_HOLD` 全程保持锁定；运行中不做旧版主动方向修正。点击结束后才恢复待机取向。
+
+没有方向时，开始会触发一次搜索：
+
+- 用末端四元数把物理工具 `Z−` 转成 base 向量，沿该固定向量运动，角速度为 0。
+- `DIRECTION_SEARCH` 使用独立最小 jerk 五次曲线：`v = (D/T) × 30u²(1−u)²`，`D=0.30 m`、`T=2.0 s`，理论峰值 `0.28125 m/s`。
+- 任一条件满足即停止搜索：去基线未低通合力达到 3 N、实际起点位移达到 0.30 m、monotonic 时间达到 2 s。driver 另有独立速度 0.30 m/s、位移 0.30 m、时长 2 s 约束；搜索不受普通牵引 0.05 m/s 上限截断。
+- 达到 3 N 后记录方向，插入停止命令并自动进入目标牵引；不要求医生再次点击。
+- 到距离/时间仍没有受力，回 `READY` 提示检查绳带；保留校准，不报设备故障，不自动重复搜索。反馈中断同样取消这一次搜索，不在恢复后自行续搜。
+
+搜索命令已经是真实工具 Z− 的 base 表达，controller 必须跳过 `traction_sign_x/y/z` 补偿。目标牵引和卸力则沿已校准的牵引符号路径，不能为了修正显示箭头改变搜索或实际运动符号。
+
+## 5. 目标牵引、卸力与坐标
+
+目标牵引用 `PositionTractionController` 预测速度环：估计力率和刚度，接近目标时提前制动。默认容差 `position_tolerance_n=2.5 N`，近场窗口 `position_near_window_n=5 N` 必须大于容差。普通目标速度最大 0.020 m/s；残余内部速度低于 0.0005 m/s 才进入 `SETTLING`。
+
+manager 同时要求实测总张力处于目标 ±2.5 N、位置控制诊断新鲜且为 `SETTLING`，持续 `position_reached_confirm_s=1 s` 才到位。随后停止 Cartesian 会话并进入 `POSITION_HOLD`；外力变化不会自动重启。修改目标可重新申请控制器；应先确认上次停止已完成。到位保持仍属本次牵引，方向不解锁。
+
+最大可调目标力默认 `target_force_max_n=100 N`，管理员可以在设置中提高到 100 N 以上。后端将设置与 manager ROS 动态参数原子同步；开始及运行中调目标均使用同一配置范围。已移除 `validated_target_max_n` 的额外 100 N 硬门槛。该上限只约束用户可选目标，不触发实际受力超限故障，也不代表该范围已实机验收。
+
+卸力既可从待机启动，也可在目标牵引/到位保持/拖拽时一键请求。方向优先已记录的牵引方向，没有历史牵引方向才用最新有效方向。没有有效方向时不猜方向；张力已经低于 5 N 时不继续主动减力。原生拖拽必须确认 OFF、恢复参考系后再交接 Cartesian；交接期间结束/急停不得在异步回复后再启动卸力。
+
+`UNLOADING` 沿 POSITIONING 增力方向的反向运动，上限 0.020 m/s，接近 5 N 降速，禁止反向拉力。core 的速度律向 4.5 N 靠近，使严格 `<5 N` 判据能实际到达；manager 与 controller 对未低通合力 `<5 N` 立即停止，避免滤波滞后继续移动。停止后保留当前位置，不返回原位。
+
+ROS 位置/角度/力使用 m、rad、N；SDK 使用 mm、deg，转换只在 driver 边界。目标/卸力算法输出 base 速度，经 base→tool、`traction_sign=(+1,+1,−1)`、tool→base，再交给 driver 的 `base_servo_sign=+1`。原生拖拽另用工具 Z 绕转 180° 的自定义力参考系。三处符号职责不同。最终空间命令看 `/traction/controller_velocity_vector`，标量诊断不保证等于校准后向量对原始方向的投影。
+
+## 6. 状态和接口
+
+| 状态 | 值 | 当前含义 |
+| --- | --- | --- |
+| INITIALIZING / READY | 0 / 1 | 等输入 / 自动校准或正常待机 |
+| MANUAL_SETUP / CALIBRATING | 2 / 4 | 保留的准备状态 / 历史方向采样状态，不再要求手动方向确认 |
+| PRETENSION | 3 | 当前一次性工具 Z− 方向搜索 |
+| DIRECTION_LOCKED | 5 | 本次目标方向已锁定，等待 Cartesian 就绪 |
+| TRACTION | 6 | 目标牵引 |
+| RELEASING | 7 | 当前主动卸力，不是旧返回位姿 |
+| COMPLETED | 8 | 记录终态，随后回 READY |
+| FAULT / EMERGENCY_STOP | 9 / 10 | 故障 / 急停锁存 |
+| DRAGGING / POSITION_HOLD | 11 / 12 | 原生拖拽 / 目标到位保持 |
+
+控制命令为 `DISABLED=0, PRETENSION=1, TRACTION=2, RELEASING=3, DRAG=4, POSITIONING=5, UNLOADING=6, DIRECTION_SEARCH=7`。其中旧 `TractionCommand.RELEASING=3` 仍代表历史横向控制算法，不能与 manager `TractionState.RELEASING=7` 混淆。新消息增加 `linear_speed_mps`；状态增加 `calibrated/direction_available/direction_locked`。
+
+| ROS 接口 | 当前用途 |
+| --- | --- |
+| `/traction/prepare` | 停止状态下显式重新校准，不是每次启动前置步骤 |
+| `/traction/start`、`/traction/stop` | 启动当前模式 / 结束并保位；success 可能仅表示异步请求已接受 |
+| `/traction/unload` | 一键卸力及必要的 native→Cartesian 交接 |
+| `/traction/set_operation_mode` | 接受 1/2/3，拒绝历史模式 0 |
+| `/traction/set_target_force` | 目标牵引目标，含运行中更新与到位后重新牵引 |
+| `/traction/emergency_stop`、`/traction/reset_fault` | manager 软件锁存 / 复位，原基线保持有效 |
+| `/traction/hardware_emergency_stop`、`/traction/hardware_emergency_recover` | driver 硬件停止、清理和恢复；恢复不自动继续旧任务 |
+| `/controller_manager/switch_controller` | driver 兼容 Cartesian 接管/释放 |
+| `/traction/native_drag_start`、`/traction/native_drag_stop` | driver 原生拖拽 |
+| `/controller_manager/wrench`、`ee_state`、`healthy`、`/joint_states` | driver 原始反馈和健康 |
+| `/traction/corrected_wrench`、`command`、`status`、`history` | 去基线反馈、模式命令、状态与会话历史 |
+| `/traction/controller_velocity_vector`、`position_control_diagnostics` | 最终速度向量、到位相位/预测/刚度诊断 |
+
+`/traction/calibrate_direction`、`set_zero_pose`、`return_zero_pose`、`return_pretraction_pose` 不再是公开操作接口。排查只查询 topic/service 类型和现状，不调用动作服务探测连通性。
+
+## 7. 安全、暂停和恢复
+
+工作站不再因实际受力超过 100 N、150 N 或其他软件力阈值报故障。`SafetyMonitor` 仍检查有限值、负的异常 force metrics、数据新鲜度、controller/driver 健康和可选 UI 心跳。历史 `SafetyLimits` 字段和 OVERFORCE/HARD_OVERFORCE 枚举可用于读取旧记录，当前 monitor 不生成这些受力幅值故障。机械臂控制器自身的保护保持原样。
+
+正常速度命令/corrected wrench 超过 0.25 s 不新鲜，controller 输出零并 reset；manager 的短暂停止窗口也是 0.25 s，力/末端长超时 1.2 s 则故障并请求停止。搜索反馈中断取消本次搜索。原生拖拽运行在控制柜内，主机发 DISABLED 不能证明 native drag 已关闭；必须查询 OFF 并按失败路径处理。
+
+网页急停先请求 driver 硬件停止，再锁存 manager；恢复先执行硬件恢复和旧会话清理，再清 manager 锁存。恢复需要健康、反馈新鲜、停止已确认，保留原基线，要求医生主动开始新任务。只调用 manager 软件急停本身不能证明控制箱已去使能。
+
+## 8. 记录与验证
+
+每次实际开始新动作建立独立 session CSV，结束/故障关闭记录；重复开始无需重新校准，也必须有新记录。目标牵引交接卸力时关闭前一模式记录并建立卸力记录。历史目录保持 `debug/traction_sessions`，应与 app 导出路径一致。方向跟随字段仍可存在于历史 CSV，不能据字段名推断新流程仍主动修正方向。
+
+本次控制改动已从源码离线编译测试，覆盖 ±2.5 N 力带、卸力只减力/临近停止/严格 <5 N、搜索 2 s 曲线积分 0.30 m 与峰速、无软件幅值故障等。准确最终测试数量、driver 假 SDK 和隔离 ROS 集成结果由本次主验证记录补充；离线通过不能证明真实工具方向、3 N 搜索制动距离、负载稳定性或医生现场操作已验收。
+
+纯 core 测试可在 `/tmp` 编译，不启动 SDK：
+
+```bash
+cd /home/zhj/projects/robot/fr5_traction_workstation
+test_binary=$(mktemp /tmp/fr-traction-core-tests.XXXXXX)
+g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic \
+  -I ros2_overlay/src/fr_traction/include \
+  ros2_overlay/src/fr_traction/src/traction_math.cpp \
+  ros2_overlay/src/fr_traction/src/direction_correction.cpp \
+  ros2_overlay/src/fr_traction/src/traction_controller_core.cpp \
+  ros2_overlay/src/fr_traction/src/traction_safety.cpp \
+  ros2_overlay/src/fr_traction/src/traction_state_machine.cpp \
+  ros2_overlay/src/fr_traction/test/test_traction_math.cpp \
+  ros2_overlay/src/fr_traction/test/test_direction_correction.cpp \
+  ros2_overlay/src/fr_traction/test/test_traction_controller_core.cpp \
+  ros2_overlay/src/fr_traction/test/test_traction_safety.cpp \
+  ros2_overlay/src/fr_traction/test/test_traction_state_machine.cpp \
+  ros2_overlay/src/fr_traction/test/test_traction_synthetic_pipeline.cpp \
+  -lgtest_main -lgtest -pthread -o "$test_binary" && "$test_binary"
+```
+
+## 9. 历史算法和后续修改注意点
+
+`continuous_force_controller_`、`OneDimensionalAdmittance`、`DirectionEstimator`、`AdaptiveDirectionFollower` 和旧 host drag 等仍有纯算法代码及回归测试，供历史分析与以后研究。正式三模式工作流不再开放恒力和运行中方向跟随；`direction_correction_mode=active` 等遗留参数不代表新目标牵引会转向。旧私有回位、auto-tension helper 也不是当前方向搜索入口。
+
+改算法从 math/core 开始；改流程从 manager 和状态边开始；改实际坐标从 controller、driver 和 launch 的三层符号契约开始。更新消息后重建整个依赖链并重启 ROS 与网页，使生成接口一致。普通 `use_sim_time=true` 不能隔离机器人；所有离线集成必须显式使用假反馈和假硬件服务，不能启动正式硬件 launch。

@@ -31,6 +31,7 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/wrench_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/empty.hpp"
@@ -44,7 +45,8 @@ enum class OperationMode : uint8_t
 {
   CONSTANT_FORCE = 0,
   POSITION_TRACTION = 1,
-  ASSISTED_DRAG = 2
+  ASSISTED_DRAG = 2,
+  UNLOADING = 3
 };
 
 const char * operation_mode_name(OperationMode mode)
@@ -53,6 +55,7 @@ const char * operation_mode_name(OperationMode mode)
     case OperationMode::CONSTANT_FORCE: return "CONSTANT_FORCE";
     case OperationMode::POSITION_TRACTION: return "POSITION_TRACTION";
     case OperationMode::ASSISTED_DRAG: return "ASSISTED_DRAG";
+    case OperationMode::UNLOADING: return "UNLOADING";
   }
   return "UNKNOWN";
 }
@@ -104,16 +107,25 @@ public:
     calibration_max_angle_p95_deg_ = declare_parameter("calibration_max_angle_p95_deg", 15.0);
     target_force_min_n_ = declare_parameter("target_force_min_n", 1.0);
     target_force_max_n_ = declare_parameter("target_force_max_n", 100.0);
-    validated_target_max_n_ = declare_parameter("validated_target_max_n", 100.0);
+    auto_calibration_window_s_ = declare_parameter("auto_calibration_window_s", 0.5);
+    auto_direction_min_force_n_ = declare_parameter("auto_direction_min_force_n", 3.0);
+    auto_direction_update_s_ = declare_parameter("auto_direction_update_s", 2.0);
+    direction_search_distance_m_ = declare_parameter("direction_search_distance_m", 0.30);
+    direction_search_duration_s_ = declare_parameter("direction_search_duration_s", 2.0);
+    unload_stop_force_n_ = declare_parameter("unload_stop_force_n", 5.0);
+    unload_speed_mps_ = declare_parameter("unload_speed_mps", 0.020);
+    const auto initial_mode = declare_parameter("operation_mode", 2);
+    if (initial_mode < 1 || initial_mode > 3) {
+      throw std::runtime_error("operation_mode must be target(1), drag(2) or unload(3)");
+    }
+    operation_mode_ = static_cast<OperationMode>(initial_mode);
     force_tolerance_n_ = declare_parameter("force_tolerance_n", 1.0);
     force_deadband_n_ = declare_parameter("force_deadband_n", 0.15);
     // The timeout now covers the direct, low-speed position return. It is not
     // a force-unloading timeout because RELEASING no longer runs force control.
     release_timeout_s_ = declare_parameter("release_timeout_s", 300.0);
-    position_reached_tolerance_n_ = declare_parameter("position_reached_tolerance_n", 1.0);
+    position_reached_tolerance_n_ = declare_parameter("position_reached_tolerance_n", 2.5);
     position_reached_confirm_s_ = declare_parameter("position_reached_confirm_s", 1.0);
-    hard_overforce_n_ = declare_parameter("hard_overforce_n", 150.0);
-    hard_overforce_confirm_s_ = declare_parameter("hard_overforce_confirm_s", 0.20);
     wrench_timeout_s_ = declare_parameter("wrench_timeout_s", 0.10);
     ee_state_timeout_s_ = declare_parameter("ee_state_timeout_s", 0.20);
     motion_pause_timeout_s_ = declare_parameter("motion_pause_timeout_s", 0.10);
@@ -142,14 +154,10 @@ public:
       "ui_heartbeat_topic", std::string("/traction/ui_heartbeat"));
     slack_calibration_topic_ = declare_parameter(
       "slack_calibration_topic", std::string("/traction/slack_calibration"));
-    pretraction_return_service_name_ = declare_parameter(
-      "pretraction_return_service", std::string("/traction/return_pretraction_pose"));
     native_drag_start_service_name_ = declare_parameter(
       "native_drag_start_service", std::string("/traction/native_drag_start"));
     native_drag_stop_service_name_ = declare_parameter(
       "native_drag_stop_service", std::string("/traction/native_drag_stop"));
-    pretraction_return_tolerance_m_ = declare_parameter(
-      "pretraction_return_tolerance_m", 0.0015);
     expected_wrench_frame_ = declare_parameter("expected_wrench_frame", std::string("base_link"));
     data_directory_ = declare_parameter("data_directory", std::string("debug/traction_sessions"));
     switch_service_name_ = declare_parameter(
@@ -157,7 +165,33 @@ public:
 
     validate_parameters();
     force_filter_.set_cutoff(force_filter_cutoff_hz_);
-    safety_monitor_.set_limits({hard_overforce_n_, hard_overforce_confirm_s_});
+    parameter_callback_ = add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter> & parameters) {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        double proposed = target_force_max_n_;
+        for (const auto & parameter : parameters) {
+          if (parameter.get_name() != "target_force_max_n") {continue;}
+          if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE ||
+          !std::isfinite(parameter.as_double()) || parameter.as_double() < target_force_min_n_)
+          {
+            result.successful = false;
+            result.reason = "target_force_max_n must be a finite positive double";
+            return result;
+          }
+          proposed = parameter.as_double();
+        }
+        if ((is_motion_state(state_machine_.state()) ||
+        state_machine_.state() == TractionState::POSITION_HOLD) && target_force_n_ > proposed)
+        {
+          result.successful = false;
+          result.reason = "Stop traction before reducing the configured maximum below its target";
+          return result;
+        }
+        target_force_max_n_ = proposed;
+        target_force_n_ = std::min(target_force_n_, target_force_max_n_);
+        return result;
+      });
     std::filesystem::create_directories(data_directory_);
 
     command_publisher_ = create_publisher<msg::TractionCommand>(
@@ -173,8 +207,6 @@ public:
       slack_calibration_topic_, rclcpp::QoS(1).reliable().transient_local());
     switch_client_ = create_client<controller_manager_msgs::srv::SwitchController>(
       switch_service_name_);
-    pretraction_return_client_ = create_client<std_srvs::srv::Trigger>(
-      pretraction_return_service_name_);
     native_drag_start_client_ = create_client<std_srvs::srv::Trigger>(
       native_drag_start_service_name_);
     native_drag_stop_client_ = create_client<std_srvs::srv::Trigger>(
@@ -244,11 +276,11 @@ public:
       const std_srvs::srv::Trigger::Response::SharedPtr response) {
         handle_prepare(response);
       });
-    calibrate_service_ = create_service<std_srvs::srv::Trigger>(
-      "/traction/calibrate_direction",
+    unload_service_ = create_service<std_srvs::srv::Trigger>(
+      "/traction/unload",
       [this](const std_srvs::srv::Trigger::Request::SharedPtr,
       const std_srvs::srv::Trigger::Response::SharedPtr response) {
-        handle_calibrate(response);
+        handle_unload(response);
       });
     start_service_ = create_service<std_srvs::srv::Trigger>(
       "/traction/start",
@@ -323,8 +355,16 @@ private:
       calibration_max_angle_p95_deg_ > 0.0 && std::isfinite(target_force_min_n_) &&
       target_force_min_n_ > 0.0 && std::isfinite(target_force_max_n_) &&
       target_force_max_n_ >= target_force_min_n_ &&
-      std::isfinite(validated_target_max_n_) && validated_target_max_n_ >= target_force_min_n_ &&
-      validated_target_max_n_ <= target_force_max_n_ &&
+      std::isfinite(auto_calibration_window_s_) && auto_calibration_window_s_ > 0.0 &&
+      std::isfinite(auto_direction_min_force_n_) && auto_direction_min_force_n_ > 0.0 &&
+      std::isfinite(auto_direction_update_s_) && auto_direction_update_s_ > 0.0 &&
+      std::isfinite(direction_search_distance_m_) && direction_search_distance_m_ > 0.0 &&
+      direction_search_distance_m_ <= 0.30 &&
+      std::isfinite(direction_search_duration_s_) && direction_search_duration_s_ > 0.0 &&
+      direction_search_duration_s_ <= 2.0 &&
+      1.875 * direction_search_distance_m_ / direction_search_duration_s_ <= 0.30 &&
+      unload_stop_force_n_ == 5.0 &&
+      std::isfinite(unload_speed_mps_) && unload_speed_mps_ > 0.0 && unload_speed_mps_ <= 0.020 &&
       std::isfinite(target_ramp_fast_nps_) && target_ramp_fast_nps_ > 0.0 &&
       std::isfinite(target_ramp_slow_nps_) && target_ramp_slow_nps_ > 0.0 &&
       target_ramp_fast_nps_ >= target_ramp_slow_nps_ &&
@@ -333,16 +373,13 @@ private:
       std::isfinite(release_timeout_s_) && release_timeout_s_ > 0.0 &&
       std::isfinite(position_reached_tolerance_n_) && position_reached_tolerance_n_ > 0.0 &&
       std::isfinite(position_reached_confirm_s_) && position_reached_confirm_s_ > 0.0 &&
-      std::isfinite(hard_overforce_n_) && hard_overforce_n_ > target_force_max_n_ &&
-      std::isfinite(hard_overforce_confirm_s_) && hard_overforce_confirm_s_ > 0.0 &&
       std::isfinite(wrench_timeout_s_) && wrench_timeout_s_ > 0.0 &&
       std::isfinite(ee_state_timeout_s_) && ee_state_timeout_s_ > 0.0 &&
       std::isfinite(motion_pause_timeout_s_) && motion_pause_timeout_s_ > 0.0 &&
       motion_pause_timeout_s_ <= wrench_timeout_s_ &&
       motion_pause_timeout_s_ <= ee_state_timeout_s_ &&
       std::isfinite(ui_heartbeat_timeout_s_) && ui_heartbeat_timeout_s_ > 0.0 &&
-      std::isfinite(controller_health_timeout_s_) && controller_health_timeout_s_ > 0.0 &&
-      std::isfinite(pretraction_return_tolerance_m_) && pretraction_return_tolerance_m_ > 0.0;
+      std::isfinite(controller_health_timeout_s_) && controller_health_timeout_s_ > 0.0;
     const bool direction_valid =
       std::isfinite(direction_fast_cutoff_hz_) && direction_fast_cutoff_hz_ > 0.0 &&
       std::isfinite(direction_slow_cutoff_hz_) && direction_slow_cutoff_hz_ > 0.0 &&
@@ -413,11 +450,21 @@ private:
   void on_ee_state(const fairino_msgs::msg::PoseTwist & message)
   {
     latest_ee_position_ = point_from_message(message);
+    const auto & q = message.pose.orientation;
+    const double qnorm = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    tool_search_direction_valid_ = std::isfinite(qnorm) && std::abs(qnorm - 1.0) < 0.01 &&
+      message.header.frame_id == "base_link";
+    if (tool_search_direction_valid_) {
+      const double x = q.x / qnorm, y = q.y / qnorm, z = q.z / qnorm, w = q.w / qnorm;
+      tool_search_direction_ =
+      {-2.0 * (x * z + w * y), -2.0 * (y * z - w * x), -(1.0 - 2.0 * (x * x + y * y))};
+    }
     latest_ee_linear_velocity_ = {
       message.twist.linear.x, message.twist.linear.y, message.twist.linear.z};
     latest_ee_angular_velocity_ = {
       message.twist.angular.x, message.twist.angular.y, message.twist.angular.z};
-    ee_valid_ = finite(latest_ee_position_) && finite(latest_ee_linear_velocity_) &&
+    ee_valid_ = tool_search_direction_valid_ && finite(latest_ee_position_) && finite(
+      latest_ee_linear_velocity_) &&
       finite(latest_ee_angular_velocity_);
     last_ee_at_ = now();
     last_ee_steady_at_ = std::chrono::steady_clock::now();
@@ -519,237 +566,318 @@ private:
   void handle_prepare(const std_srvs::srv::Trigger::Response::SharedPtr response)
   {
     const auto state = state_machine_.state();
-    if (state != TractionState::READY && state != TractionState::COMPLETED &&
-      state != TractionState::MANUAL_SETUP && state != TractionState::DIRECTION_LOCKED &&
-      state != TractionState::FAULT && state != TractionState::EMERGENCY_STOP)
-    {
-      response->success = false;
-      response->message = state_and_allowed("initial calibration while traction is stopped");
-      return;
-    }
     std::string reason;
-    // This service is explicitly the operator's way to replace a stale
-    // baseline after loosening the band. The previous baseline may therefore
-    // report a large force even though the current physical state is slack;
-    // requiring the old baseline check here would make the recovery button
-    // permanently unavailable. The operator confirms that the band is slack
-    // by pressing this button; the running traction safety checks remain
-    // unchanged.
-    const bool live_inputs = live_controller() && live_hardware() && live_wrench() && live_joint();
-    if (!live_inputs || !finite(raw_wrench_)) {
-      reason = "LIVE_INPUTS_NOT_READY";
-    }
-    if (!reason.empty()) {
-      response->success = false;
-      response->message = "Prepare rejected: " + reason + ".";
-      return;
-    }
-    if ((state == TractionState::COMPLETED || state == TractionState::FAULT ||
-      state == TractionState::EMERGENCY_STOP) && !transition(TractionState::READY))
+    if (!normal_stopped() || controller_stop_count_ > 0 || controller_start_pending_ ||
+      controller_activation_confirming_ ||
+      native_drag_stop_pending_ || !readiness_check(reason) || !live_ee() ||
+      latest_joint_speed_norm_ > 0.02 || !finite(raw_wrench_))
     {
       response->success = false;
-      response->message = "Initial calibration could not reset the stopped state.";
+      response->message = "重新校准仅允许在设备健康、反馈新鲜且机械臂停止时执行";
       return;
     }
-    if (wrench_baseline_valid_) {
-      // Re-capture the complete mounted tool/sensor load while the operator
-      // confirms that the band is slack. This is the software fallback for
-      // controllers that reject FT_SetZero and also removes tool gravity.
-      wrench_baseline_ = raw_wrench_;
-      latest_wrench_ = {};
-      filtered_wrench_ = {};
-    }
-    std_msgs::msg::Bool slack_calibration;
-    slack_calibration.data = true;
-    slack_calibration_publisher_->publish(slack_calibration);
-    // Every prepare starts a clean record.  The previous implementation only
-    // closed a record when prepare was repeated from MANUAL_SETUP.  Repeating
-    // prepare from DIRECTION_LOCKED left record_stream_ open, so begin_session()
-    // attempted to open a second file on the same stream and terminated the
-    // manager.  Close any active session before resetting its state.
-    if (session_active_) {
-      stop_reason_ = state == TractionState::MANUAL_SETUP ?
-        "PREPARE_RESTARTED_AFTER_BASELINE_RESET" : "INITIAL_CALIBRATION_RESTARTED";
-      finalize_session();
-    }
+    if (session_active_) {stop_reason_ = "MANUAL_RECALIBRATION"; finalize_session();}
+    if (state != TractionState::READY) {transition(TractionState::READY);}
     reset_session_state();
-    begin_session();
-    if (state != TractionState::MANUAL_SETUP) {
-      transition(TractionState::MANUAL_SETUP);
-    }
+    latest_direction_valid_ = false;
+    recorded_direction_valid_ = false;
+    auto_direction_samples_.clear();
+    auto_direction_started_ = {};
+    apply_baseline(raw_wrench_);
     response->success = true;
-    response->message = operation_mode_ == OperationMode::ASSISTED_DRAG ?
-      "Initial calibration completed. Press Start Drag when ready." :
-      "Initial calibration completed. Move the FR5 by teach pendant, then confirm direction.";
+    response->message = "重新校准完成；后续结束、切换模式或重连无需重复校准";
   }
 
-  void handle_calibrate(const std_srvs::srv::Trigger::Response::SharedPtr response)
+
+  bool normal_stopped() const
   {
-    if (state_machine_.state() != TractionState::MANUAL_SETUP) {
-      response->success = false;
-      response->message = state_and_allowed("calibrate_direction only from MANUAL_SETUP");
-      return;
-    }
-    if (!live_wrench() || !live_joint() || !live_controller() || !live_hardware()) {
-      response->success = false;
-      response->message =
-        "Calibration rejected: live Wrench, joint state and controller health are required.";
-      return;
-    }
-    if (norm(filtered_wrench_) < calibration_min_force_n_) {
-      response->success = false;
-      response->message = "Calibration rejected: maintain at least 0.5 N manual tension first.";
-      return;
-    }
-    if (latest_joint_speed_norm_ > 0.02) {
-      response->success = false;
-      response->message = "Calibration rejected: stop the teach pendant and hold the flange still.";
-      return;
-    }
-    if (!normalize(filtered_wrench_, temporary_direction_)) {
-      response->success = false;
-      response->message = "Calibration rejected: the measured force direction is invalid.";
-      return;
-    }
-    temporary_direction_valid_ = true;
-    calibration_requested_ = false;
-    calibration_samples_.clear();
-    calibration_started_at_ = now();
-    last_calibration_wrench_sequence_ = wrench_sequence_;
-    transition(TractionState::CALIBRATING);
-    response->success = true;
-    response->message = "Direction calibration started. Hold the manually tensioned band still.";
+    const auto state = state_machine_.state();
+    return state == TractionState::READY || state == TractionState::MANUAL_SETUP ||
+           state == TractionState::DIRECTION_LOCKED || state == TractionState::COMPLETED;
   }
+
+  void apply_baseline(const Vec3 & baseline)
+  {
+    wrench_baseline_ = baseline;
+    wrench_baseline_valid_ = true;
+    latest_wrench_ = raw_wrench_ - baseline;
+    filtered_wrench_ = {};
+    force_filter_.reset();
+    calibrated_ = true;
+    std_msgs::msg::Bool event;
+    event.data = true;
+    slack_calibration_publisher_->publish(event);
+    RCLCPP_INFO(
+      get_logger(),
+      "Software slack baseline calibrated; preserved until explicit recalibration.");
+  }
+
+  void update_startup_calibration()
+  {
+    if (calibrated_) {return;}
+    std::string reason;
+    if (!normal_stopped() || !readiness_check(reason) || !live_ee() ||
+      latest_joint_speed_norm_ > 0.02)
+    {
+      startup_baseline_samples_.clear();
+      startup_baseline_started_ = {};
+      return;
+    }
+    if (startup_baseline_started_ == std::chrono::steady_clock::time_point{}) {
+      startup_baseline_started_ = std::chrono::steady_clock::now();
+    }
+    if (wrench_sequence_ != last_startup_wrench_sequence_) {
+      startup_baseline_samples_.push_back(raw_wrench_);
+      last_startup_wrench_sequence_ = wrench_sequence_;
+    }
+    if (age_seconds(startup_baseline_started_) < auto_calibration_window_s_ ||
+      startup_baseline_samples_.size() < 20) {return;}
+    Vec3 mean{};
+    for (const auto & sample : startup_baseline_samples_) {mean = mean + sample;}
+    apply_baseline(mean * (1.0 / startup_baseline_samples_.size()));
+    startup_baseline_samples_.clear();
+  }
+
+  void update_idle_direction()
+  {
+    if (!calibrated_ || operation_mode_ != OperationMode::POSITION_TRACTION ||
+      !normal_stopped() || direction_locked_ || controller_start_pending_ ||
+      controller_activation_confirming_ || !motion_feedback_fresh()) {return;}
+    if (auto_direction_started_ == std::chrono::steady_clock::time_point{}) {
+      auto_direction_started_ = std::chrono::steady_clock::now();
+    }
+    if (wrench_sequence_ != last_auto_direction_wrench_sequence_) {
+      if (norm(filtered_wrench_) >= auto_direction_min_force_n_) {
+        auto_direction_samples_.push_back(filtered_wrench_);
+      }
+      last_auto_direction_wrench_sequence_ = wrench_sequence_;
+    }
+    if (age_seconds(auto_direction_started_) < auto_direction_update_s_) {return;}
+    const auto result = robust_calibrate_direction(
+      auto_direction_samples_, 10,
+      calibration_max_angle_p95_deg_);
+    if (result.success) {
+      latest_direction_ = result.direction;
+      latest_direction_valid_ = true;
+    }
+    auto_direction_samples_.clear();
+    auto_direction_started_ = std::chrono::steady_clock::now();
+  }
+
+  void begin_motion_record()
+  {
+    stop_reason_.clear();
+    fault_code_.clear();
+    position_reached_ = false;
+    position_reached_started_at_.reset();
+    if (!session_active_) {begin_session();}
+  }
+
+  void complete_motion(const std::string & reason)
+  {
+    publish_disabled();
+    request_controller_stop();
+    stop_reason_ = reason;
+    transition(TractionState::COMPLETED);
+    write_record_sample(now());
+    finalize_session();
+    direction_locked_ = false;
+    search_active_ = false;
+    search_requested_ = false;
+    transition(TractionState::READY);
+  }
+
+  void start_unload_motion(const Vec3 & direction)
+  {
+    const bool reuse_cartesian = state_machine_.state() == TractionState::TRACTION;
+    if (session_active_) {stop_reason_ = "SWITCHED_TO_UNLOADING"; finalize_session();}
+    operation_mode_ = OperationMode::UNLOADING;
+    locked_direction_ = direction;
+    direction_locked_ = true;
+    begin_motion_record();
+    transition(TractionState::RELEASING);
+    release_started_at_ = now();
+    if (!reuse_cartesian && !request_controller_start()) {
+      enter_fault("UNLOAD_CONTROLLER_UNAVAILABLE", "卸力控制器暂不可用");
+    }
+  }
+
+  void handle_unload(const std_srvs::srv::Trigger::Response::SharedPtr response)
+  {
+    Vec3 direction;
+    const bool have_direction = recorded_direction_valid_ ?
+      normalize(recorded_direction_, direction) :
+      (latest_direction_valid_ && normalize(latest_direction_, direction));
+    std::string reason;
+    const auto state = state_machine_.state();
+    if (!calibrated_ || !have_direction || !readiness_check(reason) || !live_ee() ||
+      (!normal_stopped() && state != TractionState::TRACTION &&
+      state != TractionState::POSITION_HOLD && state != TractionState::DRAGGING) ||
+      controller_stop_count_ > 0 || controller_start_pending_ ||
+      controller_activation_confirming_ || native_drag_stop_pending_)
+    {
+      response->success = false;
+      response->message = "卸力需要已有牵引方向或最新受力方向，以及正常的实时反馈";
+      return;
+    }
+    if (norm(latest_wrench_) < unload_stop_force_n_ && state != TractionState::DRAGGING) {
+      if (state == TractionState::TRACTION || state == TractionState::POSITION_HOLD) {
+        complete_motion("UNLOAD_BELOW_5N");
+        operation_mode_ = OperationMode::UNLOADING;
+      }
+      response->success = true;
+      response->message = "当前受力已低于5 N，无需卸力";
+      return;
+    }
+    publish_disabled();
+    if (state == TractionState::DRAGGING) {
+      if (!native_drag_stop_client_->service_is_ready()) {
+        response->success = false;
+        response->message = "省力拖拽停止服务不可用，无法交接卸力";
+        return;
+      }
+      native_drag_stop_pending_ = true;
+      unload_handoff_cancelled_ = false;
+      const auto epoch = ++motion_request_epoch_;
+      native_drag_stop_client_->async_send_request(
+        std::make_shared<std_srvs::srv::Trigger::Request>(),
+        [this, direction, epoch](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
+          if (epoch != motion_request_epoch_) {return;}
+          native_drag_stop_pending_ = false;
+          try {
+            const auto result = future.get();
+            if (!result->success) {enter_fault("NATIVE_DRAG_STOP_FAILED", result->message); return;}
+            if (unload_handoff_cancelled_ || norm(latest_wrench_) < unload_stop_force_n_) {
+              stop_reason_ = unload_handoff_cancelled_ ? "UNLOAD_CANCELLED" : "UNLOAD_BELOW_5N";
+              transition(TractionState::COMPLETED);
+              write_record_sample(now());
+              finalize_session();
+              direction_locked_ = false;
+              if (!unload_handoff_cancelled_) {operation_mode_ = OperationMode::UNLOADING;}
+              transition(TractionState::READY);
+              return;
+            }
+            start_unload_motion(direction);
+          } catch (const std::exception & error) {
+            enter_fault("UNLOAD_HANDOFF_FAILED", error.what());
+          }
+        });
+    } else {
+      start_unload_motion(direction);
+    }
+    response->success = true;
+    response->message = "正在沿已记录方向减少张力，低于5 N后停止";
+  }
+
 
   void handle_start(const std_srvs::srv::Trigger::Response::SharedPtr response)
   {
+    if (operation_mode_ == OperationMode::UNLOADING) {handle_unload(response); return;}
+    std::string reason;
+    if (!calibrated_ || !normal_stopped() || !readiness_check(reason) || !live_ee() ||
+      controller_stop_count_ > 0 || controller_start_pending_ ||
+      controller_activation_confirming_ || native_drag_stop_pending_)
+    {
+      response->success = false;
+      response->message = "等待自动校准完成和实时反馈就绪后开始；无需重复校准";
+      return;
+    }
+    begin_motion_record();
     if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
       if (state_machine_.state() != TractionState::MANUAL_SETUP) {
+        transition(TractionState::MANUAL_SETUP);
+      }
+    } else {
+      if (!target_in_range(target_force_n_)) {
         response->success = false;
-        response->message = state_and_allowed("start drag only after initial calibration");
+        response->message = "目标力超出当前设置范围";
         return;
       }
-      if (controller_start_pending_ || !request_controller_start()) {
-        response->success = false;
-        response->message = "Drag rejected: FR5 native drag could not be activated.";
-        return;
+      // Clicking Start can capture an already taut band immediately, rather
+      // than move it just because the next 2-second display update is pending.
+      if (!latest_direction_valid_ && norm(filtered_wrench_) >= auto_direction_min_force_n_) {
+        latest_direction_valid_ = normalize(filtered_wrench_, latest_direction_);
       }
-      response->success = true;
-      response->message = "FR5 native drag activation requested.";
-      return;
-    }
-    if (state_machine_.state() != TractionState::DIRECTION_LOCKED) {
-      response->success = false;
-      response->message = state_and_allowed("start only from DIRECTION_LOCKED");
-      return;
-    }
-    if (!direction_locked_ || !live_wrench() || !live_controller() || !live_hardware()) {
-      response->success = false;
-      response->message =
-        "Start rejected: locked direction, Wrench and controller health are required.";
-      return;
-    }
-    if (!target_in_range(target_force_n_)) {
-      response->success = false;
-      response->message = "Start rejected: target must be between 1 N and 100 N.";
-      return;
-    }
-    if (!target_force_configured_) {
-      response->success = false;
-      response->message =
-        "Start rejected: set the target force after direction lock before starting.";
-      return;
-    }
-    if (target_force_n_ > validated_target_max_n_) {
-      response->success = false;
-      response->message = "Start rejected: this hardware stage is validated only through " +
-        std::to_string(validated_target_max_n_) + " N.";
-      return;
-    }
-    if (controller_start_pending_) {
-      response->success = false;
-      response->message = "Start is already waiting for the Cartesian controller handoff.";
-      return;
+      if (latest_direction_valid_) {
+        locked_direction_ = latest_direction_;
+        recorded_direction_ = locked_direction_;
+        recorded_direction_valid_ = true;
+        direction_locked_ = true;
+        transition(TractionState::DIRECTION_LOCKED);
+      } else {
+        if (!tool_search_direction_valid_) {
+          response->success = false;
+          response->message = "当前工具姿态不可用，无法自动寻找方向";
+          return;
+        }
+        search_requested_ = true;
+        search_active_ = false;
+        transition(TractionState::PRETENSION);
+      }
     }
     if (!request_controller_start()) {
+      enter_fault("CONTROLLER_START_UNAVAILABLE", "控制器服务暂不可用");
       response->success = false;
-      response->message = "Start rejected: Cartesian controller could not be activated.";
+      response->message = "控制器暂不可用";
       return;
     }
-    current_command_target_n_ = std::clamp(current_metrics().actual_force_n, 0.0, target_force_n_);
     response->success = true;
-    response->message =
-      "Cartesian handoff requested; traction will start after controller confirmation.";
+    response->message = search_requested_ ?
+      "正在沿工具Z负方向寻找受力，最多30cm/2秒，达到3N即停止搜索" :
+      "启动已请求；本次目标牵引方向保持锁定直至结束";
   }
+
 
   void handle_stop(const std_srvs::srv::Trigger::Response::SharedPtr response)
   {
     const auto state = state_machine_.state();
-    if (state != TractionState::TRACTION && state != TractionState::DRAGGING &&
-      state != TractionState::POSITION_HOLD)
+    if (!is_motion_state(state) && state != TractionState::POSITION_HOLD &&
+      !controller_start_pending_ && !controller_activation_confirming_)
     {
       response->success = false;
-      response->message = state_and_allowed("stop from an active traction or drag task");
+      response->message = "当前没有需要结束的运动";
       return;
     }
+    publish_disabled();
     if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
-      publish_disabled();
       if (native_drag_stop_pending_) {
-        response->success = true;
-        response->message = "FR5 native drag is already stopping.";
-        return;
+        unload_handoff_cancelled_ = true;
+        response->success = true; response->message = "正在停止省力拖拽"; return;
       }
-      if (!native_drag_stop_client_ || !native_drag_stop_client_->service_is_ready()) {
-        response->success = false;
-        response->message = "FR5 native drag stop service is unavailable.";
-        return;
+      if (!native_drag_stop_client_->service_is_ready()) {
+        response->success = false; response->message = "省力拖拽停止服务不可用"; return;
       }
+      const auto epoch = ++motion_request_epoch_;
+      controller_start_pending_ = false;
+      controller_activation_confirming_ = false;
       native_drag_stop_pending_ = true;
       native_drag_stop_client_->async_send_request(
         std::make_shared<std_srvs::srv::Trigger::Request>(),
-        [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
+        [this, epoch](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
+          if (epoch != motion_request_epoch_) {return;}
           native_drag_stop_pending_ = false;
           try {
             const auto result = future.get();
-            if (!result->success) {
-              enter_fault("NATIVE_DRAG_STOP_FAILED", result->message);
-              return;
-            }
-            if (state_machine_.state() != TractionState::DRAGGING) {return;}
+            if (!result->success) {enter_fault("NATIVE_DRAG_STOP_FAILED", result->message); return;}
             stop_reason_ = "DRAG_COMPLETED";
             transition(TractionState::COMPLETED);
+            write_record_sample(now());
             finalize_session();
+            direction_locked_ = false;
             transition(TractionState::READY);
           } catch (const std::exception & error) {
             enter_fault("NATIVE_DRAG_STOP_EXCEPTION", error.what());
           }
         });
-      response->success = true;
-      response->message = "FR5 native drag stop requested; waiting for controller confirmation.";
-      return;
+    } else {
+      complete_motion(
+        state == TractionState::PRETENSION ? "DIRECTION_SEARCH_CANCELLED" :
+        (state == TractionState::RELEASING ? "UNLOAD_STOPPED" : "TARGET_TRACTION_STOPPED"));
     }
-    if (operation_mode_ == OperationMode::POSITION_TRACTION ||
-      operation_mode_ == OperationMode::CONSTANT_FORCE)
-    {
-      publish_disabled();
-      request_controller_stop();
-      if (operation_mode_ == OperationMode::POSITION_TRACTION) {
-        stop_reason_ = position_reached_ ? "POSITION_TRACTION_COMPLETED" :
-          "POSITION_TRACTION_STOPPED";
-      } else {
-        stop_reason_ = "CONSTANT_FORCE_STOPPED";
-      }
-      transition(TractionState::COMPLETED);
-      finalize_session();
-      target_force_configured_ = false;
-      transition(TractionState::DIRECTION_LOCKED);
-      response->success = true;
-      response->message = operation_mode_ == OperationMode::POSITION_TRACTION ?
-        "Position traction stopped at the current pose." :
-        "Constant-force traction stopped at the current pose.";
-      return;
-    }
+    response->success = true;
+    response->message = "正在结束并保持当前位置；校准仍有效";
   }
+
 
   void handle_emergency(const std_srvs::srv::Trigger::Response::SharedPtr response)
   {
@@ -774,7 +902,8 @@ private:
       response->message = state_and_allowed("reset_fault only from FAULT or EMERGENCY_STOP");
       return;
     }
-    if (!live_controller() || !live_hardware() || !live_wrench() || !live_joint() ||
+    if (controller_stop_count_ > 0 || native_drag_stop_pending_ ||
+      !live_controller() || !live_hardware() || !live_wrench() || !live_joint() ||
       latest_joint_speed_norm_ > 0.02 ||
       std::abs(velocity_command_mps_) > 1e-9)
     {
@@ -790,24 +919,27 @@ private:
     }
     fault_code_.clear();
     stop_reason_.clear();
+    direction_locked_ = false;
+    search_active_ = false;
+    search_requested_ = false;
     response->success = true;
     response->message = emergency_recovery ?
-      "Emergency stop recovered. Initial calibration is required before motion." :
-      "Fault reset. Initial calibration is required before motion.";
+      "急停已恢复；原校准继续有效，请主动开始新任务" :
+      "故障已复位；原校准继续有效，请主动开始新任务";
   }
 
   void handle_set_target(
     const srv::SetTargetForce::Request::SharedPtr request,
     const srv::SetTargetForce::Response::SharedPtr response)
   {
-    if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
+    if (operation_mode_ != OperationMode::POSITION_TRACTION) {
       response->success = false;
-      response->message = "Target force is not used in assisted drag mode.";
+      response->message = "只有目标牵引使用目标力";
       return;
     }
     if (!target_in_range(request->target_force_n)) {
       response->success = false;
-      response->message = "Target rejected: target_force_n must be in [1.0, 100.0] N.";
+      response->message = "目标力超出设置中的可调范围";
       return;
     }
     const auto state = state_machine_.state();
@@ -824,6 +956,11 @@ private:
       response->message =
         state_and_allowed(
         "set_target_force while stopped, or during constant/position traction");
+      return;
+    }
+    if (resume_position_from_hold && controller_stop_count_ > 0) {
+      response->success = false;
+      response->message = "正在确认停止，请稍后修改目标";
       return;
     }
     if (resume_position_from_hold && !controller_start_pending_ &&
@@ -853,7 +990,7 @@ private:
     const srv::SetOperationMode::Request::SharedPtr request,
     const srv::SetOperationMode::Response::SharedPtr response)
   {
-    if (request->mode > srv::SetOperationMode::Request::ASSISTED_DRAG) {
+    if (request->mode < 1 || request->mode > srv::SetOperationMode::Request::UNLOADING) {
       response->success = false;
       response->message = "Unknown operation mode.";
       return;
@@ -875,7 +1012,7 @@ private:
     }
     if (is_motion_state(state) || state == TractionState::CALIBRATING ||
       state == TractionState::POSITION_HOLD || controller_start_pending_ ||
-      controller_activation_confirming_)
+      controller_activation_confirming_ || controller_stop_count_ > 0)
     {
       response->success = false;
       response->message = "Mode can only be changed while the robot is stopped.";
@@ -891,7 +1028,10 @@ private:
       transition(TractionState::READY);
     }
     operation_mode_ = static_cast<OperationMode>(request->mode);
-    reset_session_state();
+    direction_locked_ = false;
+    auto_direction_samples_.clear();
+    auto_direction_started_ = {};
+    position_reached_ = false;
     response->success = true;
     response->message = std::string("Mode selected: ") + operation_mode_name(operation_mode_);
   }
@@ -986,30 +1126,23 @@ private:
 
   Vec3 active_direction() const
   {
-    if (direction_locked_) {
-      if (operation_mode_ == OperationMode::POSITION_TRACTION) {return locked_direction_;}
-      Vec3 tracked;
-      if (normalize(direction_estimate_.tracked_direction, tracked)) {return tracked;}
-      return locked_direction_;
+    if (direction_locked_) {return locked_direction_;}
+    if (operation_mode_ == OperationMode::UNLOADING && recorded_direction_valid_) {
+      return recorded_direction_;
     }
-    if (temporary_direction_valid_) {return temporary_direction_;}
+    if (latest_direction_valid_) {return latest_direction_;}
     return {};
   }
+
 
   ForceMetrics current_metrics() const
   {
     ForceMetrics metrics;
-    if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
-      metrics.actual_force_n = norm(filtered_wrench_);
-      return metrics;
-    }
-    const Vec3 direction = active_direction();
-    if (!project_force(filtered_wrench_, direction, metrics)) {return {};}
-    // The force loop controls rope tension magnitude. Lateral force is kept
-    // only as the component perpendicular to the current tracked direction.
+    project_force(filtered_wrench_, active_direction(), metrics);
     metrics.actual_force_n = norm(filtered_wrench_);
     return metrics;
   }
+
 
   uint8_t direction_correction_command_mode() const
   {
@@ -1097,7 +1230,8 @@ private:
     const Vec3 & direction,
     double target,
     uint8_t direction_correction_mode = msg::TractionCommand::DIRECTION_CORRECTION_OFF,
-    const Vec3 & lateral_velocity = {})
+    const Vec3 & lateral_velocity = {},
+    double linear_speed_mps = 0.0)
   {
     msg::TractionCommand command;
     command.header.stamp = now();
@@ -1107,6 +1241,7 @@ private:
     command.locked_direction_base.y = direction.y;
     command.locked_direction_base.z = direction.z;
     command.target_force_n = target;
+    command.linear_speed_mps = linear_speed_mps;
     command.direction_correction_mode = direction_correction_mode;
     command.lateral_velocity_base.x = lateral_velocity.x;
     command.lateral_velocity_base.y = lateral_velocity.y;
@@ -1129,7 +1264,7 @@ private:
       return;
     }
     fault_code_ = code;
-    if (stop_reason_.empty()) {stop_reason_ = reason;}
+    stop_reason_ = reason;
     transition(TractionState::FAULT);
     publish_disabled();
     request_controller_stop();
@@ -1142,6 +1277,7 @@ private:
 
   void request_controller_stop()
   {
+    ++motion_request_epoch_;
     controller_activation_confirming_ = false;
     controller_start_pending_ = false;
     if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
@@ -1150,9 +1286,11 @@ private:
           get_logger(), "FR5 native drag stop service is unavailable during stop.");
         return;
       }
+      native_drag_stop_pending_ = true;
       native_drag_stop_client_->async_send_request(
         std::make_shared<std_srvs::srv::Trigger::Request>(),
         [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
+          native_drag_stop_pending_ = false;
           try {
             const auto result = future.get();
             if (!result->success) {
@@ -1175,47 +1313,52 @@ private:
     request->strictness = controller_manager_msgs::srv::SwitchController::Request::BEST_EFFORT;
     request->start_asap = false;
     request->activate_asap = false;
-    switch_client_->async_send_request(request);
+    ++controller_stop_count_;
+    const auto epoch = motion_request_epoch_;
+    switch_client_->async_send_request(
+      request,
+      [this,
+      epoch](
+        rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedFuture future) {
+        --controller_stop_count_;
+        try {
+          if (!future.get()->ok && epoch == motion_request_epoch_) {
+            enter_fault("CARTESIAN_STOP_FAILED", "Cartesian stop could not be confirmed");
+          }
+        } catch (const std::exception & error) {
+          if (epoch == motion_request_epoch_) {
+            enter_fault("CARTESIAN_STOP_EXCEPTION", error.what());
+          }
+        }
+      });
   }
 
   bool request_controller_start()
   {
+    const auto epoch = ++motion_request_epoch_;
+    controller_start_requested_steady_ = std::chrono::steady_clock::now();
     if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
-      if (!native_drag_start_client_ || !native_drag_start_client_->service_is_ready()) {
-        RCLCPP_ERROR(get_logger(), "FR5 native drag start service is unavailable.");
-        return false;
-      }
+      if (!native_drag_start_client_->service_is_ready()) {return false;}
       controller_start_pending_ = true;
       native_drag_start_client_->async_send_request(
         std::make_shared<std_srvs::srv::Trigger::Request>(),
-        [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
+        [this, epoch](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
+          if (epoch != motion_request_epoch_) {return;}
           controller_start_pending_ = false;
           try {
             const auto result = future.get();
             if (!result->success) {
-              enter_fault("NATIVE_DRAG_START_FAILED", result->message);
-              return;
-            }
-            if (operation_mode_ != OperationMode::ASSISTED_DRAG ||
-            state_machine_.state() != TractionState::MANUAL_SETUP)
-            {
-              return;
+              enter_fault("NATIVE_DRAG_START_FAILED", result->message); return;
             }
             controller_activation_confirming_ = true;
             controller_activation_started_at_ = now();
-            RCLCPP_INFO(
-              get_logger(),
-              "FR5 controller-resident force drag started; waiting for fresh feedback.");
           } catch (const std::exception & error) {
             enter_fault("NATIVE_DRAG_START_EXCEPTION", error.what());
           }
         });
       return true;
     }
-    if (!switch_client_ || !switch_client_->service_is_ready()) {
-      RCLCPP_ERROR(get_logger(), "Controller switch service is unavailable during traction start.");
-      return false;
-    }
+    if (!switch_client_->service_is_ready()) {return false;}
     auto request = std::make_shared<controller_manager_msgs::srv::SwitchController::Request>();
     request->start_controllers.push_back("cartesian_velocity_controller");
     request->strictness = controller_manager_msgs::srv::SwitchController::Request::STRICT;
@@ -1224,27 +1367,17 @@ private:
     controller_start_pending_ = true;
     switch_client_->async_send_request(
       request,
-      [this](rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedFuture future) {
+      [this,
+      epoch](
+        rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedFuture future) {
+        if (epoch != motion_request_epoch_) {return;}
         controller_start_pending_ = false;
         try {
-          const auto result = future.get();
-          if (!result->ok) {
-            enter_fault(
-              "CARTESIAN_CONTROLLER_START_FAILED", "CARTESIAN_CONTROLLER_START_FAILED");
-            return;
+          if (!future.get()->ok) {
+            enter_fault("CARTESIAN_CONTROLLER_START_FAILED", "Cartesian start rejected"); return;
           }
-          const auto state = state_machine_.state();
-          const bool expected_state = state == TractionState::DIRECTION_LOCKED ||
-          (operation_mode_ == OperationMode::POSITION_TRACTION &&
-          state == TractionState::POSITION_HOLD) ||
-          (operation_mode_ == OperationMode::ASSISTED_DRAG &&
-          state == TractionState::MANUAL_SETUP);
-          if (!expected_state) {return;}
           controller_activation_confirming_ = true;
           controller_activation_started_at_ = now();
-          RCLCPP_INFO(
-            get_logger(),
-            "Cartesian controller switch completed; waiting for fresh EE feedback.");
         } catch (const std::exception & error) {
           enter_fault("CARTESIAN_CONTROLLER_START_EXCEPTION", error.what());
         }
@@ -1252,10 +1385,12 @@ private:
     return true;
   }
 
+
   void check_safety(double monotonic_now_s)
   {
     const auto state = state_machine_.state();
-    const bool needs_live_data = state == TractionState::PRETENSION ||
+    const bool needs_live_data = controller_start_pending_ || controller_activation_confirming_ ||
+      state == TractionState::PRETENSION ||
       state == TractionState::TRACTION || state == TractionState::RELEASING ||
       state == TractionState::DRAGGING || state == TractionState::POSITION_HOLD;
     if (!needs_live_data) {
@@ -1303,39 +1438,51 @@ private:
     (void)current_time;
   }
 
-  void handle_pretension(const rclcpp::Time & current_time)
+  void handle_pretension(const rclcpp::Time &)
   {
+    if (!search_active_ || controller_start_pending_ || controller_activation_confirming_) {
+      publish_disabled(); return;
+    }
     if (!motion_feedback_fresh()) {
+      // A gap cancels this one-shot search, rather than resuming its travel
+      // after fresh feedback returns under the same Start request.
+      complete_motion("DIRECTION_SEARCH_FEEDBACK_INTERRUPTED"); return;
+    }
+    if (!tool_search_direction_valid_) {
+      complete_motion("DIRECTION_SEARCH_ORIENTATION_UNAVAILABLE"); return;
+    }
+    Vec3 sensed;
+    if (norm(latest_wrench_) >= auto_direction_min_force_n_ && normalize(latest_wrench_, sensed)) {
       publish_disabled();
+      latest_direction_ = sensed;
+      latest_direction_valid_ = true;
+      locked_direction_ = sensed;
+      recorded_direction_ = sensed;
+      recorded_direction_valid_ = true;
+      direction_locked_ = true;
+      search_active_ = false;
+      search_requested_ = false;
+      transition(TractionState::DIRECTION_LOCKED);
+      // Keep the Cartesian session but insert a zero-command tick between
+      // search and predictive target traction; no second operator action.
+      controller_activation_confirming_ = true;
+      controller_activation_started_at_ = now();
       return;
     }
-    if (!temporary_direction_valid_) {
-      enter_fault("PRETENSION_DIRECTION_INVALID", "PRETENSION_DIRECTION_INVALID");
+    const double elapsed = age_seconds(search_started_steady_);
+    const double distance = norm(latest_ee_position_ - search_start_position_);
+    if (elapsed >= direction_search_duration_s_ || distance >= direction_search_distance_m_) {
+      complete_motion("DIRECTION_SEARCH_NO_FORCE");
       return;
     }
-    publish_command(msg::TractionCommand::PRETENSION, temporary_direction_, pretension_target_n_);
-    current_command_target_n_ = pretension_target_n_;
-    const auto metrics = current_metrics();
-    if (metrics.actual_force_n >= pretension_target_n_ - 0.3 &&
-      metrics.actual_force_n <= pretension_target_n_ + 0.3)
-    {
-      publish_disabled();
-      calibration_samples_.clear();
-      calibration_started_at_ = current_time;
-      last_calibration_wrench_sequence_ = wrench_sequence_;
-      transition(TractionState::CALIBRATING);
-      return;
-    }
-    if (!pretension_started_at_ ||
-      (current_time - *pretension_started_at_).seconds() > pretension_timeout_s_)
-    {
-      enter_fault("PRETENSION_TIMEOUT", "PRETENSION_TIMEOUT");
-      return;
-    }
-    if (std::abs(axis_displacement()) >= pretension_max_travel_m_) {
-      enter_fault("PRETENSION_TRAVEL_LIMIT", "PRETENSION_TRAVEL_LIMIT");
-    }
+    const double u = std::clamp(elapsed / direction_search_duration_s_, 0.0, 1.0);
+    const double speed = direction_search_distance_m_ / direction_search_duration_s_ *
+      30.0 * u * u * (1.0 - u) * (1.0 - u);
+    publish_command(
+      msg::TractionCommand::DIRECTION_SEARCH, search_direction_, 0.0,
+      msg::TractionCommand::DIRECTION_CORRECTION_OFF, {}, speed);
   }
+
 
   void handle_calibration(const rclcpp::Time & current_time)
   {
@@ -1384,90 +1531,29 @@ private:
       result.retained_fraction * 100.0, result.angle_p95_deg);
   }
 
-  void request_pretraction_return()
-  {
-    if (pretraction_return_call_pending_ || pretraction_return_requested_) {return;}
-    if (!pretraction_return_client_ || !pretraction_return_client_->service_is_ready()) {
-      return;
-    }
-    pretraction_return_call_pending_ = true;
-    auto request = std::make_shared<std_srvs::srv::Trigger::Request>();
-    pretraction_return_client_->async_send_request(
-      request,
-      [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
-        pretraction_return_call_pending_ = false;
-        try {
-          const auto result = future.get();
-          if (result->success) {
-            pretraction_return_requested_ = true;
-            return;
-          }
-          // The direct driver may still be finishing ServoMoveEnd. Retry a
-          // transient busy response; an absent pre-traction pose is a real
-          // fault because the arm cannot safely know where to return.
-          if (result->message.find("busy") != std::string::npos ||
-          result->message.find("Busy") != std::string::npos)
-          {
-            return;
-          }
-          pretraction_return_failed_ = true;
-          pretraction_return_failure_reason_ = result->message;
-        } catch (const std::exception & error) {
-          pretraction_return_call_pending_ = false;
-          pretraction_return_failed_ = true;
-          pretraction_return_failure_reason_ = error.what();
-        }
-      });
-  }
 
   void handle_releasing(const rclcpp::Time & current_time)
   {
-    if (!release_started_at_) {
-      release_started_at_ = current_time;
+    if (controller_start_pending_ || controller_activation_confirming_) {
+      publish_disabled(); return;
     }
-    if (!motion_feedback_fresh()) {
-      publish_disabled();
-      return;
+    if (!motion_feedback_fresh()) {publish_disabled(); return;}
+    if (norm(latest_wrench_) < unload_stop_force_n_) {
+      complete_motion("UNLOAD_BELOW_5N"); return;
     }
-    const double elapsed = (current_time - *release_started_at_).seconds();
-    if (pretraction_return_failed_) {
-      enter_fault("PRETRACTION_RETURN_FAILED", pretraction_return_failure_reason_);
-      return;
+    if (!direction_locked_ || !finite(locked_direction_)) {
+      enter_fault("UNLOAD_DIRECTION_UNAVAILABLE", "卸力方向不可用"); return;
     }
-    // Ending a run is position-driven. The force controller must be disabled
-    // before asking the direct FR5 driver to return to the pose captured at
-    // controller activation. Do not publish a RELEASING force command here:
-    // that old behavior could keep the arm regulating force while waiting for
-    // the measured force to fall below a threshold, causing RELEASE_TIMEOUT.
-    publish_disabled();
-    if (!controller_stop_requested_) {
-      request_controller_stop();
-      controller_stop_requested_ = true;
-      controller_stop_requested_at_ = current_time;
-    }
-    if (!pretraction_return_requested_ &&
-      (current_time - controller_stop_requested_at_).seconds() >= 0.15)
+    publish_command(
+      msg::TractionCommand::UNLOADING, locked_direction_, unload_stop_force_n_,
+      msg::TractionCommand::DIRECTION_CORRECTION_OFF, {}, unload_speed_mps_);
+    if (release_started_at_ &&
+      (current_time - *release_started_at_).seconds() > release_timeout_s_)
     {
-      request_pretraction_return();
-    }
-    if (pretraction_return_requested_) {
-      const double return_distance = norm(latest_ee_position_ - session_start_position_);
-      if (return_distance <= pretraction_return_tolerance_m_ && latest_joint_speed_norm_ < 0.02) {
-        stop_reason_ = "NORMAL_RELEASE_COMPLETED";
-        transition(TractionState::COMPLETED);
-        finalize_session();
-        // COMPLETED is retained in history, while the live state returns to
-        // the stopped/direction-locked group so the next run can reuse the
-        // confirmed direction and read a fresh target from the UI.
-        target_force_configured_ = false;
-        transition(TractionState::DIRECTION_LOCKED);
-        return;
-      }
-    }
-    if (elapsed > release_timeout_s_) {
-      enter_fault("PRETRACTION_RETURN_TIMEOUT", "PRETRACTION_RETURN_TIMEOUT");
+      complete_motion("UNLOAD_TIMEOUT");
     }
   }
+
 
   double ramped_command_target(double dt_s) const
   {
@@ -1494,45 +1580,33 @@ private:
 
     if (state_machine_.state() == TractionState::INITIALIZING) {
       std::string reason;
-      if (readiness_check(reason)) {transition(TractionState::READY);}
+      if (readiness_check(reason) && live_ee()) {transition(TractionState::READY);}
     }
+    update_startup_calibration();
+    update_idle_direction();
     check_safety(monotonic_now_s);
-    const bool activation_state_ready =
-      state_machine_.state() == TractionState::DIRECTION_LOCKED ||
-      (operation_mode_ == OperationMode::POSITION_TRACTION &&
-      state_machine_.state() == TractionState::POSITION_HOLD) ||
-      (operation_mode_ == OperationMode::ASSISTED_DRAG &&
-      state_machine_.state() == TractionState::MANUAL_SETUP);
-    if (activation_state_ready && controller_activation_confirming_) {
+    if (controller_start_pending_ && age_seconds(controller_start_requested_steady_) > 20.0) {
+      enter_fault("CONTROLLER_START_RESPONSE_TIMEOUT", "启动控制器未按时回应，请检查设备连接");
+    }
+    if (controller_activation_confirming_) {
       publish_disabled();
-      const bool activation_inputs_ready = live_wrench() && live_controller() && live_ee();
-      if (activation_inputs_ready) {
+      if (live_wrench() && live_controller() && live_hardware() && live_ee()) {
         controller_activation_confirming_ = false;
-        const bool resuming_position =
-          state_machine_.state() == TractionState::POSITION_HOLD &&
-          operation_mode_ == OperationMode::POSITION_TRACTION;
-        if (!resuming_position) {
-          session_start_position_ = latest_ee_position_;
-          if (direction_estimator_) {direction_estimator_->reset();}
-          if (direction_controller_) {direction_controller_->reset();}
-          direction_estimate_ = {};
-          lateral_correction_result_ = {};
-          lateral_correction_velocity_base_ = {};
-        }
         if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
-          current_command_target_n_ = 0.0;
           transition(TractionState::DRAGGING);
-          RCLCPP_INFO(get_logger(), "Fresh EE feedback confirmed; assisted drag started.");
+        } else if (state_machine_.state() == TractionState::PRETENSION) {
+          search_start_position_ = latest_ee_position_;
+          search_direction_ = tool_search_direction_;
+          search_started_steady_ = std::chrono::steady_clock::now();
+          search_active_ = true;
+        } else if (state_machine_.state() == TractionState::RELEASING) {
+          release_started_at_ = current_time;
         } else {
-          current_command_target_n_ = std::clamp(
-            current_metrics().actual_force_n, 0.0, target_force_n_);
           position_reached_ = false;
           position_reached_started_at_.reset();
           transition(TractionState::TRACTION);
-          RCLCPP_INFO(get_logger(), "Fresh EE feedback confirmed; traction control started.");
         }
       } else if ((current_time - controller_activation_started_at_).seconds() > 2.0) {
-        controller_activation_confirming_ = false;
         enter_fault("CONTROLLER_ACTIVATION_TIMEOUT", "CONTROLLER_ACTIVATION_TIMEOUT");
       }
     }
@@ -1574,39 +1648,7 @@ private:
           }
           break;
         }
-        update_direction_correction(dt_s);
-        if (direction_estimate_.ambiguity_timed_out) {
-          enter_fault(
-            "DIRECTION_UNCONFIRMED_TIMEOUT",
-            "The measured direction remained mutually inconsistent for too long.");
-          break;
-        }
-        // Direction changes are repeatable sub-cycles within one traction run:
-        // wait for a stable candidate, correct laterally, settle, then resume
-        // axial force control. Temporary slack or an uncertain transition is
-        // a zero-motion hold rather than a fault or stale-direction movement.
-        if (direction_estimate_.state == DirectionTrackState::SENSOR_HOLD ||
-          direction_estimate_.state == DirectionTrackState::SUSPECT ||
-          direction_estimate_.state == DirectionTrackState::SETTLING ||
-          direction_estimate_.state == DirectionTrackState::AMBIGUOUS)
-        {
-          // This is a normal adaptive-direction pause, not a fault stop. Use
-          // the lateral-only mode with a zero goal so the shared jerk limiter
-          // decelerates smoothly instead of switching motion off in one tick.
-          publish_command(
-            msg::TractionCommand::RELEASING, active_direction(), current_command_target_n_);
-          break;
-        }
-        if (direction_estimate_.state == DirectionTrackState::CORRECTING) {
-          publish_command(
-            msg::TractionCommand::RELEASING, active_direction(), current_command_target_n_,
-            direction_correction_command_mode(), lateral_correction_velocity_base_);
-          break;
-        }
-        current_command_target_n_ = ramped_command_target(dt_s);
-        publish_command(
-          msg::TractionCommand::TRACTION, active_direction(), current_command_target_n_,
-          direction_correction_command_mode(), lateral_correction_velocity_base_);
+        publish_disabled();
         break;
       case TractionState::DRAGGING:
         if (native_drag_stop_pending_) {
@@ -1812,14 +1854,18 @@ private:
     status.state = static_cast<uint8_t>(state_machine_.state());
     status.operation_mode = static_cast<uint8_t>(operation_mode_);
     status.position_reached = position_reached_;
+    status.calibrated = calibrated_;
+    status.direction_available = recorded_direction_valid_ || latest_direction_valid_;
+    status.direction_locked = direction_locked_;
     status.ready = state_machine_.state() != TractionState::INITIALIZING &&
       state_machine_.state() != TractionState::FAULT &&
       state_machine_.state() != TractionState::EMERGENCY_STOP &&
-      live_controller() && live_hardware();
+      live_controller() && live_hardware() && controller_stop_count_ == 0;
     // The message exposes the operator-selected target, not the instantaneous
     // release/disabled command. This keeps READY/DIRECTION_LOCKED observable
     // without turning the target into zero between motion phases.
     status.target_force_n = target_force_n_;
+    status.target_force_max_n = target_force_max_n_;
     const auto metrics = current_metrics();
     // Before direction lock there is no valid axial projection yet. The
     // baseline-subtracted norm is shown so the operator can see the moment
@@ -1830,9 +1876,9 @@ private:
     status.fy = latest_wrench_.y;
     status.fz = latest_wrench_.z;
     const auto direction = active_direction();
-    status.locked_direction_base.x = locked_direction_.x;
-    status.locked_direction_base.y = locked_direction_.y;
-    status.locked_direction_base.z = locked_direction_.z;
+    status.locked_direction_base.x = direction.x;
+    status.locked_direction_base.y = direction.y;
+    status.locked_direction_base.z = direction.z;
     Vec3 measured_direction;
     status.force_direction_valid = normalize(
       filtered_wrench_, measured_direction, pretension_detect_n_);
@@ -1852,8 +1898,7 @@ private:
     status.axis_displacement_m = axis_displacement();
     status.velocity_cmd_mps = velocity_command_mps_;
     status.direction_track_state = static_cast<uint8_t>(direction_estimate_.state);
-    status.direction_correction_active = direction_correction_command_mode() ==
-      msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE;
+    status.direction_correction_active = false;
     status.direction_error_rad = direction_estimate_.fast_angle_rad;
     status.direction_fast_slow_error_rad = direction_estimate_.fast_slow_angle_rad;
     status.direction_entry_threshold_rad = direction_estimate_.entry_angle_rad;
@@ -1869,19 +1914,25 @@ private:
     status.stop_reason = stop_reason_;
     switch (state_machine_.state()) {
       case TractionState::INITIALIZING: status.message = "正在连接 FR5、力传感器和牵引控制器"; break;
-      case TractionState::READY: status.message = "设备已就绪；牵引带松弛时点击初始校准"; break;
-      case TractionState::MANUAL_SETUP: status.message = "请用法奥示教器移动，张紧后保持法兰静止"; break;
+      case TractionState::READY:
+        status.message = !calibrated_ ? "正在自动初始校准，请保持机械臂静止" :
+          (stop_reason_ == "DIRECTION_SEARCH_NO_FORCE" ? "搜索已结束但未达到3 N，请检查绳带后重试" :
+          (operation_mode_ == OperationMode::POSITION_TRACTION ?
+          (latest_direction_valid_ ? "方向每2秒更新；点击开始后锁定" : "等待3 N以上施力；也可直接开始自动寻找方向") :
+          "已校准，可以开始；无需重复校准"));
+        break;
+      case TractionState::MANUAL_SETUP: status.message = "已校准，可以开始"; break;
       case TractionState::CALIBRATING: status.message = "正在采集张紧方向，请保持法兰静止"; break;
-      case TractionState::DIRECTION_LOCKED: status.message = "方向已锁定；可以设置目标力并开始牵引"; break;
+      case TractionState::DIRECTION_LOCKED: status.message = "本次方向已锁定，正在准备目标牵引"; break;
       case TractionState::TRACTION:
         status.message = operation_mode_ == OperationMode::POSITION_TRACTION ?
-          "位置牵引中，正在接近目标力" : "恒力牵引中，正在自适应跟随受力方向";
+          "目标牵引中，方向已锁定" : "牵引中";
         break;
-      case TractionState::RELEASING: status.message = "已停止力控，正在返回牵引起始位置"; break;
+      case TractionState::RELEASING: status.message = "正在卸力，受力低于5 N后停止"; break;
       case TractionState::COMPLETED: status.message = "牵引完成"; break;
-      case TractionState::FAULT: status.message = "设备故障；确认安全后重新初始校准"; break;
+      case TractionState::FAULT: status.message = "设备故障，请检查原因并恢复；无需重复校准"; break;
       case TractionState::EMERGENCY_STOP: status.message = "已急停并下使能；确认后点击急停恢复"; break;
-      case TractionState::PRETENSION: status.message = "正在自动预张紧"; break;
+      case TractionState::PRETENSION: status.message = "正在沿工具Z负方向搜索，达到3 N或30cm/2秒后停止"; break;
       case TractionState::DRAGGING:
         status.message = native_drag_stop_pending_ ?
           "正在结束省力拖拽" : "省力拖拽中；施力即动，松手即停";
@@ -1923,14 +1974,18 @@ private:
   double target_ramp_fast_nps_ = 12.0;
   double target_ramp_slow_nps_ = 1.5;
   double target_ramp_slow_window_n_ = 5.0;
-  double validated_target_max_n_ = 100.0;
+  double auto_calibration_window_s_ = 0.5;
+  double auto_direction_min_force_n_ = 3.0;
+  double auto_direction_update_s_ = 2.0;
+  double direction_search_distance_m_ = 0.30;
+  double direction_search_duration_s_ = 2.0;
+  double unload_stop_force_n_ = 5.0;
+  double unload_speed_mps_ = 0.020;
   double force_tolerance_n_ = 1.0;
   double force_deadband_n_ = 0.15;
   double release_timeout_s_ = 300.0;
-  double position_reached_tolerance_n_ = 1.0;
+  double position_reached_tolerance_n_ = 2.5;
   double position_reached_confirm_s_ = 1.0;
-  double hard_overforce_n_ = 150.0;
-  double hard_overforce_confirm_s_ = 0.20;
   double wrench_timeout_s_ = 0.10;
   double ee_state_timeout_s_ = 0.20;
   double motion_pause_timeout_s_ = 0.10;
@@ -1952,10 +2007,8 @@ private:
   std::string expected_wrench_frame_;
   std::string data_directory_;
   std::string switch_service_name_;
-  std::string pretraction_return_service_name_;
   std::string native_drag_start_service_name_;
   std::string native_drag_stop_service_name_;
-  double pretraction_return_tolerance_m_ = 0.0015;
   std::unique_ptr<DirectionEstimator> direction_estimator_;
   std::unique_ptr<AdaptiveDirectionFollower> direction_controller_;
   DirectionNoiseProfile direction_noise_profile_;
@@ -1963,6 +2016,26 @@ private:
   AdaptiveFollowResult lateral_correction_result_;
   Vec3 lateral_correction_velocity_base_;
 
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_;
+  bool calibrated_ = false;
+  bool latest_direction_valid_ = false;
+  bool recorded_direction_valid_ = false;
+  bool tool_search_direction_valid_ = false;
+  bool search_requested_ = false;
+  bool search_active_ = false;
+  uint64_t motion_request_epoch_ = 0;
+  uint64_t last_startup_wrench_sequence_ = 0;
+  uint64_t last_auto_direction_wrench_sequence_ = 0;
+  Vec3 latest_direction_;
+  Vec3 recorded_direction_;
+  Vec3 tool_search_direction_;
+  Vec3 search_direction_;
+  Vec3 search_start_position_;
+  std::vector<Vec3> startup_baseline_samples_;
+  std::vector<Vec3> auto_direction_samples_;
+  std::chrono::steady_clock::time_point startup_baseline_started_{};
+  std::chrono::steady_clock::time_point auto_direction_started_{};
+  std::chrono::steady_clock::time_point search_started_steady_{};
   StateMachine state_machine_;
   FirstOrderLowPass force_filter_;
   SafetyMonitor safety_monitor_;
@@ -2012,7 +2085,7 @@ private:
   double target_force_n_ = 10.0;
   bool target_force_configured_ = false;
   bool position_reached_ = false;
-  OperationMode operation_mode_ = OperationMode::CONSTANT_FORCE;
+  OperationMode operation_mode_ = OperationMode::ASSISTED_DRAG;
   double current_command_target_n_ = 0.0;
   double velocity_command_mps_ = 0.0;
   Vec3 controller_velocity_base_;
@@ -2047,7 +2120,7 @@ private:
     position_diagnostics_subscription_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr heartbeat_subscription_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr prepare_service_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr calibrate_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr unload_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr start_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr emergency_service_;
@@ -2055,7 +2128,6 @@ private:
   rclcpp::Service<srv::SetTargetForce>::SharedPtr target_force_service_;
   rclcpp::Service<srv::SetOperationMode>::SharedPtr operation_mode_service_;
   rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedPtr switch_client_;
-  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr pretraction_return_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr native_drag_start_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr native_drag_stop_client_;
   rclcpp::TimerBase::SharedPtr control_timer_;
@@ -2064,8 +2136,11 @@ private:
   double latest_joint_speed_norm_ = 0.0;
   bool joint_state_valid_ = false;
   bool controller_start_pending_ = false;
+  unsigned controller_stop_count_ = 0;
   bool controller_activation_confirming_ = false;
   bool native_drag_stop_pending_ = false;
+  bool unload_handoff_cancelled_ = false;
+  std::chrono::steady_clock::time_point controller_start_requested_steady_{};
   bool controller_stop_requested_ = false;
   bool pretraction_return_call_pending_ = false;
   bool pretraction_return_requested_ = false;
