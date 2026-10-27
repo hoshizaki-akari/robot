@@ -94,6 +94,7 @@ enum class PositionControlPhase : unsigned char
 struct PositionControlConfig
 {
   double tolerance_n = 2.5;
+  double center_tolerance_n = 0.5;
   double maximum_speed_mps = 0.020;
   double far_gain_mps_per_n = 0.0060;
   double near_gain_mps_per_n = 0.0045;
@@ -103,6 +104,9 @@ struct PositionControlConfig
   double force_rate_cutoff_hz = 2.0;
   double maximum_acceleration_mps2 = 0.080;
   double maximum_deceleration_mps2 = 0.160;
+  double maximum_jerk_mps3 = 1.0;
+  double band_exit_confirm_s = 0.20;
+  double reverse_confirm_s = 0.20;
   double settling_speed_mps = 0.0005;
   double initial_stiffness_n_per_m = 300.0;
   double minimum_stiffness_n_per_m = 50.0;
@@ -140,6 +144,12 @@ private:
   double force_rate_nps_ = 0.0;
   double estimated_stiffness_n_per_m_ = 300.0;
   double velocity_mps_ = 0.0;
+  double acceleration_mps2_ = 0.0;
+  double previous_target_n_ = 0.0;
+  double band_exit_elapsed_s_ = 0.0;
+  double reverse_elapsed_s_ = 0.0;
+  int previous_motion_sign_ = 0;
+  bool settled_in_band_ = false;
 };
 
 struct CalibrationResult

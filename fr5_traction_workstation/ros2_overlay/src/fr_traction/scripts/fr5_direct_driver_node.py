@@ -16,7 +16,7 @@ import rclpy
 from controller_manager_msgs.srv import SwitchController
 from fairino_msgs.msg import PoseTwist
 from fr_traction.msg import TractionCommand
-from geometry_msgs.msg import Twist, WrenchStamped
+from geometry_msgs.msg import Twist, TwistStamped, WrenchStamped
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
@@ -132,17 +132,19 @@ class Fr5DirectDriver(Node):
         # The short Tool Z- direction search has its own planned profile.
         # Keep its allowance separate from the normal traction speed bound.
         self._direction_search_max_speed = self._bounded_positive_parameter(
-            "direction_search_max_speed_mps", 0.30, 0.30
+            "direction_search_max_speed_mps", 0.12, 0.12
         )
         self._direction_search_max_travel_m = self._bounded_positive_parameter(
             "direction_search_max_travel_m", 0.30, 0.30
         )
         self._direction_search_max_duration_s = self._bounded_positive_parameter(
-            "direction_search_max_duration_s", 2.0, 2.0
+            "direction_search_max_duration_s", 5.0, 5.0
         )
-        # The installed FR5 SDK reports the commanded incremental base pose
-        # with the opposite sign to GetActualTCPPose on this controller. Keep
-        # the compensation explicit so the force controller's physical
+        self._max_servo_tracking_error_mm = self._bounded_positive_parameter(
+            "max_servo_tracking_error_mm", 5.0, 10.0
+        )
+        # Keep the historical, physically calibrated base displacement sign
+        # explicit at the SDK boundary so the force controller's physical
         # direction remains the same as the direction shown in base_link.
         self._base_servo_sign = float(
             self.declare_parameter("base_servo_sign", -1.0).value
@@ -309,10 +311,13 @@ class Fr5DirectDriver(Node):
             Bool, "/controller_manager/healthy", health_qos
         )
         self.create_subscription(
-            Twist, "/controller_manager/command_cart_vel", self._on_twist, 10
+            TwistStamped,
+            "/controller_manager/command_cart_vel_stamped",
+            self._on_stamped_twist,
+            1,
         )
         self.create_subscription(
-            TractionCommand, "/traction/command", self._on_traction_command, 10
+            TractionCommand, "/traction/command", self._on_traction_command, 1
         )
         self.create_service(
             SwitchController,
@@ -372,7 +377,16 @@ class Fr5DirectDriver(Node):
         self._direction_search_start_pose = None
         self._direction_search_stopped = False
         self._last_command_at = 0.0
+        self._velocity_epoch_ns = self.get_clock().now().nanoseconds
         self._last_motion_at = 0.0
+        self._cartesian_target_pose = None
+        self._tracking_limit_since = None
+        self._tracking_limit_anchor_pose = None
+        self._next_motion_at = 0.0
+        self._motion_statistics_since = 0.0
+        self._motion_statistics_packets = 0
+        self._motion_statistics_nonzero_packets = 0
+        self._motion_statistics_max_rpc_s = 0.0
         self._servo_enabled = False
         self._servo_cleanup_pending = False
         self._native_drag_active = False
@@ -469,6 +483,7 @@ class Fr5DirectDriver(Node):
                 continue
             if code == 0:
                 self._servo_cleanup_pending = False
+                self._motion_statistics_since = 0.0
                 return 0
             self.get_logger().warning(
                 f"ServoMoveEnd during {context} returned {code} on attempt {attempt + 1}."
@@ -476,6 +491,45 @@ class Fr5DirectDriver(Node):
             if attempt == 0:
                 self._reset_command_proxy()
         return -4
+
+    def _disable_after_failed_servo_stop(self, context):
+        """Remove robot enable when the controller did not confirm servo OFF."""
+        self._twist = Twist()
+        self._last_command_at = 0.0
+        self._servo_enabled = False
+        self._servo_cleanup_pending = True
+        self._hardware_fault_latched = True
+        self._hardware_emergency_latched = True
+        stop_code, _ = self._run_hardware_command("StopMotion")
+        disable_code, _ = self._run_hardware_command("RobotEnable", 0)
+        self._publish_health(False)
+        self.get_logger().error(
+            f"Servo stop during {context} was unconfirmed; "
+            f"StopMotion result: {stop_code}, RobotEnable(0) result: {disable_code}."
+        )
+
+    def _on_stamped_twist(self, message):
+        # ROS can deliver queued samples after an XML-RPC call returns. A
+        # callback's execution time is not the age of the velocity it carries.
+        # Reject velocities published before the latest mode/servo handover,
+        # and retain the source age in the normal command watchdog.
+        source_ns = int(message.header.stamp.sec) * 1_000_000_000 + int(
+            message.header.stamp.nanosec
+        )
+        now_ns = self.get_clock().now().nanoseconds
+        if message.header.frame_id != "base_link" or source_ns <= 0:
+            self._twist = Twist()
+            self._last_command_at = 0.0
+            return
+        age_s = (now_ns - source_ns) / 1e9
+        if source_ns < self._velocity_epoch_ns:
+            return
+        if age_s > self._command_timeout or age_s < -self._command_timeout:
+            self._twist = Twist()
+            self._last_command_at = 0.0
+            return
+        self._on_twist(message.twist)
+        self._last_command_at -= max(0.0, age_s)
 
     def _on_twist(self, message):
         values = (
@@ -489,8 +543,21 @@ class Fr5DirectDriver(Node):
         if all(math.isfinite(value) for value in values):
             self._twist = message
             self._last_command_at = time.monotonic()
+        else:
+            self._twist = Twist()
+            self._last_command_at = 0.0
 
     def _on_traction_command(self, message):
+        source_ns = int(message.header.stamp.sec) * 1_000_000_000 + int(
+            message.header.stamp.nanosec
+        )
+        if (
+            message.mode != TractionCommand.DISABLED
+            and source_ns > 0
+            and (self.get_clock().now().nanoseconds - source_ns) / 1e9
+            > self._command_timeout
+        ):
+            return
         if message.mode in (
             TractionCommand.DISABLED,
             TractionCommand.PRETENSION,
@@ -502,10 +569,19 @@ class Fr5DirectDriver(Node):
             TractionCommand.DIRECTION_SEARCH,
         ):
             if message.mode != self._traction_mode:
+                self._cartesian_target_pose = None
                 # Repeated manager commands must never extend a search.
-                self._direction_search_started_at = None
-                self._direction_search_start_pose = None
-                self._direction_search_stopped = False
+                if message.mode not in (
+                    TractionCommand.DISABLED, TractionCommand.DIRECTION_SEARCH
+                ):
+                    self._direction_search_started_at = None
+                    self._direction_search_start_pose = None
+                    self._direction_search_stopped = False
+                # Search and traction use different speed limits. Never
+                # interpret a queued search velocity as a target command.
+                self._twist = Twist()
+                self._last_command_at = 0.0
+                self._velocity_epoch_ns = self.get_clock().now().nanoseconds
             self._traction_mode = message.mode
             if message.mode == TractionCommand.DISABLED:
                 self._twist = Twist()
@@ -536,14 +612,7 @@ class Fr5DirectDriver(Node):
             if code != 0:
                 # The controller did not confirm ServoMoveEnd. Do not keep
                 # streaming Cartesian commands or report a clean stop.
-                self._twist = Twist()
-                self._last_command_at = 0.0
-                self._servo_enabled = False
-                self._hardware_fault_latched = True
-                self._hardware_emergency_latched = True
-                self._run_hardware_command("StopMotion")
-                self._run_hardware_command("RobotEnable", 0)
-                self._publish_health(False)
+                self._disable_after_failed_servo_stop("controller deactivation")
                 response.ok = False
                 return response
             self._servo_enabled = False
@@ -572,11 +641,19 @@ class Fr5DirectDriver(Node):
             # control. It is intentionally separate from the slack zero.
             self._pretraction_pose = list(self._latest_pose)
             self._pretraction_joints = list(self._latest_joints)
+            self._cartesian_target_pose = None
+            # Contact confirmation may temporarily publish DISABLED and
+            # resume search. Only a new servo activation grants a new budget.
+            self._direction_search_started_at = None
+            self._direction_search_start_pose = None
+            self._direction_search_stopped = False
             self._last_motion_at = time.monotonic()
+            self._next_motion_at = self._last_motion_at
             # A drag velocity published just before a mode switch must not
             # become the first ServoCart command of a traction task.
             self._twist = Twist()
             self._last_command_at = 0.0
+            self._velocity_epoch_ns = self.get_clock().now().nanoseconds
         response.ok = True
         return response
 
@@ -1214,6 +1291,7 @@ class Fr5DirectDriver(Node):
         self._servo_enabled = True
         self._servo_cleanup_pending = True
         self._last_motion_at = time.monotonic()
+        self._next_motion_at = self._last_motion_at
         self._return_active = True
         self._return_started_at = time.monotonic()
         self._return_start_pose = list(self._latest_pose)
@@ -1288,6 +1366,7 @@ class Fr5DirectDriver(Node):
         self._servo_enabled = True
         self._servo_cleanup_pending = True
         self._last_motion_at = time.monotonic()
+        self._next_motion_at = self._last_motion_at
         self._auto_tension_active = True
         self._auto_tension_baseline = list(self._latest_wrench)
         self._auto_tension_start_pose = list(self._latest_pose)
@@ -1385,9 +1464,45 @@ class Fr5DirectDriver(Node):
             mode, sanitized_desc_pos, cmdT=self._motion_period_s
         )
         elapsed = time.monotonic() - started_at
+        if self._motion_statistics_since <= 0.0:
+            self._motion_statistics_since = started_at
+            self._motion_statistics_packets = 0
+            self._motion_statistics_nonzero_packets = 0
+            self._motion_statistics_max_rpc_s = 0.0
+        self._motion_statistics_packets += 1
+        packet_moves = any(sanitized_desc_pos)
+        if mode == 0 and self._latest_pose is not None:
+            packet_moves = any(
+                abs(sanitized_desc_pos[i] - self._latest_pose[i]) > 1e-9
+                for i in range(3)
+            )
+        self._motion_statistics_nonzero_packets += int(packet_moves)
+        self._motion_statistics_max_rpc_s = max(
+            self._motion_statistics_max_rpc_s, elapsed
+        )
+        statistics_duration = time.monotonic() - self._motion_statistics_since
+        if statistics_duration >= 2.0:
+            self.get_logger().info(
+                "Cartesian servo send rate: "
+                f"{self._motion_statistics_packets / statistics_duration:.1f} Hz "
+                f"(configured {self._motion_rate_hz:.1f} Hz), "
+                "nonzero packets "
+                f"{self._motion_statistics_nonzero_packets / statistics_duration:.1f} Hz, "
+                f"maximum RPC {self._motion_statistics_max_rpc_s:.4f} s."
+            )
+            self._motion_statistics_since = 0.0
         if elapsed > 0.05:
             self.get_logger().warning(
                 f"ServoCart mode {mode} RPC took {elapsed:.3f} s."
+            )
+        if elapsed > self._command_timeout:
+            # Feedback can remain healthy while the command channel is
+            # blocked. That is not a valid servo loop: require deliberate
+            # recovery rather than resuming a delayed sequence of moves.
+            raise RuntimeError(
+                "FR5 Cartesian command timing lost: "
+                f"ServoCart took {elapsed:.3f} s "
+                f"(limit {self._command_timeout:.3f} s); motion will not resume automatically"
             )
         return code
 
@@ -1431,16 +1546,31 @@ class Fr5DirectDriver(Node):
             return
         if not self._servo_enabled:
             return
-        # _tick itself already runs at motion_rate_hz. A second strict period
-        # gate here used to discard a callback whenever timer jitter made it
-        # arrive a fraction early, effectively halving the requested rate.
-        motion_dt = now - self._last_motion_at if self._last_motion_at > 0.0 else dt
+        if self._hardware_fault_latched or self._hardware_emergency_latched:
+            return
+        # Advance one nominal cmdT per actual packet, without shrinking
+        # increments on early timer callbacks. Preserve the scheduled phase
+        # across ordinary jitter, and discard missed slots after a stall.
+        # The small tolerance avoids halving the send rate at 9.999 ms while
+        # the fixed deadline prevents that allowance accumulating extra moves.
+        next_motion_at = self._next_motion_at
+        early_tolerance = min(0.001, self._motion_period_s * 0.1)
+        if now + early_tolerance < next_motion_at:
+            return
+        # A late packet must not be followed by the next scheduled packet
+        # only 1 ms later. Bound the physical send interval as well as the
+        # long-term phase; ordinary 9.999 ms timer jitter remains admissible.
+        if (
+            self._last_motion_at > 0.0
+            and now - self._last_motion_at < self._motion_period_s - early_tolerance
+        ):
+            return
+        if next_motion_at <= 0.0 or now - next_motion_at >= self._motion_period_s:
+            self._next_motion_at = now + self._motion_period_s
+        else:
+            self._next_motion_at = next_motion_at + self._motion_period_s
         self._last_motion_at = now
-        # ServoCart executes each increment over cmdT (one send period).
-        # Never pack a delayed host interval into that single short command:
-        # after a 1 s RPC stall the old 50 ms cap could command 5x speed.
-        # Drop missed increments rather than attempting to catch up.
-        motion_dt = min(max(motion_dt, 0.0), self._motion_period_s)
+        motion_dt = self._motion_period_s
 
         if self._auto_tension_active:
             displacement = [
@@ -1534,15 +1664,66 @@ class Fr5DirectDriver(Node):
             linear = [value * speed_limit / magnitude for value in linear]
         if self._traction_mode == TractionCommand.DIRECTION_SEARCH:
             linear = self._limit_direction_search(linear, now)
-        # Assisted drag is generated in tool coordinates by the controller;
-        # all other velocity commands remain base-coordinate increments.
-        servo_mode = 2 if self._traction_mode == TractionCommand.DRAG else 1
-        command_sign = self._base_servo_sign if servo_mode == 1 else 1.0
-        increment = [
-            command_sign * value * motion_dt * 1000.0
-            for value in linear
-        ]
-        code = self._servo_cart(servo_mode, increment + [0.0, 0.0, 0.0])
+        if self._traction_mode == TractionCommand.DRAG:
+            # Retained private host drag uses tool-frame increments. Native
+            # EndForceDragControl never reaches this branch.
+            increment = [value * motion_dt * 1000.0 for value in linear]
+            code = self._servo_cart(2, increment + [0.0, 0.0, 0.0])
+        else:
+            # Use an explicit trajectory rather than relying on the
+            # controller's incremental tracking behavior. Keep a base pose so
+            # every accepted packet advances it by exactly v*cmdT. Bound
+            # following error instead of accumulating a catch-up move.
+            pose = self._latest_pose
+            if pose is None or len(pose) != 6 or not all(math.isfinite(v) for v in pose):
+                raise RuntimeError("FR5 TCP pose unavailable for Cartesian trajectory")
+            if self._cartesian_target_pose is None or not any(linear):
+                # A stop cancels the outstanding lead; never keep driving
+                # toward an old target after contact or command expiry.
+                self._cartesian_target_pose = list(pose)
+                self._tracking_limit_since = None
+                self._tracking_limit_anchor_pose = None
+            target = list(self._cartesian_target_pose)
+            existing_error_mm = math.sqrt(sum((target[i] - pose[i]) ** 2 for i in range(3)))
+            if existing_error_mm > 2.0 * self._max_servo_tracking_error_mm:
+                raise RuntimeError(
+                    f"FR5 Cartesian trajectory not following: {existing_error_mm:.3f} mm "
+                    "unexpected deviation from the bounded target"
+                )
+            for i in range(3):
+                target[i] += self._base_servo_sign * linear[i] * motion_dt * 1000.0
+            tracking_error_mm = math.sqrt(sum((target[i] - pose[i]) ** 2 for i in range(3)))
+            if tracking_error_mm > self._max_servo_tracking_error_mm:
+                # The high-speed search can briefly lead the live TCP by
+                # more than one low-speed target step. Limit the lead itself
+                # instead of turning one such sample into a hardware fault.
+                scale = self._max_servo_tracking_error_mm / tracking_error_mm
+                for i in range(3):
+                    target[i] = pose[i] + (target[i] - pose[i]) * scale
+                if self._tracking_limit_since is None:
+                    self._tracking_limit_since = now
+                    self._tracking_limit_anchor_pose = list(pose[:3])
+                    self.get_logger().warning(
+                        "Cartesian target lead limited to "
+                        f"{self._max_servo_tracking_error_mm:.1f} mm; dropping excess advance"
+                    )
+                progress_mm = math.sqrt(sum(
+                    (pose[i] - self._tracking_limit_anchor_pose[i]) ** 2 for i in range(3)
+                ))
+                if progress_mm >= 0.5:
+                    self._tracking_limit_since = now
+                    self._tracking_limit_anchor_pose = list(pose[:3])
+                elif now - self._tracking_limit_since >= 1.0:
+                    raise RuntimeError(
+                        "FR5 Cartesian trajectory not following: target lead bounded but "
+                        "TCP made less than 0.5 mm progress in 1 s"
+                    )
+            else:
+                self._tracking_limit_since = None
+                self._tracking_limit_anchor_pose = None
+            code = self._servo_cart(0, target)
+            if code == 0:
+                self._cartesian_target_pose = target
         if code != 0:
             raise RuntimeError(f"ServoCart traction failed: {code}")
 
@@ -1566,10 +1747,15 @@ class Fr5DirectDriver(Node):
                 # will use the last real feedback timestamp for stale detection.
             except Exception as error:  # noqa: BLE001  # Hardware faults must latch health loss.
                 self.get_logger().error(str(error))
+                self._hardware_fault_latched = True
+                self._twist = Twist()
+                self._last_command_at = 0.0
+                self._publish_health(False)
                 if self._stop_native_drag_best_effort("feedback fault") != 0:
                     self._disable_after_failed_native_stop("feedback fault")
                 if self._servo_enabled:
-                    self._end_servo("feedback fault")
+                    if self._end_servo("feedback fault") != 0:
+                        self._disable_after_failed_servo_stop("feedback fault")
                 self._servo_enabled = False
                 self._return_active = False
                 self._return_target_pose = None
@@ -1587,10 +1773,15 @@ class Fr5DirectDriver(Node):
             self._send_motion(now, dt)
         except Exception as error:  # noqa: BLE001  # Hardware faults must latch health loss.
             self.get_logger().error(str(error))
+            self._hardware_fault_latched = True
+            self._twist = Twist()
+            self._last_command_at = 0.0
+            self._publish_health(False)
             if self._stop_native_drag_best_effort("motion fault") != 0:
                 self._disable_after_failed_native_stop("motion fault")
             if self._servo_enabled:
-                self._end_servo("motion fault")
+                if self._end_servo("motion fault") != 0:
+                    self._disable_after_failed_servo_stop("motion fault")
             self._servo_enabled = False
             self._return_active = False
             self._return_target_pose = None

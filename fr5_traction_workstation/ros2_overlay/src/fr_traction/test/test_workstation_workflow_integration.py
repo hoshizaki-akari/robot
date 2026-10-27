@@ -136,11 +136,19 @@ class WorkflowHarness:
             "native_drag_stop_service": "/test/native_drag_stop",
             "data_directory": str(directory / "sessions"),
             "require_ui_heartbeat": "false",
+            # Match formal hardware-launch budgets rather than the class's
+            # legacy 100 ms wrench timeout under WSL scheduler jitter.
+            "wrench_timeout_s": 1.2,
+            "ee_state_timeout_s": 1.2,
+            "controller_health_timeout_s": 1.2,
+            "motion_pause_timeout_s": 0.25,
         }
         controller_parameters = {
             "wrench_topic": "/traction/corrected_wrench",
             "ee_state_topic": "/test/ee_state",
             "cartesian_command_topic": "/test/command_cart_vel",
+            "wrench_timeout_s": 0.25,
+            "command_timeout_s": 0.25,
         }
         self.launch("traction_controller_node", controller_parameters)
         self.launch("traction_manager_node", manager_parameters)
@@ -421,24 +429,45 @@ def test_target_limit_can_be_raised_and_removed_constant_force_mode_is_rejected(
 
 
 @pytest.mark.parametrize("settled_force_n", [7.6, 12.4])
-def test_target_arrival_uses_two_point_five_newton_window(workstation, settled_force_n):
+def test_target_arrival_requires_two_seconds_inside_outer_window(workstation, settled_force_n):
     robot = workstation
     robot.mode(SetOperationMode.Request.POSITION_TRACTION)
     robot.force = (7.4, 0.0, 0.0)
     robot.wait(lambda: robot.status.actual_force_n > 7.3)
     robot.call("start")
     robot.wait(lambda: robot.status.state == TractionStatus.TRACTION)
-    robot.pump(1.2)
+    robot.pump(2.2)
     assert robot.status.state == TractionStatus.TRACTION
     robot.force = (settled_force_n, 0.0, 0.0)
-    robot.wait(lambda: robot.status.state == TractionStatus.POSITION_HOLD, timeout=3.0)
+    robot.wait(lambda: abs(robot.status.actual_force_n - settled_force_n) < 0.05)
+    robot.pump(1.3)
+    assert robot.status.state == TractionStatus.TRACTION
+    robot.wait(lambda: robot.status.state == TractionStatus.POSITION_HOLD, timeout=1.5)
     assert robot.status.position_reached
     assert robot.status.direction_locked
-    assert abs(robot.status.actual_force_n - 10.0) < 2.5
+    assert abs(robot.status.actual_force_n - 10.0) <= 2.5
     robot.call("stop")
     robot.ready()
     assert not robot.status.direction_locked
     assert robot.calibration_events == 1
+
+
+def test_target_arrival_restarts_confirmation_after_leaving_band(workstation):
+    robot = workstation
+    robot.mode(SetOperationMode.Request.POSITION_TRACTION)
+    robot.force = (8.0, 0.0, 0.0)
+    robot.wait(lambda: robot.status.actual_force_n > 7.9)
+    robot.call("start")
+    robot.wait(lambda: robot.status.state == TractionStatus.TRACTION)
+    robot.pump(1.2)
+    robot.force = (6.0, 0.0, 0.0)
+    robot.wait(lambda: robot.status.actual_force_n < 7.0)
+    robot.force = (8.0, 0.0, 0.0)
+    robot.wait(lambda: robot.status.actual_force_n > 7.9)
+    robot.pump(1.2)
+    assert robot.status.state == TractionStatus.TRACTION
+    robot.wait(lambda: robot.status.state == TractionStatus.POSITION_HOLD, timeout=1.5)
+    assert robot.status.position_reached
 
 
 def test_automatic_tool_z_search_stops_at_three_newtons_and_locks_target_direction(workstation):
@@ -479,10 +508,19 @@ def test_empty_direction_search_has_one_attempt_and_never_faults(workstation, st
     ))
     if stop_by_travel:
         robot.position = (0.4, 0.2, -0.001)
-    robot.wait(lambda: robot.status.state == TractionStatus.READY, timeout=3.0)
+    robot.wait(lambda: robot.status.state == TractionStatus.READY, timeout=6.0)
     assert robot.status.stop_reason == "DIRECTION_SEARCH_NO_FORCE"
     assert not robot.status.direction_available
     assert robot.status.calibrated
+    if not stop_by_travel:
+        commands = list(robot.commands)
+        distance = sum(
+            (next_stamp - stamp) * command.linear_speed_mps
+            for (stamp, command), (next_stamp, _) in zip(commands, commands[1:])
+            if command.mode == TractionCommand.DIRECTION_SEARCH
+        )
+        assert abs(distance - 0.30) < 0.01
+        assert max(command.linear_speed_mps for _, command in commands) <= 0.113
     finished_at = time.monotonic()
     robot.pump(2.2)
     assert not any(
@@ -491,3 +529,31 @@ def test_empty_direction_search_has_one_attempt_and_never_faults(workstation, st
     )
     assert robot.status.state == TractionStatus.READY
     assert robot.calibration_events == 1
+
+
+def test_transient_search_contact_resumes_without_restarting_five_second_budget(workstation):
+    robot = workstation
+    robot.mode(SetOperationMode.Request.POSITION_TRACTION)
+    robot.call("start")
+    robot.wait(lambda: any(
+        command.mode == TractionCommand.DIRECTION_SEARCH
+        for _, command in list(robot.commands)
+    ))
+    started_at = next(
+        stamp for stamp, command in list(robot.commands)
+        if command.mode == TractionCommand.DIRECTION_SEARCH
+    )
+    robot.pump(0.45)
+    robot.force = (3.2, 0.0, 0.0)
+    robot.pump(0.07)
+    robot.force = (0.8, 0.0, 0.0)
+    spike_ended_at = time.monotonic()
+    robot.wait(lambda: any(
+        stamp > spike_ended_at + 0.20 and command.mode == TractionCommand.DIRECTION_SEARCH
+        for stamp, command in list(robot.commands)
+    ), timeout=2.0)
+    assert not robot.status.direction_locked
+    robot.wait(lambda: robot.status.state == TractionStatus.READY, timeout=5.5)
+    assert robot.status.stop_reason == "DIRECTION_SEARCH_NO_FORCE"
+    assert 4.8 < time.monotonic() - started_at < 5.6
+    assert len(robot.switch_calls) == 2  # One activation and one final stop.

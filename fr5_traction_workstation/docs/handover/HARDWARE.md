@@ -13,7 +13,7 @@ FastAPI app.py → backend/ros_bridge.py（ROS 客户端）
    │ ROS 2 话题 / 服务
 traction_manager_node（流程、基线、方向、安全、记录）
 traction_controller_node（速度算法）
-   │ /controller_manager/command_cart_vel
+   │ /controller_manager/command_cart_vel_stamped (TwistStamped)
 fr5_direct_driver_node.py（唯一 Fairino Python SDK 所有者）
    ├─ TCP 20003 XML-RPC → FR5 控制器：配置、模式、使能、ServoCart、拖拽
    └─ TCP 20004         ← FR5 控制器：实时状态包、关节、TCP、六维力
@@ -75,10 +75,11 @@ fr5_direct_driver_node.py（唯一 Fairino Python SDK 所有者）
 | `command_rpc_timeout_s` | 1.5 s | 1.5 s，命令 XML-RPC socket timeout |
 | `startup_rpc_timeout_s` | 10 s | 10 s，参考系配置使用较长超时 |
 | `allow_existing_force_reference` | true | true：启动 `FT_SetRCS(base)` 超时/传输异常时允许继续沿用控制器已有参考系并打印警告；非零返回码仍报错。SDK 返回 14 表示接口执行失败，检查示教器/WebApp 报警和实时状态，不可按“沿用已有参考系”处理 |
-| `max_linear_speed_mps` | 0.025 | **0.050**，普通 Cartesian 线速度上限；目标和卸力 core 另限 0.020 m/s，方向搜索使用独立上限 |
-| `direction_search_max_speed_mps` | 0.30 | 0.30 m/s，只适用于 DIRECTION_SEARCH；普通命令不得借此提速 |
+| `max_linear_speed_mps` | 0.025 | **0.050**，普通 Cartesian 线速度上限；当前目标和卸力core另限0.020 m/s，方向搜索使用独立上限 |
+| `direction_search_max_speed_mps` | 0.12 | 0.12m/s，manager与driver一致；正式5s/30cm曲线理论峰0.1125m/s |
 | `direction_search_max_travel_m` | 0.30 | 单次搜索实际起点位移 0.30 m；到限锁止本次搜索 |
-| `direction_search_max_duration_s` | 2.0 | 单次搜索独立 monotonic 时长 2 s |
+| `direction_search_max_duration_s` | 5.0 | 单次搜索独立monotonic时长5s；接触暂停不重置 |
+| `max_servo_tracking_error_mm` | 5.0 | 5mm，绝对轨迹目标领先实时TCP的软上限，超出推进量丢弃；1s进展不足0.5mm或旧目标偏差超2倍上限才故障；此参数配置不得高于10mm |
 | `base_servo_sign` | **-1.0** | **+1.0**，来自历史实测，不能跳过 launch 用类默认运行 |
 | `realtime_state_timeout_s` | 0.5 s | 未在 launch 覆盖；SDK 包对象连续未更新超过该值触发直驱故障锁存 |
 | `return_speed_mm_s` / `return_acceleration_mm_s2` | 20 / 100 | 仅历史私有回位 helper，公开回位入口已移除 |
@@ -123,15 +124,15 @@ SDK 构造 `Robot.RPC(ip)` 会建立 `20003` 命令代理，并启动独立线�
 
 管理器通过兼容 `/controller_manager/switch_controller` 请求激活 `cartesian_velocity_controller`。直驱不是加载插件，而是检查互斥条件、切自动 `Mode(0)`、必要时 `RobotEnable(1)`、确认新实时状态，然后调用 `ServoMoveStart()`，清掉旧速度后接管。目标牵引、主动卸力和方向搜索都使用这条 Cartesian 通道；保留的牵引前快照不再提供公开返回运动。
 
-`_send_motion` 读取 `/controller_manager/command_cart_vel` 的最新线速度：
+`_send_motion` 读取 `/controller_manager/command_cart_vel_stamped`（TwistStamped）的最新线速度；旧Twist话题只保留诊断兼容，不再用于硬件控制：
 
-- 过期 0.25 s 速度置零；有限数检查覆盖 Twist 六个分量，但实际下发只用 XYZ，角速度始终为 0。
-- 对线速度范数限幅，然后乘真实回调间隔（夹到 0…0.05 s）及 1000，换成 mm 增量。
-- 普通牵引用 `ServoCart(mode=1)` 基坐标增量和 `base_servo_sign=+1`；遗留的 host drag 分支用 `mode=2` 工具坐标增量。当前原生拖拽激活时直接跳过所有 host ServoCart。
+- 根据源时间检查0.25 s过期及模式/servo接管前旧速度，队列只保留最新一包；非零速度继承manager命令源时间，避免controller把旧模式速度重新打成新时间。有限数检查覆盖Twist六个分量，但实际下发只用XYZ，角速度始终为0。
+- 对线速度范数限幅，再乘固定cmdT及1000换成mm步长，累加到明确的绝对目标位姿。计划节拍与实际间隔双重门控：100 Hz下相邻包至少约9 ms；错过时隙直接丢弃，不压缩补发旧位移，也不把早到回调间隔当成更小的积分时间。
+- 目标/搜索/卸力改用 `ServoCart(mode=0)` 绝对基坐标位姿，以 `base_servo_sign=+1` 映射速度步长；姿态固定，模式切换/新接管重取反馈起点。零速/接触/过期会取消旧目标领先量并锚定实时TCP；新目标领先反馈限幅5mm并丢弃超出推进量，短时超过不立即报错；连续限幅且1s进展不足0.5mm，或旧目标偏离反馈超过2倍上限（默认10mm）才故障停止，不能积累补跑。遗留host drag仍用mode2工具增量；原生拖拽不发host ServoCart。新绝对轨迹通路尚未实机验收。
 - `cmdT` 等于配置的 motion 周期，正式为 0.01 s；低于 `1e-9` 的位姿数精确置 0，避免厂商 XML-RPC 解析极小科学计数失败。
-- 每次 ServoCart RPC 耗时超过 50 ms 打印警告；非零结果或异常进入故障收尾。
+- 每次ServoCart RPC耗时超过50 ms打印警告；超过正式0.25 s指令看门狗即故障锁存，不在通信恢复后自行续动。每2 s打印实际发包Hz、非零包Hz、最大RPC耗时，供跟随不足排查。非零结果或异常同样进入故障收尾。
 
-停用 Cartesian controller 时调用 `ServoMoveEnd()`。它失败时换新代理重试一次，总延迟仍可能达数秒；失败保留 cleanup 状态并拒绝新接管。不能用“设置速度零”替代结束 servo 会话。
+停用Cartesian controller时调用 `ServoMoveEnd()`。它失败时换新代理重试一次，总延迟仍可能达数秒；失败保留cleanup状态并拒绝新接管。正常停用失败及运动/反馈故障中的servo结束失败均尝试StopMotion和RobotEnable(0)，保留故障及急停锁存；故障收尾前先发布unhealthy并禁止新速度。不能用“设置速度零”替代结束servo会话。
 
 符号至少有三层，改方向前先确定哪层有错：直驱基增量 `base_servo_sign`；算法目标牵引/卸力工具轴映射 `traction_sign_x/y/z=[+1,+1,-1]`；原生拖拽参考系 `native_drag_tool_xy_flip`。新方向搜索由 manager 把物理工具 Z− 转成 base 向量，使用 base ServoCart，不经过 traction_sign 工具轴反号。不要用旧 Y− auto-tension helper 或全局反号替代它。
 
@@ -158,9 +159,9 @@ SDK 构造 `Robot.RPC(ip)` 会建立 `20003` 命令代理，并启动独立线�
 
 目标模式待机时，力至少 3 N 的方向每 2 s 稳健更新；点击开始后全程锁定，到位保持期间也不解锁。若尚无有效方向，点击开始触发一次实际运动搜索，不能把该按钮理解为单纯的无运动查询。
 
-manager 使用当前工具四元数得到真实工具 Z− 在 base 中的向量，并发布 `DIRECTION_SEARCH=7` 与正的 `linear_speed_mps`。controller 跳过牵引工具轴符号补偿；driver 普通 `base_servo_sign=+1` 保持物理含义。默认 0.30 m / 2 s 最小 jerk 曲线理论峰速 0.28125 m/s，搜索专用最大速度 0.30 m/s，不被普通 0.05 m/s 限速截断。
+manager 使用当前工具四元数得到真实工具 Z− 在 base 中的向量，并发布 `DIRECTION_SEARCH=7` 与正的 `linear_speed_mps`。controller 跳过牵引工具轴符号补偿；driver 普通 `base_servo_sign=+1` 保持物理含义。按用户确认规划0.30m/5s五次曲线，理论峰速112.5mm/s，manager与driver独立限速120mm/s。
 
-达到去基线未低通合力 3 N 时立即停止搜索、取得本次锁定方向，然后自动进入目标牵引。实际起点位移达到 0.30 m 或 monotonic 时间到 2 s 仍未找到力，则停止并回 READY 提示检查绳带，不丢基线、不故障、不自动重试。driver 另独立限制 0.30 m / 2 s；一次搜索到限后必须由新操作重新授权，不能靠同一未结束搜索命令反复重置起点。反馈中断取消本次搜索。
+达到去基线未低通合力3 N时立即停止搜索。至少等待0.15 s、确认末端/关节静止并持续0.20 s保持≥3 N，用至少5个新力样本稳健取得方向，然后进入与普通开始相同的目标牵引路径。若停稳0.35s后尖峰已消失且受力<3N，从静止继续同一次剩余搜索；原5s/30cm预算不重置。持续受力但1s内方向不稳则回待机提示。实际起点位移达到0.30m或monotonic时间到5s仍无方向，停止回READY，不丢基线、不故障、不自动重试。driver另独立限制0.30m/5s，DISABLED接触暂停不重置它，只有新servo接管才授权新预算；一次搜索到限后必须由新操作重新授权，不能靠同一未结束搜索命令反复重置起点。反馈中断取消本次搜索。
 
 这条新搜索不使用旧 `auto_tension_tool_y_minus/tool_z_minus/base_z_minus` 的力增量投影、2 mm/s 或 100 mm 参数；旧私有 helper 的参数与诊断不能用来解释新搜索。
 
@@ -168,9 +169,9 @@ manager 使用当前工具四元数得到真实工具 Z− 在 base 中的向量
 
 卸力接口 `/traction/unload` 可在待机、目标牵引、目标保持或原生拖拽中使用。优先采用已记录的牵引方向，没有牵引记录时采用最新有效方向；没有方向时拒绝猜测。原生拖拽交接必须确认 OFF 并恢复 base 力参考系，再申请 Cartesian，不能同时占有两种控制权。
 
-控制算法沿目标增力方向的反向移动，默认速度上限 20 mm/s，接近 5 N 减速；去基线未低通合力 `<5 N` 即刻停止并保持当前位置。已有低负载不应继续原目标加力任务。普通结束、卸力完成和到位保持均不回零、不转回历史姿态。
+控制算法沿目标增力方向的反向移动，卸力请求上限20 mm/s，当前还受core普通速度20 mm/s约束，接近5 N减速；去基线未低通合力 `<5 N` 即刻停止并保持当前位置。已有低负载不应继续原目标加力任务。普通结束、卸力完成和到位保持均不回零、不转回历史姿态。
 
-目标到位判定是目标 ±2.5 N、controller 已 SETTLING 并持续 1 s。默认最大可调目标 100 N，可由设置提高；软件不再按实际受力 100 N / 150 N 或其他幅值门槛报故障。控制柜自身的保护和原生拖拽厂商参数（如 `native_drag_max_force_n=50`）仍各自生效，不能把后者误认为工作站牵引目标上限或软件阈值。
+目标控制向设定值中心逼近，但到位独立判定实际力在目标±2.5N内连续2s后停止保位；不要求controller已SETTLING，出带或反馈过期重新计时。默认最大可调目标 100 N，可由设置提高；软件不再按实际受力 100 N / 150 N 或其他幅值门槛报故障。控制柜自身的保护和原生拖拽厂商参数（如 `native_drag_max_force_n=50`）仍各自生效，不能把后者误认为工作站牵引目标上限或软件阈值。
 
 ## 5. 急停、故障和恢复
 
@@ -281,7 +282,7 @@ ROS 查询需要 DDS 发现/通信，可能启动 ROS CLI daemon，但不调用�
 | ServoMoveEnd反复超时 | RPC路径/控制器响应、是否一条命令占用服务线程 | `_TimeoutTransport`、`_end_servo`；约1.5s×重试仍可影响UI等待，不能无限重试或清flag装作成功 |
 | 急停恢复后仍故障 | 实体急停输入、错误码、FT激活、Mode(1)实时确认、旧servo清理 | `_on_hardware_emergency_recover`；成功后还需上层复位/准备流程 |
 | 新界面还有回零按钮或旧服务 | 网页缓存、app/bridge和ROS是否全部加载新版本 | 公开入口已移除；不是为新机器补旧零点文件 |
-| 搜索到30cm/2秒仍无力 | 绳路、工具Z−、3N corrected force、真实位移 | manager `handle_pretension`、driver `_limit_direction_search`；结束后提示重试，不能无限自动累计 |
+| 搜索到30cm/5秒仍无力 | 绳路、工具Z−、3N corrected force、真实位移 | manager `handle_pretension`、driver `_limit_direction_search`；结束后提示重试，不能无限自动累计 |
 | 卸力不可用或不降力 | 是否有已记录/最新方向、真实合力、native OFF和Cartesian交接 | manager `handle_unload/handle_releasing`、core UNLOADING；不回旧姿态 |
 
 不要将 `docs/stage_report.txt` 中某个“current_state”当作当下状态。排查实际当前状态应读本次日志和实时 ROS；仓库历史记录只有当时的证据。
@@ -320,4 +321,4 @@ vendor 的 `xmlrpc_timeout` 装饰器只是检查类变量 `RPC.is_conect`，**�
 
 2026-10-26 驱动 Fake SDK 21 项、2026-10-27 前一轮原生拖拽修复 30 项均为历史离线结果；不是本次完整新流程的最终测试数量。新搜索、卸力交接、移除公开回零以及模式/基线流程的准确验证数据统一见 MACHINE_AND_VALIDATION。本次不把假 SDK 或隔离 ROS 通过写成实机通过。
 
-下一次现场验收应分别确认：控制器/SDK 与参考系；KWR75D 电源/总线和重量/重心配置；TCP/工具安装及真实工具 Z−；搜索空间、3 N 建方向及刹停；目标 ±2.5 N / 1 s 到位；运动中一键卸力、低于 5 N 停止与交接中结束；实体急停、恢复保持基线且不会自动续动；拖拽手感、反馈稳定性，以及每种模式/力值的独立负载验收。可输入大于 100 N 的目标不等于该力值已验收。
+下一次现场验收应分别确认：控制器/SDK 与参考系；KWR75D 电源/总线和重量/重心配置；TCP/工具安装及真实工具 Z−；搜索空间、3 N 建方向及刹停；目标 ±2.5 N / 2 s 到位；运动中一键卸力、低于 5 N 停止与交接中结束；实体急停、恢复保持基线且不会自动续动；拖拽手感、反馈稳定性，以及每种模式/力值的独立负载验收。可输入大于 100 N 的目标不等于该力值已验收。

@@ -1,15 +1,11 @@
-const users = {
-  admin: { password: 'admin123', name: '系统管理员', role: '管理员' },
-  doctor: { password: 'doctor123', name: '值班医生', role: '医生' },
-  operator: { password: 'operator123', name: '设备操作员', role: '操作员' }
-};
 const permissions = {
+  '本地操作': { settings: true, adjust: true, operate: true, records: true, clear: true },
   '管理员': { settings: true, adjust: true, operate: true, records: true, clear: true },
   '医生': { settings: true, adjust: true, operate: true, records: true, clear: false },
   '操作员': { settings: false, adjust: true, operate: true, records: true, clear: false }
 };
 
-let sessionUser = null;
+let sessionUser = { name: '本机操作员', role: '本地操作' };
 const TARGET_FORCE_MIN = 1;
 let tractionForceLimit = 100;
 let currentForce = 10;
@@ -81,6 +77,7 @@ const REASON_LABELS = {
   TARGET_TRACTION_STOPPED: '目标牵引已结束',
   SWITCHED_TO_UNLOADING: '已切换卸力',
   DIRECTION_SEARCH_NO_FORCE: '未检测到有效受力，请调整绳带后重试',
+  DIRECTION_SEARCH_CONTACT_UNSTABLE: '搜索受力未保持稳定，已停止；请张紧绳带后重新开始',
   DIRECTION_SEARCH_CANCELLED: '已取消方向获取',
   DIRECTION_SEARCH_FEEDBACK_INTERRUPTED: '方向获取因反馈中断而停止',
   UNLOAD_STOPPED: '卸力已结束',
@@ -144,20 +141,6 @@ async function postJson(path, body = {}) {
   return data;
 }
 
-function login() {
-  const account = users[$('username').value.trim()];
-  if (!account || account.password !== $('password').value) {
-    $('loginError').textContent = '用户名或密码错误';
-    return;
-  }
-  sessionUser = { username: $('username').value.trim(), ...account };
-  sessionStorage.setItem('tractionSession', JSON.stringify(sessionUser));
-  $('loginError').textContent = '';
-  $('loginModal').classList.add('hidden');
-  applyPermissions();
-  toast('登录成功');
-}
-
 function motionStateActive() {
   return ACTIVE_STATES.includes(tractionState) || (tractionState === 5 && directionLocked);
 }
@@ -201,15 +184,6 @@ function applyPermissions() {
   $('stopLabel').textContent = tractionState === 7 ? '停止卸力' :
     (operationMode === 2 ? '结束拖拽' : '结束牵引');
   $('recordsBtn').disabled = !permission.records;
-}
-
-function logout() {
-  if (activeRecord && !confirm('牵引记录尚未结束，确定退出并将本次标记为紧急终止吗？')) return;
-  if (activeRecord) emergencyStop();
-  sessionUser = null;
-  sessionStorage.removeItem('tractionSession');
-  $('password').value = '';
-  $('loginModal').classList.remove('hidden');
 }
 
 async function shutdownProgram() {
@@ -727,11 +701,6 @@ setInterval(() => {
 
 $('targetForceVal').addEventListener('input', event => queueSliderTarget(event.target.value));
 $('targetForceVal').addEventListener('change', event => queueSliderTarget(event.target.value, true));
-$('loginBtn').addEventListener('click', login);
-$('password').addEventListener('keydown', event => {
-  if (event.key === 'Enter') login();
-});
-$('logoutBtn').addEventListener('click', logout);
 $('shutdownBtn').addEventListener('click', () => {
   $('shutdownPrompt').textContent = '确认关闭工作站程序和机器人控制服务吗？';
   $('confirmShutdownBtn').disabled = false;
@@ -830,9 +799,4 @@ document.querySelectorAll('.mode-btn').forEach(button => {
   });
 });
 setInterval(() => { fetch('/api/traction/heartbeat', {method: 'POST', body: '{}'}).catch(() => {}); }, 500);
-const savedSession = sessionStorage.getItem('tractionSession');
-if (savedSession) {
-  sessionUser = JSON.parse(savedSession);
-  $('loginModal').classList.add('hidden');
-  applyPermissions();
-}
+applyPermissions();

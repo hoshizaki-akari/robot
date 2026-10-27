@@ -228,8 +228,6 @@
     .primary-btn { background: var(--blue); color: #fff; }
     .secondary-btn { background: #e2e8f0; color: #334155; }
     .danger-btn { background: #fee2e2; color: #b91c1c; }
-    .login-btn { width: 100%; padding: 12px; }
-    .login-tip { margin-top: 15px; padding: 11px; border-radius: 7px; background: #f1f5f9; color: #64748b; font-size: 13px; line-height: 1.7; }
     .error-tip { min-height: 20px; color: var(--red); font-size: 13px; margin-bottom: 8px; }
     .toolbar { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
     .toolbar-left, .toolbar-right { display: flex; gap: 9px; }
@@ -304,7 +302,7 @@
       <h1>骨伤牵引机器人工作站</h1>
     </div>
     <div class="top-right">
-      <div class="user-chip"><span id="currentUser">未登录</span><span class="role-tag" id="currentRole">访客</span></div>
+      <div class="user-chip"><span id="currentUser">本机操作员</span><span class="role-tag" id="currentRole">本地操作</span></div>
       <button class="nav-btn" id="prepareBtn" disabled title="仅在牵引带松弛且机械臂静止时重新校准"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="7"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5M9 12h6M12 9v6"/></svg></span><span>重新校准</span></button>
       <button class="nav-btn" id="settingsBtn">
         <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.2 1.9 2.2.4 1.6-1.1 1.8 1.8-1.1 1.6.4 2.2L21 11v2l-2.9 1.2-.4 2.2 1.1 1.6-1.8 1.8-1.6-1.1-2.2.4L12 21l-1.2-1.9-2.2-.4L7 19.8l-1.8-1.8 1.1-1.6-.4-2.2L3 13v-2l2.9-1.2.4-2.2-1.1-1.6L7 4.2l1.6 1.1 2.2-.4L12 3z"/><circle cx="12" cy="12" r="3"/></svg></span><span>参数设置</span>
@@ -312,7 +310,6 @@
       <button class="nav-btn" id="recordsBtn">
         <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v5h5M9 13h6M9 17h6M9 9h2"/></svg></span><span>牵引记录</span>
       </button>
-      <button class="nav-btn" id="logoutBtn"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 5H5v14h5M14 8l4 4-4 4M9 12h9"/></svg></span><span>退出登录</span></button>
       <button class="nav-btn shutdown" id="shutdownBtn"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v8M7.8 5.5a8 8 0 1 0 8.4 0"/></svg></span><span>关闭程序</span></button>
     </div>
   </header>
@@ -387,19 +384,6 @@
     </section>
   </main>
 
-  <div class="modal-mask" id="loginModal">
-    <div class="modal small">
-      <div class="modal-header"><h2>系统登录</h2></div>
-      <div class="modal-body">
-        <div class="form-item"><label for="username">用户名</label><input id="username" autocomplete="username" placeholder="请输入用户名"></div>
-        <div class="form-item"><label for="password">密码</label><input id="password" type="password" autocomplete="current-password" placeholder="请输入密码"></div>
-        <div class="error-tip" id="loginError"></div>
-        <button class="primary-btn login-btn" id="loginBtn">登录系统</button>
-        <div class="login-tip">演示账号：管理员 admin/admin123；医生 doctor/doctor123；操作员 operator/operator123。</div>
-      </div>
-    </div>
-  </div>
-
   <div class="modal-mask hidden" id="recordsModal">
     <div class="modal">
       <div class="modal-header"><h2>牵引记录</h2><button class="close-btn" data-close="recordsModal">×</button></div>
@@ -456,6 +440,6 @@
     uses /api/traction/* and the ROS2 traction manager; it does not simulate force,
     persist traction records in the browser, or issue robot SDK commands.
   </script>
-  <script src="/assets/090105.js?v=20261027-target-unload"></script>
+  <script src="/assets/090105.js?v=local-center-20261027-target-unload"></script>
 </body>
 </html>

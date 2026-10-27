@@ -12,6 +12,7 @@
 #include "fr_traction/msg/position_control_diagnostics.hpp"
 #include "fairino_msgs/msg/pose_twist.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "geometry_msgs/msg/twist_stamped.hpp"
 #include "geometry_msgs/msg/wrench_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
@@ -54,6 +55,7 @@ public:
     traction_sign_y_ = declare_parameter("traction_sign_y", 1.0);
     traction_sign_z_ = declare_parameter("traction_sign_z", -1.0);
     position_tolerance_n_ = declare_parameter("position_tolerance_n", 2.5);
+    position_center_tolerance_n_ = declare_parameter("position_center_tolerance_n", 0.5);
     position_far_gain_mps_per_n_ = declare_parameter(
       "position_far_gain_mps_per_n", 0.0060);
     position_near_gain_mps_per_n_ = declare_parameter(
@@ -68,6 +70,9 @@ public:
       "position_max_acceleration_mps2", 0.080);
     position_max_deceleration_mps2_ = declare_parameter(
       "position_max_deceleration_mps2", 0.160);
+    position_max_jerk_mps3_ = declare_parameter("position_max_jerk_mps3", 1.0);
+    position_band_exit_confirm_s_ = declare_parameter("position_band_exit_confirm_s", 0.20);
+    position_reverse_confirm_s_ = declare_parameter("position_reverse_confirm_s", 0.20);
     position_settling_speed_mps_ = declare_parameter(
       "position_settling_speed_mps", 0.0005);
     position_initial_stiffness_n_per_m_ = declare_parameter(
@@ -92,6 +97,9 @@ public:
     command_topic_ = declare_parameter("command_topic", std::string("/traction/command"));
     cartesian_command_topic_ = declare_parameter(
       "cartesian_command_topic", std::string("/cartesian_velocity_controller/command_cart_vel"));
+    cartesian_stamped_command_topic_ = declare_parameter(
+      "cartesian_stamped_command_topic",
+      std::string("/controller_manager/command_cart_vel_stamped"));
     velocity_command_topic_ = declare_parameter(
       "velocity_command_topic", std::string("/traction/controller_velocity_cmd"));
     velocity_vector_topic_ = declare_parameter(
@@ -133,6 +141,7 @@ public:
     drag_force_filter_.set_cutoff(drag_force_filter_cutoff_hz_);
     PositionControlConfig position_config;
     position_config.tolerance_n = position_tolerance_n_;
+    position_config.center_tolerance_n = position_center_tolerance_n_;
     position_config.maximum_speed_mps = max_speed_mps_;
     position_config.far_gain_mps_per_n = position_far_gain_mps_per_n_;
     position_config.near_gain_mps_per_n = position_near_gain_mps_per_n_;
@@ -142,6 +151,9 @@ public:
     position_config.force_rate_cutoff_hz = position_force_rate_cutoff_hz_;
     position_config.maximum_acceleration_mps2 = position_max_acceleration_mps2_;
     position_config.maximum_deceleration_mps2 = position_max_deceleration_mps2_;
+    position_config.maximum_jerk_mps3 = position_max_jerk_mps3_;
+    position_config.band_exit_confirm_s = position_band_exit_confirm_s_;
+    position_config.reverse_confirm_s = position_reverse_confirm_s_;
     position_config.settling_speed_mps = position_settling_speed_mps_;
     position_config.initial_stiffness_n_per_m = position_initial_stiffness_n_per_m_;
     position_config.minimum_stiffness_n_per_m = position_min_stiffness_n_per_m_;
@@ -156,18 +168,22 @@ public:
       drag_max_acceleration_mps2_, drag_max_jerk_mps3_);
 
     command_subscription_ = create_subscription<msg::TractionCommand>(
-      command_topic_, rclcpp::QoS(10).reliable(),
+      // Servo inputs describe the current desired motion, not a work queue.
+      // A scheduling delay must not replay ten obsolete velocity requests.
+      command_topic_, rclcpp::QoS(1).reliable(),
       [this](const msg::TractionCommand::SharedPtr message) {on_command(*message);});
     wrench_subscription_ = create_subscription<geometry_msgs::msg::WrenchStamped>(
       // The direct FR5 driver publishes this stream reliably. Match that
       // QoS so the force loop does not silently lose a feedback burst.
-      wrench_topic_, rclcpp::QoS(10).reliable(),
+      wrench_topic_, rclcpp::QoS(1).reliable(),
       [this](const geometry_msgs::msg::WrenchStamped::SharedPtr message) {on_wrench(*message);});
     ee_state_subscription_ = create_subscription<fairino_msgs::msg::PoseTwist>(
-      ee_state_topic_, rclcpp::QoS(10).reliable(),
+      ee_state_topic_, rclcpp::QoS(1).reliable(),
       [this](const fairino_msgs::msg::PoseTwist::SharedPtr message) {on_ee_state(*message);});
     twist_publisher_ = create_publisher<geometry_msgs::msg::Twist>(
-      cartesian_command_topic_, rclcpp::QoS(10).reliable());
+      cartesian_command_topic_, rclcpp::QoS(1).reliable());
+    stamped_twist_publisher_ = create_publisher<geometry_msgs::msg::TwistStamped>(
+      cartesian_stamped_command_topic_, rclcpp::QoS(1).reliable());
     velocity_publisher_ = create_publisher<std_msgs::msg::Float64>(
       velocity_command_topic_, rclcpp::QoS(10).reliable());
     velocity_vector_publisher_ = create_publisher<geometry_msgs::msg::Twist>(
@@ -264,8 +280,17 @@ private:
     command_ = message;
     last_command_at_ = now();
     last_command_steady_at_ = std::chrono::steady_clock::now();
+    const double source_age_s = (last_command_at_ -
+      rclcpp::Time(message.header.stamp, get_clock()->get_clock_type())).seconds();
+    const bool source_fresh = std::isfinite(source_age_s) &&
+      source_age_s >= 0.0 && source_age_s <= command_timeout_s_;
+    if (source_fresh) {
+      last_command_steady_at_ -= std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(source_age_s));
+    }
     ++command_generation_;
-    command_valid_ = message.mode <= msg::TractionCommand::DIRECTION_SEARCH &&
+    command_valid_ = source_fresh && message.header.frame_id == "base_link" &&
+      message.mode <= msg::TractionCommand::DIRECTION_SEARCH &&
       message.direction_correction_mode <= msg::TractionCommand::DIRECTION_CORRECTION_ACTIVE &&
       std::isfinite(message.target_force_n) && message.target_force_n >= 0.0 &&
       std::isfinite(message.linear_speed_mps) && message.linear_speed_mps >= 0.0 &&
@@ -278,7 +303,15 @@ private:
     latest_wrench_ = force_from_message(message);
     last_wrench_at_ = now();
     last_wrench_steady_at_ = std::chrono::steady_clock::now();
-    wrench_valid_ = message.header.frame_id == "base_link" && finite(latest_wrench_) &&
+    const double source_age_s = (last_wrench_at_ -
+      rclcpp::Time(message.header.stamp, get_clock()->get_clock_type())).seconds();
+    const bool source_fresh = std::isfinite(source_age_s) &&
+      source_age_s >= 0.0 && source_age_s <= wrench_timeout_s_;
+    if (source_fresh) {
+      last_wrench_steady_at_ -= std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(source_age_s));
+    }
+    wrench_valid_ = source_fresh && message.header.frame_id == "base_link" && finite(latest_wrench_) &&
       std::isfinite(message.wrench.torque.x) && std::isfinite(message.wrench.torque.y) &&
       std::isfinite(message.wrench.torque.z);
   }
@@ -311,6 +344,19 @@ private:
     twist.linear.y = output.linear_velocity.y;
     twist.linear.z = output.linear_velocity.z;
     // Angular velocity is intentionally always zero for this controller.
+    geometry_msgs::msg::TwistStamped stamped_twist;
+    // Keep the manager command's epoch on moving output. Restamping an old
+    // mode's velocity here could make it look newer than the driver's mode
+    // handover and let it cross into the next motion session. A zero command
+    // is always current so a stop is never delayed by an expired epoch.
+    if (norm(output.linear_velocity) > 0.0) {
+      stamped_twist.header.stamp = command_.header.stamp;
+    } else {
+      stamped_twist.header.stamp = now();
+    }
+    stamped_twist.header.frame_id = "base_link";
+    stamped_twist.twist = twist;
+    stamped_twist_publisher_->publish(stamped_twist);
     twist_publisher_->publish(twist);
     velocity_vector_publisher_->publish(twist);
     std_msgs::msg::Float64 scalar;
@@ -517,6 +563,7 @@ private:
   double traction_sign_y_ = 1.0;
   double traction_sign_z_ = -1.0;
   double position_tolerance_n_ = 2.5;
+  double position_center_tolerance_n_ = 0.5;
   double position_far_gain_mps_per_n_ = 0.0040;
   double position_near_gain_mps_per_n_ = 0.0015;
   double position_near_window_n_ = 5.0;
@@ -525,6 +572,9 @@ private:
   double position_force_rate_cutoff_hz_ = 3.0;
   double position_max_acceleration_mps2_ = 0.080;
   double position_max_deceleration_mps2_ = 0.120;
+  double position_max_jerk_mps3_ = 1.0;
+  double position_band_exit_confirm_s_ = 0.20;
+  double position_reverse_confirm_s_ = 0.20;
   double position_settling_speed_mps_ = 0.0005;
   double position_initial_stiffness_n_per_m_ = 300.0;
   double position_min_stiffness_n_per_m_ = 50.0;
@@ -540,6 +590,7 @@ private:
   std::string wrench_topic_;
   std::string command_topic_;
   std::string cartesian_command_topic_;
+  std::string cartesian_stamped_command_topic_;
   std::string velocity_command_topic_;
   std::string velocity_vector_topic_;
   std::string position_diagnostics_topic_;
@@ -566,6 +617,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr wrench_subscription_;
   rclcpp::Subscription<fairino_msgs::msg::PoseTwist>::SharedPtr ee_state_subscription_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr twist_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr stamped_twist_publisher_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr velocity_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr velocity_vector_publisher_;
   rclcpp::Publisher<msg::PositionControlDiagnostics>::SharedPtr

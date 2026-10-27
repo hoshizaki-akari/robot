@@ -223,6 +223,11 @@ PositionTractionController::PositionTractionController(const PositionControlConf
   if (!std::isfinite(config_.near_window_n) || config_.near_window_n <= config_.tolerance_n) {
     config_.near_window_n = defaults.near_window_n;
   }
+  if (!std::isfinite(config_.center_tolerance_n) || config_.center_tolerance_n <= 0.0 ||
+    config_.center_tolerance_n > config_.tolerance_n)
+  {
+    config_.center_tolerance_n = std::min(defaults.center_tolerance_n, config_.tolerance_n);
+  }
   if (!std::isfinite(config_.prediction_horizon_s) || config_.prediction_horizon_s < 0.0) {
     config_.prediction_horizon_s = defaults.prediction_horizon_s;
   }
@@ -241,6 +246,15 @@ PositionTractionController::PositionTractionController(const PositionControlConf
     config_.maximum_deceleration_mps2 < config_.maximum_acceleration_mps2)
   {
     config_.maximum_deceleration_mps2 = defaults.maximum_deceleration_mps2;
+  }
+  if (!std::isfinite(config_.maximum_jerk_mps3) || config_.maximum_jerk_mps3 <= 0.0) {
+    config_.maximum_jerk_mps3 = defaults.maximum_jerk_mps3;
+  }
+  if (!std::isfinite(config_.band_exit_confirm_s) || config_.band_exit_confirm_s < 0.0) {
+    config_.band_exit_confirm_s = defaults.band_exit_confirm_s;
+  }
+  if (!std::isfinite(config_.reverse_confirm_s) || config_.reverse_confirm_s < 0.0) {
+    config_.reverse_confirm_s = defaults.reverse_confirm_s;
   }
   if (!std::isfinite(config_.settling_speed_mps) || config_.settling_speed_mps <= 0.0) {
     config_.settling_speed_mps = defaults.settling_speed_mps;
@@ -276,13 +290,22 @@ void PositionTractionController::reset()
   force_rate_nps_ = 0.0;
   estimated_stiffness_n_per_m_ = config_.initial_stiffness_n_per_m;
   velocity_mps_ = 0.0;
+  acceleration_mps2_ = 0.0;
+  previous_target_n_ = 0.0;
+  band_exit_elapsed_s_ = 0.0;
+  reverse_elapsed_s_ = 0.0;
+  previous_motion_sign_ = 0;
+  settled_in_band_ = false;
 }
 
 double PositionTractionController::braking_speed_limit(double force_margin_n) const
 {
   if (!std::isfinite(force_margin_n) || force_margin_n <= 0.0) {return 0.0;}
   const double travel_margin_m = force_margin_n / estimated_stiffness_n_per_m_;
-  const double reaction_delay_s = config_.prediction_horizon_s;
+  // Include the acceleration ramp in the stopping-distance estimate. Adding
+  // jerk limiting without this allowance would brake later than intended.
+  const double reaction_delay_s = config_.prediction_horizon_s +
+    config_.maximum_deceleration_mps2 / config_.maximum_jerk_mps3;
   const double acceleration = config_.maximum_deceleration_mps2;
   const double discriminant = reaction_delay_s * reaction_delay_s +
     2.0 * travel_margin_m / acceleration;
@@ -305,6 +328,7 @@ PositionControlResult PositionTractionController::update(
   if (!initialized_) {
     initialized_ = true;
     previous_force_n_ = actual_force_n;
+    previous_target_n_ = target_force_n;
     result.predicted_force_n = actual_force_n;
     result.estimated_stiffness_n_per_m = estimated_stiffness_n_per_m_;
     result.valid = true;
@@ -338,30 +362,40 @@ PositionControlResult PositionTractionController::update(
   const double predicted_error_n = target_force_n - predicted_force_n;
   const double absolute_error_n = std::abs(actual_error_n);
   double desired_velocity_mps = 0.0;
+  if (std::abs(target_force_n - previous_target_n_) > 1e-9) {
+    settled_in_band_ = false;
+    band_exit_elapsed_s_ = 0.0;
+  }
+  previous_target_n_ = target_force_n;
+  if (settled_in_band_) {
+    if (absolute_error_n > config_.center_tolerance_n) {
+      band_exit_elapsed_s_ += dt_s;
+      if (band_exit_elapsed_s_ >= config_.band_exit_confirm_s) {
+        settled_in_band_ = false;
+        band_exit_elapsed_s_ = 0.0;
+      }
+    } else {
+      band_exit_elapsed_s_ = 0.0;
+    }
+  }
 
-  if (absolute_error_n <= config_.tolerance_n) {
-    // Being inside the force band is not sufficient while the robot still
-    // has appreciable residual motion. Keep braking and only expose SETTLING
-    // after velocity is genuinely quiet. The manager independently requires
-    // the force to remain inside this band for 0.5 s, so short force-rate
-    // spikes cannot falsely complete the operation or restart motion inside
-    // the accepted band.
-    result.phase = std::abs(velocity_mps_) <= config_.settling_speed_mps ?
-      PositionControlPhase::SETTLING : PositionControlPhase::BRAKING;
-  } else {
+  // The outer acceptance band must not become a deliberately low force
+  // setpoint. Aim close to the requested centre with a continuous near-field
+  // law, and only settle inside the tighter centre band.
+  const double quiet_band_n = 0.4 * config_.center_tolerance_n;
+  const double force_margin_n = std::max(0.0, absolute_error_n - quiet_band_n);
+  if (!settled_in_band_ && force_margin_n > 0.0) {
     const double blend = std::clamp(
       (absolute_error_n - config_.tolerance_n) /
       (config_.near_window_n - config_.tolerance_n), 0.0, 1.0);
     const double gain = config_.near_gain_mps_per_n +
       blend * (config_.far_gain_mps_per_n - config_.near_gain_mps_per_n);
-    double control_error_n = predicted_error_n;
-    if (actual_error_n > config_.tolerance_n && predicted_error_n <= 0.0) {
-      control_error_n = 0.0;
+    const double motion_sign = actual_error_n >= 0.0 ? 1.0 : -1.0;
+    const double remaining_error_n = motion_sign * predicted_error_n - quiet_band_n;
+    double control_error_n = motion_sign * std::max(0.0, remaining_error_n);
+    if (remaining_error_n <= 0.0) {
       result.phase = PositionControlPhase::BRAKING;
-    } else if (actual_error_n < -config_.tolerance_n && predicted_error_n >= 0.0) {
-      control_error_n = 0.0;
-      result.phase = PositionControlPhase::BRAKING;
-    } else if (actual_error_n < -config_.tolerance_n) {
+    } else if (actual_error_n < 0.0) {
       result.phase = PositionControlPhase::CORRECTING;
     } else if (absolute_error_n <= config_.near_window_n) {
       result.phase = PositionControlPhase::FINE_ADJUST;
@@ -370,10 +404,6 @@ PositionControlResult PositionTractionController::update(
     }
     desired_velocity_mps = gain * control_error_n;
     result.raw_velocity_mps = desired_velocity_mps;
-    // Brake toward the target centre rather than the outer tolerance edge.
-    // Otherwise a noiseless plant can stop at target-tolerance and never
-    // enter the dwell timer because of floating-point or sensor variation.
-    const double force_margin_n = absolute_error_n;
     const double braking_limit_mps = braking_speed_limit(force_margin_n);
     const double magnitude_limit_mps = std::min(config_.maximum_speed_mps, braking_limit_mps);
     if (std::abs(desired_velocity_mps) > magnitude_limit_mps) {
@@ -383,26 +413,91 @@ PositionControlResult PositionTractionController::update(
         result.phase = PositionControlPhase::BRAKING;
       }
     }
+  } else {
+    result.phase = PositionControlPhase::BRAKING;
   }
 
-  if (desired_velocity_mps * velocity_mps_ < 0.0) {
-    desired_velocity_mps = 0.0;
-    result.phase = PositionControlPhase::BRAKING;
+  const int requested_sign = desired_velocity_mps > 1e-12 ? 1 :
+    (desired_velocity_mps < -1e-12 ? -1 : 0);
+  if (previous_motion_sign_ == 0 && requested_sign != 0) {
+    previous_motion_sign_ = requested_sign;
+  }
+  if (requested_sign != 0 && previous_motion_sign_ != 0 &&
+    requested_sign != previous_motion_sign_)
+  {
+    // A transient overshoot must not immediately reverse a loaded arm.
+    // First brake to rest, then require the opposite request to persist.
+    const bool stationary = std::abs(velocity_mps_) <= 1e-5 &&
+      std::abs(acceleration_mps2_) <= 1e-4;
+    if (stationary) {
+      reverse_elapsed_s_ += dt_s;
+    } else {
+      reverse_elapsed_s_ = 0.0;
+    }
+    if (!stationary || reverse_elapsed_s_ < config_.reverse_confirm_s) {
+      desired_velocity_mps = 0.0;
+      result.phase = PositionControlPhase::BRAKING;
+    } else {
+      previous_motion_sign_ = requested_sign;
+      reverse_elapsed_s_ = 0.0;
+    }
+  } else {
+    reverse_elapsed_s_ = 0.0;
   }
   const bool decelerating = std::abs(desired_velocity_mps) < std::abs(velocity_mps_) ||
     desired_velocity_mps * velocity_mps_ < 0.0;
   const double acceleration_limit = decelerating ?
     config_.maximum_deceleration_mps2 : config_.maximum_acceleration_mps2;
-  const double maximum_velocity_step = acceleration_limit * dt_s;
   const double requested_step = desired_velocity_mps - velocity_mps_;
-  const double applied_step = std::clamp(
-    requested_step, -maximum_velocity_step, maximum_velocity_step);
-  result.acceleration_limited = std::abs(applied_step - requested_step) > 1e-12;
-  velocity_mps_ += applied_step;
-  if (std::abs(desired_velocity_mps) <= 1e-12 &&
-    std::abs(velocity_mps_) <= maximum_velocity_step)
+  // A critically damped velocity trajectory reduces acceleration before it
+  // reaches the requested speed. Do not snap acceleration to zero whenever
+  // the moving force-loop request crosses the current velocity: that would
+  // reintroduce the jerk which this trajectory is intended to remove.
+  const double trajectory_dt_s = std::min(dt_s, 0.02);
+  const double response_rate_s_inv = std::min({
+    8.0,
+    std::exp(1.0) * acceleration_limit / config_.maximum_speed_mps,
+    std::sqrt(config_.maximum_jerk_mps3 / config_.maximum_speed_mps)});
+  const double requested_jerk_mps3 =
+    response_rate_s_inv * response_rate_s_inv * requested_step -
+    2.0 * response_rate_s_inv * acceleration_mps2_;
+  acceleration_mps2_ += std::clamp(
+    requested_jerk_mps3, -config_.maximum_jerk_mps3,
+    config_.maximum_jerk_mps3) * trajectory_dt_s;
+  // Acceleration in the current direction increases speed; acceleration
+  // against it is braking. Do not allow the larger braking bound to become
+  // a larger acceleration bound when the target changes while moving.
+  const double minimum_acceleration_mps2 = velocity_mps_ > 0.0 ?
+    -config_.maximum_deceleration_mps2 : -config_.maximum_acceleration_mps2;
+  const double maximum_acceleration_mps2 = velocity_mps_ < 0.0 ?
+    config_.maximum_deceleration_mps2 : config_.maximum_acceleration_mps2;
+  acceleration_mps2_ = std::clamp(
+    acceleration_mps2_, minimum_acceleration_mps2, maximum_acceleration_mps2);
+  const double previous_velocity_mps = velocity_mps_;
+  velocity_mps_ += acceleration_mps2_ * trajectory_dt_s;
+  velocity_mps_ = std::clamp(
+    velocity_mps_, -config_.maximum_speed_mps, config_.maximum_speed_mps);
+  // A time-varying request can leave residual deceleration in this
+  // trajectory even when the requested velocity is zero. The trajectory
+  // must never reverse the real output on its own: only the stationary
+  // confirmation above may change the permitted direction. This direction
+  // guard takes precedence over jerk smoothing at a zero crossing.
+  if ((previous_motion_sign_ > 0 && velocity_mps_ < 0.0) ||
+    (previous_motion_sign_ < 0 && velocity_mps_ > 0.0))
   {
     velocity_mps_ = 0.0;
+    acceleration_mps2_ = 0.0;
+  }
+  result.acceleration_limited =
+    std::abs((velocity_mps_ - previous_velocity_mps) - requested_step) > 1e-12;
+  if (absolute_error_n <= config_.center_tolerance_n &&
+    std::abs(velocity_mps_) <= config_.settling_speed_mps &&
+    std::abs(acceleration_mps2_) <= config_.maximum_jerk_mps3 * dt_s)
+  {
+    // Keep this stopped request until force has really left the band for
+    // long enough, so noise cannot restart the pull every few samples.
+    settled_in_band_ = true;
+    result.phase = PositionControlPhase::SETTLING;
   }
 
   result.velocity_mps = velocity_mps_;

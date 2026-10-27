@@ -126,16 +126,20 @@ def fake_driver(sdk, raw_force):
         _latest_joint_speeds=[0.0] * 6,
         _latest_wrench=list(raw_force),
         _traction_mode=module.TractionCommand.DISABLED,
+        _command_timeout=0.25,
         _direction_search_started_at=None,
         _direction_search_start_pose=None,
         _direction_search_stopped=False,
         _direction_search_max_travel_m=0.30,
-        _direction_search_max_duration_s=2.0,
+        _direction_search_max_duration_s=5.0,
         _last_realtime_state_at=module.time.monotonic(),
         _realtime_state_timeout_s=0.5,
     )
     logger = FakeLogger()
     driver.get_logger = lambda: logger
+    driver.get_clock = lambda: SimpleNamespace(
+        now=lambda: SimpleNamespace(nanoseconds=100_000_000_000)
+    )
     driver._switch_lists = Fr5DirectDriver._switch_lists
     driver._reset_command_proxy = lambda timeout_s=None: None
 
@@ -207,6 +211,14 @@ def test_driver_does_not_expose_zero_or_position_return_services():
     })
 
 
+def mode_command(mode):
+    command = module.TractionCommand()
+    command.mode = mode
+    command.header.stamp.sec = 100
+    command.header.frame_id = "base_link"
+    return command
+
+
 def motion_driver(mode, velocity):
     driver = fake_driver(OldSdk(), [0.0] * 6)
     driver._servo_enabled = True
@@ -215,9 +227,13 @@ def motion_driver(mode, velocity):
     driver._twist.linear.x, driver._twist.linear.y, driver._twist.linear.z = velocity
     driver._last_command_at = 100.0
     driver._last_motion_at = 99.99
+    driver._next_motion_at = 0.0
+    driver._motion_period_s = 0.01
+    driver._cartesian_target_pose = None
+    driver._max_servo_tracking_error_mm = 5.0
     driver._command_timeout = 0.25
     driver._max_speed = 0.05
-    driver._direction_search_max_speed = 0.30
+    driver._direction_search_max_speed = 0.12
     driver._base_servo_sign = 1.0
     driver.motion_commands = []
     driver._servo_cart = lambda coordinate_mode, increment: (
@@ -229,18 +245,18 @@ def motion_driver(mode, velocity):
 def test_driver_accepts_unloading_and_direction_search_command_modes():
     driver = fake_driver(OldSdk(), [0.0] * 6)
     for mode in (module.TractionCommand.UNLOADING, module.TractionCommand.DIRECTION_SEARCH):
-        Fr5DirectDriver._on_traction_command(driver, SimpleNamespace(mode=mode))
+        Fr5DirectDriver._on_traction_command(driver, mode_command(mode))
         assert driver._traction_mode == mode
 
 
 def test_direction_search_profile_peak_passes_without_traction_speed_clipping():
-    driver = motion_driver(module.TractionCommand.DIRECTION_SEARCH, [0.0, 0.0, -0.28125])
+    driver = motion_driver(module.TractionCommand.DIRECTION_SEARCH, [0.0, 0.0, -0.1125])
 
     Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
 
     coordinate_mode, increment = driver.motion_commands[-1]
-    assert coordinate_mode == 1
-    assert math.isclose(increment[2], -2.8125, abs_tol=1e-9)
+    assert coordinate_mode == 0
+    assert math.isclose(increment[2], -1.125, abs_tol=1e-9)
     assert increment[:2] == [0.0, 0.0]
     assert increment[3:] == [0.0, 0.0, 0.0]
 
@@ -251,7 +267,7 @@ def test_direction_search_still_bounds_vector_speed_at_its_own_limit():
     Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
 
     _, increment = driver.motion_commands[-1]
-    assert math.isclose(math.hypot(*increment[:3]), 3.0, abs_tol=1e-9)
+    assert math.isclose(math.hypot(*increment[:3]), 1.2, abs_tol=1e-9)
 
 
 def test_unloading_and_positioning_keep_normal_speed_bound_and_base_sign():
@@ -262,7 +278,7 @@ def test_unloading_and_positioning_keep_normal_speed_bound_and_base_sign():
         Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
 
         coordinate_mode, increment = driver.motion_commands[-1]
-        assert coordinate_mode == 1
+        assert coordinate_mode == 0
         assert math.isclose(increment[2], -0.5, abs_tol=1e-9)
 
 
@@ -272,7 +288,7 @@ def test_direction_search_stale_velocity_is_zero_even_with_higher_speed_limit():
 
     Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
 
-    assert driver.motion_commands[-1] == (1, [0.0] * 6)
+    assert driver.motion_commands[-1] == (0, [0.0] * 6)
 
 
 def test_native_drag_never_receives_host_search_packets():
@@ -284,19 +300,19 @@ def test_native_drag_never_receives_host_search_packets():
     assert driver.motion_commands == []
 
 
-def test_direction_search_stops_at_two_seconds_and_repeated_commands_cannot_extend_it():
+def test_direction_search_stops_at_five_seconds_and_repeated_commands_cannot_extend_it():
     driver = motion_driver(module.TractionCommand.DIRECTION_SEARCH, [0.0, 0.0, -0.28])
-    command = SimpleNamespace(mode=module.TractionCommand.DIRECTION_SEARCH)
+    command = mode_command(module.TractionCommand.DIRECTION_SEARCH)
     Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
 
-    for now in (100.5, 101.0, 101.5, 102.0, 102.1):
+    for now in (100.5, 101.0, 104.0, 105.0, 105.1):
         Fr5DirectDriver._on_traction_command(driver, command)
         driver._last_command_at = now
         Fr5DirectDriver._send_motion(driver, now, 0.01)
 
     assert driver._direction_search_started_at == 100.0
     assert driver._direction_search_stopped
-    assert driver.motion_commands[-2:] == [(1, [0.0] * 6), (1, [0.0] * 6)]
+    assert driver.motion_commands[-2:] == [(0, [0.0] * 6), (0, [0.0] * 6)]
 
 
 def test_direction_search_stops_at_actual_tcp_travel_and_stays_stopped_after_pose_returns():
@@ -306,10 +322,10 @@ def test_direction_search_stops_at_actual_tcp_travel_and_stays_stopped_after_pos
 
     Fr5DirectDriver._send_motion(driver, 100.01, 0.01)
     assert driver._direction_search_stopped
-    assert driver.motion_commands[-1] == (1, [0.0] * 6)
+    assert driver.motion_commands[-1] == (0, driver._latest_pose)
     driver._latest_pose = [0.0] * 6
     Fr5DirectDriver._send_motion(driver, 100.02, 0.01)
-    assert driver.motion_commands[-1] == (1, [0.0] * 6)
+    assert driver.motion_commands[-1] == (0, [0.0] * 6)
 
 
 def test_direction_search_guard_starts_only_on_first_nonzero_fresh_velocity():
@@ -325,27 +341,27 @@ def test_direction_search_guard_starts_only_on_first_nonzero_fresh_velocity():
     assert driver.motion_commands[-1][1][2] < 0.0
 
 
-def test_exiting_search_resets_guard_and_disabled_immediately_clears_velocity():
+def test_search_pause_preserves_guard_and_disabled_immediately_clears_velocity():
     driver = motion_driver(module.TractionCommand.DIRECTION_SEARCH, [0.0, 0.0, -0.28])
     Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
     driver._direction_search_stopped = True
 
     Fr5DirectDriver._on_traction_command(
-        driver, SimpleNamespace(mode=module.TractionCommand.DISABLED)
+        driver, mode_command(module.TractionCommand.DISABLED)
     )
 
     assert driver._twist.linear.z == 0.0
     assert driver._last_command_at == 0.0
-    assert driver._direction_search_started_at is None
-    assert not driver._direction_search_stopped
+    assert driver._direction_search_started_at == 100.0
+    assert driver._direction_search_stopped
     Fr5DirectDriver._on_traction_command(
-        driver, SimpleNamespace(mode=module.TractionCommand.DIRECTION_SEARCH)
+        driver, mode_command(module.TractionCommand.DIRECTION_SEARCH)
     )
     driver._twist.linear.z = -0.28
     driver._last_command_at = 101.0
     Fr5DirectDriver._send_motion(driver, 101.0, 0.01)
-    assert driver._direction_search_started_at == 101.0
-    assert driver.motion_commands[-1][1][2] < 0.0
+    assert driver._direction_search_started_at == 100.0
+    assert driver.motion_commands[-1] == (0, driver._latest_pose)
 
 
 def test_disabled_mode_rejects_even_a_fresh_late_velocity_packet():
@@ -353,7 +369,7 @@ def test_disabled_mode_rejects_even_a_fresh_late_velocity_packet():
 
     Fr5DirectDriver._send_motion(driver, 100.0, 0.01)
 
-    assert driver.motion_commands[-1] == (1, [0.0] * 6)
+    assert driver.motion_commands[-1] == (0, [0.0] * 6)
 
 
 @pytest.mark.parametrize("pose", [None, [math.nan, 0.0, 0.0, 0.0, 0.0, 0.0]])
@@ -368,9 +384,9 @@ def test_direction_search_rejects_missing_or_invalid_tcp_feedback(pose):
 
 
 @pytest.mark.parametrize("name,default,maximum", [
-    ("direction_search_max_speed_mps", 0.30, 0.30),
+    ("direction_search_max_speed_mps", 0.12, 0.12),
     ("direction_search_max_travel_m", 0.30, 0.30),
-    ("direction_search_max_duration_s", 2.0, 2.0),
+    ("direction_search_max_duration_s", 5.0, 5.0),
 ])
 def test_direction_search_configuration_cannot_disable_or_enlarge_driver_bounds(
     name, default, maximum,

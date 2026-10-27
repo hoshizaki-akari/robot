@@ -52,6 +52,28 @@ vm.runInContext(SOURCE, sandbox);
 
 @unittest.skipUnless(NODE, "node is required for browser state tests; set NODE_BINARY")
 class UiBehaviorTest(unittest.TestCase):
+    def test_opens_in_local_mode_and_can_operate_without_login(self):
+        html = (ROOT / "static" / "090105.html").read_text(encoding="utf-8")
+        self.assertNotIn('id="loginModal"', html)
+        self.assertNotIn('id="logoutBtn"', html)
+        self.run_page(r"""
+          (async () => {
+            if (!sessionUser || sessionUser.role !== '本地操作')
+              throw Error('Page still requires a login session');
+            handleState({connected: true, traction: {
+              state: 1, operation_mode: 1, calibrated: true,
+              direction_available: true, direction_locked: false,
+              actual_force_n: 6, target_force_n: 10
+            }});
+            if ($('startBtn').disabled || $('settingsBtn').disabled)
+              throw Error('Local-mode controls are still blocked by login');
+            await startTraction();
+            const request = requestLog.find(call => call.url === '/api/traction/start');
+            if (!request || decodeURIComponent(request.options.headers['X-Operator']) !== '本机操作员')
+              throw Error('Local operator was not recorded');
+          })()
+        """)
+
     def run_page(self, assertions):
         source = (ROOT / "static" / "090105.js").read_text(encoding="utf-8")
         script = (

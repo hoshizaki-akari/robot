@@ -23,7 +23,7 @@ class UiContractTest(unittest.TestCase):
         self.assertIn('id="targetForceVal" type="range"', page)
         self.assertIn("robotViewer", page)
         self.assertIn("forceCanvas", page)
-        self.assertIn("/assets/090105.js?v=20261027-target-unload", page)
+        self.assertRegex(page, r'/assets/090105\.js\?v=[^"\s]+')
 
     def test_real_services_history_and_shutdown_remain(self):
         script = (ROOT / "static" / "090105.js").read_text(encoding="utf-8")

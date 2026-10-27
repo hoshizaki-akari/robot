@@ -12,7 +12,7 @@
                                       traction_controller_node
                                                ├─ 滤波/纯C++算法/坐标符号/限速
                                                ↓
-                            /controller_manager/command_cart_vel
+    /controller_manager/command_cart_vel_stamped (TwistStamped)
                                                ↓
                                  fr5_direct_driver_node.py
                                                ↓
@@ -41,7 +41,7 @@ Python direct driver 是唯一 SDK 所有者。`/controller_manager/*` 是兼容
 
 | 操作模式 | 数值 | 行为 |
 | --- | --- | --- |
-| 目标牵引 `POSITION_TRACTION` | 1 | 原位置牵引算法，开始时锁方向，达到目标 ±2.5 N 且稳定后保持当前位置 |
+| 目标牵引 `POSITION_TRACTION` | 1 | 原位置牵引算法，开始时锁方向，控制向设定值中心收敛，实际力在目标±2.5N连续2s后停止保持 |
 | 省力拖拽 `ASSISTED_DRAG` | 2，默认 | FR5 控制柜原生辅助拖拽，无需目标力或锁定方向 |
 | 卸力 `UNLOADING` | 3 | 优先沿上次牵引方向的减力方向运动，否则用最新有效方向；真实合力 <5 N 停止并保位 |
 
@@ -65,24 +65,24 @@ Python direct driver 是唯一 SDK 所有者。`/controller_manager/*` 是兼容
 没有方向时，开始会触发一次搜索：
 
 - 用末端四元数把物理工具 `Z−` 转成 base 向量，沿该固定向量运动，角速度为 0。
-- `DIRECTION_SEARCH` 使用独立最小 jerk 五次曲线：`v = (D/T) × 30u²(1−u)²`，`D=0.30 m`、`T=2.0 s`，理论峰值 `0.28125 m/s`。
-- 任一条件满足即停止搜索：去基线未低通合力达到 3 N、实际起点位移达到 0.30 m、monotonic 时间达到 2 s。driver 另有独立速度 0.30 m/s、位移 0.30 m、时长 2 s 约束；搜索不受普通牵引 0.05 m/s 上限截断。
-- 达到 3 N 后记录方向，插入停止命令并自动进入目标牵引；不要求医生再次点击。
-- 到距离/时间仍没有受力，回 `READY` 提示检查绳带；保留校准，不报设备故障，不自动重复搜索。反馈中断同样取消这一次搜索，不在恢复后自行续搜。
+- `DIRECTION_SEARCH` 使用最小jerk五次曲线：`v=(D/T)×30u²(1−u)²`，用户确认D=0.30m、T=5s，理论峰速0.1125m/s；manager和driver独立上限0.12m/s/0.30m/5s。
+- 未低通合力达到3N立即停止搜索。至少等待0.15s且关节/末端静止，再连续0.20s采集至少5个新力样本（均≥3N，稳健方向p95≤15°），锁向后走正常目标启动路径。
+- 短暂尖峰在停稳0.35s后消失（受力<3N）时，可从静止继续同一次剩余预算；原始5s计时/30cm起点不重置。恢复速度另限0.08m/s²、0.25m/s³，避免从零突然跳到曲线中段。若持续≥3N但1s内方向不稳，则停止回待机，不盲目移动。
+- 到5s或30cm仍无方向则停止提示，不丢基线、不自动开始新搜索；反馈中断同样取消本次任务。
 
 搜索命令已经是真实工具 Z− 的 base 表达，controller 必须跳过 `traction_sign_x/y/z` 补偿。目标牵引和卸力则沿已校准的牵引符号路径，不能为了修正显示箭头改变搜索或实际运动符号。
 
 ## 5. 目标牵引、卸力与坐标
 
-目标牵引用 `PositionTractionController` 预测速度环：估计力率和刚度，接近目标时提前制动。默认容差 `position_tolerance_n=2.5 N`，近场窗口 `position_near_window_n=5 N` 必须大于容差。普通目标速度最大 0.020 m/s；残余内部速度低于 0.0005 m/s 才进入 `SETTLING`。
+目标牵引用 `PositionTractionController` 预测速度环：估计力率和刚度，接近目标时提前制动。默认容差 `position_tolerance_n=2.5 N`，近场窗口 `position_near_window_n=5 N` 必须大于容差。当前正式目标速度恢复最大0.020m/s，加速0.080/减速0.160m/s²；jerk上限 `position_max_jerk_mps3=1.0`。内部中心容差 `position_center_tolerance_n=0.5`，近场连续向设定值逼近（静区仅为中心容差0.4倍即0.2N），不能将外层±2.5N当成低侧停止设点；误差处于±0.5N且残余速度/加速度安静才进入 `SETTLING`。进入力带静止后须持续出带0.20 s才重调；反向纠偏必须先静止并持续确认0.20 s，禁止滤波残余绕过换向确认。
 
-manager 同时要求实测总张力处于目标 ±2.5 N、位置控制诊断新鲜且为 `SETTLING`，持续 `position_reached_confirm_s=1 s` 才到位。随后停止 Cartesian 会话并进入 `POSITION_HOLD`；外力变化不会自动重启。修改目标可重新申请控制器；应先确认上次停止已完成。到位保持仍属本次牵引，方向不解锁。
+manager的到位条件独立于controller内部中心控制：实测总张力处于目标±`position_reached_tolerance_n=2.5 N`，连续 `position_reached_confirm_s=2 s` 即到位，不要求controller已进入 `SETTLING`。确认期间controller继续向设定值中心逼近；出带或运动反馈过期重新计时，计时使用monotonic时钟。随后停止 Cartesian 会话并进入 `POSITION_HOLD`；外力变化不会自动重启。修改目标可重新申请控制器；应先确认上次停止已完成。到位保持仍属本次牵引，方向不解锁。
 
 最大可调目标力默认 `target_force_max_n=100 N`，管理员可以在设置中提高到 100 N 以上。后端将设置与 manager ROS 动态参数原子同步；开始及运行中调目标均使用同一配置范围。已移除 `validated_target_max_n` 的额外 100 N 硬门槛。该上限只约束用户可选目标，不触发实际受力超限故障，也不代表该范围已实机验收。
 
 卸力既可从待机启动，也可在目标牵引/到位保持/拖拽时一键请求。方向优先已记录的牵引方向，没有历史牵引方向才用最新有效方向。没有有效方向时不猜方向；张力已经低于 5 N 时不继续主动减力。原生拖拽必须确认 OFF、恢复参考系后再交接 Cartesian；交接期间结束/急停不得在异步回复后再启动卸力。
 
-`UNLOADING` 沿 POSITIONING 增力方向的反向运动，上限 0.020 m/s，接近 5 N 降速，禁止反向拉力。core 的速度律向 4.5 N 靠近，使严格 `<5 N` 判据能实际到达；manager 与 controller 对未低通合力 `<5 N` 立即停止，避免滤波滞后继续移动。停止后保留当前位置，不返回原位。
+`UNLOADING` 沿 POSITIONING 增力方向的反向运动，当前受core普通速度上限约束为0.020m/s（卸力请求参数同为0.020m/s），接近5 N降速，禁止反向拉力。core 的速度律向 4.5 N 靠近，使严格 `<5 N` 判据能实际到达；manager 与 controller 对未低通合力 `<5 N` 立即停止，避免滤波滞后继续移动。停止后保留当前位置，不返回原位。
 
 ROS 位置/角度/力使用 m、rad、N；SDK 使用 mm、deg，转换只在 driver 边界。目标/卸力算法输出 base 速度，经 base→tool、`traction_sign=(+1,+1,−1)`、tool→base，再交给 driver 的 `base_servo_sign=+1`。原生拖拽另用工具 Z 绕转 180° 的自定义力参考系。三处符号职责不同。最终空间命令看 `/traction/controller_velocity_vector`，标量诊断不保证等于校准后向量对原始方向的投影。
 
@@ -123,6 +123,8 @@ ROS 位置/角度/力使用 m、rad、N；SDK 使用 mm、deg，转换只在 dri
 
 工作站不再因实际受力超过 100 N、150 N 或其他软件力阈值报故障。`SafetyMonitor` 仍检查有限值、负的异常 force metrics、数据新鲜度、controller/driver 健康和可选 UI 心跳。历史 `SafetyLimits` 字段和 OVERFORCE/HARD_OVERFORCE 枚举可用于读取旧记录，当前 monitor 不生成这些受力幅值故障。机械臂控制器自身的保护保持原样。
 
+正式运动速度使用 `/controller_manager/command_cart_vel_stamped`（TwistStamped），旧Twist话题仅保留兼容诊断，不再驱动硬件。非零速度继承manager原始命令时间戳；driver拒绝过期或模式交接前来源的速度，队列只保留最新一包。ServoCart回包超过0.25 s时锁存通信时序故障，要求主动恢复，禁止卡顿后自行续动。目标/搜索/卸力把每个实际包的v×cmdT累加到绝对基坐标位姿，通过ServoCart(mode=0)下发；起点和姿态取接管时反馈，模式切换重新锚定，零速/过期/接触停止丢弃未完成领先量。新目标领先实时TCP限幅5mm并丢弃超出推进量，短时跟随滞后不直接故障；连续受限且1s内实际进展不足0.5mm则停止，旧目标偏离反馈超过2倍限幅（默认10mm）也立即故障，禁止无界追赶。此SDK路径尚未实机运动验收；按厂商文档mode0是绝对基坐标位姿，不代表可保证实际跟随。每个包不补发错过的位移，发送间隔至少约9 ms（100 Hz配置）；每2 s日志记录实际发包频率和RPC峰时。
+
 正常速度命令/corrected wrench 超过 0.25 s 不新鲜，controller 输出零并 reset；manager 的短暂停止窗口也是 0.25 s，力/末端长超时 1.2 s 则故障并请求停止。搜索反馈中断取消本次搜索。原生拖拽运行在控制柜内，主机发 DISABLED 不能证明 native drag 已关闭；必须查询 OFF 并按失败路径处理。
 
 网页急停先请求 driver 硬件停止，再锁存 manager；恢复先执行硬件恢复和旧会话清理，再清 manager 锁存。恢复需要健康、反馈新鲜、停止已确认，保留原基线，要求医生主动开始新任务。只调用 manager 软件急停本身不能证明控制箱已去使能。
@@ -131,7 +133,7 @@ ROS 位置/角度/力使用 m、rad、N；SDK 使用 mm、deg，转换只在 dri
 
 每次实际开始新动作建立独立 session CSV，结束/故障关闭记录；重复开始无需重新校准，也必须有新记录。目标牵引交接卸力时关闭前一模式记录并建立卸力记录。历史目录保持 `debug/traction_sessions`，应与 app 导出路径一致。方向跟随字段仍可存在于历史 CSV，不能据字段名推断新流程仍主动修正方向。
 
-本次控制改动已从源码离线编译测试，覆盖 ±2.5 N 力带、卸力只减力/临近停止/严格 <5 N、搜索 2 s 曲线积分 0.30 m 与峰速、无软件幅值故障等。准确最终测试数量、driver 假 SDK 和隔离 ROS 集成结果由本次主验证记录补充；离线通过不能证明真实工具方向、3 N 搜索制动距离、负载稳定性或医生现场操作已验收。
+历史上一版三模式实现执行过离线测试，覆盖±2.5 N力带、卸力和旧30 cm/2 s搜索等。2026-10-27第9节前版按用户要求未测试；最新第10节在用户允许后完成少量针对性离线检查。旧2秒搜索积分/峰速预期不再适用，不能将历史结果当成本版验收。准确范围见MACHINE_AND_VALIDATION最新追加节。
 
 纯 core 测试可在 `/tmp` 编译，不启动 SDK：
 

@@ -38,7 +38,8 @@ cd ~/projects/fr5_platform_ws/fr5_traction_workstation
 
 ```bash
 cd ~/projects/fr5_platform_ws
-git pull --ff-only
+git switch feat/multi-mode-traction
+git pull --ff-only origin feat/multi-mode-traction
 ```
 
 ## 3. 首次安装
@@ -90,10 +91,14 @@ bash scripts/tablet_setup_env.sh
 
 ```bash
 cd ~/projects/fr5_platform_ws
-git pull --ff-only
+git switch feat/multi-mode-traction
+git pull --ff-only origin feat/multi-mode-traction
 cd fr5_traction_workstation
 bash scripts/tablet_setup_env.sh
+git log -1 --oneline
 ```
+
+确认安装成功后，双击桌面图标，或执行 `bash scripts/tablet_start.sh`。本次更新包含C++、ROS消息、driver和网页，必须在一体机本地重新编译；不能只更新网页或复制开发机WSL产物。脚本编译更新可执行程序并刷新桌面入口，不会自动启动机器人。
 
 安装脚本可以重复执行：已存在的官方依赖和 Python 环境不会重复克隆，只会重新确认
 依赖、编译当前代码并刷新桌面图标。

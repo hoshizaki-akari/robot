@@ -76,17 +76,14 @@ def generate_launch_description():
             # KWR75D/FR5 firmware may not reply to a repeated FT_SetRCS even
             # though the previously selected reference remains active.
             "allow_existing_force_reference": True,
-            # The controller bounds axial traction at 20 mm/s and the active
-            # direction follower at 20 mm/s. Allow their already-bounded
-            # vector sum through the direct driver without clipping it back
-            # to the former 5 mm/s limit.
+            # Normal target traction is independently limited by the core.
             "max_linear_speed_mps": 0.050,
-            # Manager/controller own the bounded 0.30 m / 2 s Tool Z- search.
-            # Its minimum-jerk peak speed is 0.28125 m/s; ordinary traction
-            # and unloading retain the separate normal speed bound above.
-            "direction_search_max_speed_mps": 0.30,
+            # User-approved 0.30 m / 5 s Tool Z- search, peak 112.5 mm/s.
+            "direction_search_max_speed_mps": 0.12,
             "direction_search_max_travel_m": 0.30,
-            "direction_search_max_duration_s": 2.0,
+            "direction_search_max_duration_s": 5.0,
+            # Absolute Cartesian target may lead live TCP by at most 5 mm.
+            "max_servo_tracking_error_mm": 5.0,
             # Assisted drag is executed by the FR5 controller instead of by
             # host-side ServoCart steps. These are vendor SDK native thresholds;
             # raw force-sensor payload must not be added to them.

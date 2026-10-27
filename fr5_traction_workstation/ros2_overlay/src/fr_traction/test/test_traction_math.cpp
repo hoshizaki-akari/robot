@@ -223,16 +223,16 @@ TEST(TractionMath, PositionControllerDoesNotSettleWithResidualVelocity)
   EXPECT_LT(settling_wait_steps, 200);
 }
 
-TEST(TractionMath, PositionControllerAcceptsTwoPointFiveNewtonBand)
+TEST(TractionMath, PositionControllerSettlesOnlyNearRequestedCenter)
 {
   PositionTractionController controller;
-  for (double force_n : {7.5, 10.0, 12.5}) {
+  for (double force_n : {9.5, 10.0, 10.5}) {
     controller.reset();
     EXPECT_TRUE(controller.update(10.0, force_n, 0.01).valid);
     const auto output = controller.update(10.0, force_n, 0.01);
     ASSERT_TRUE(output.valid);
     EXPECT_EQ(output.phase, PositionControlPhase::SETTLING);
-    EXPECT_DOUBLE_EQ(output.velocity_mps, 0.0);
+    EXPECT_LE(std::abs(output.velocity_mps), 0.0005);
   }
   controller.reset();
   controller.update(10.0, 7.4, 0.01);
@@ -240,6 +240,11 @@ TEST(TractionMath, PositionControllerAcceptsTwoPointFiveNewtonBand)
   controller.reset();
   controller.update(10.0, 12.6, 0.01);
   EXPECT_LT(controller.update(10.0, 12.6, 0.01).velocity_mps, 0.0);
+  controller.reset();
+  for (int step = 0; step < 150; ++step) {
+    const auto output = controller.update(10.0, 8.0, 0.01);
+    EXPECT_NE(output.phase, PositionControlPhase::SETTLING);
+  }
 }
 
 TEST(TractionMath, PositionControllerSettlesFifteenNewtonsWithinFiveSeconds)
@@ -275,6 +280,22 @@ TEST(TractionMath, PositionControllerSettlesFifteenNewtonsWithinFiveSeconds)
 
   EXPECT_LE(reached_at_s, 5.0);
   EXPECT_LE(maximum_force_n, 15.5);
+}
+
+TEST(TractionMath, PositionControllerRapidApproachRestoresTwentyMillimetresPerSecond)
+{
+  PositionTractionController controller;
+  double previous_velocity = 0.0;
+  PositionControlResult result;
+  for (int step = 0; step < 100; ++step) {
+    result = controller.update(30.0, 8.0, 0.01);
+    ASSERT_TRUE(result.valid);
+    EXPECT_GE(result.velocity_mps, 0.0);
+    EXPECT_LE(result.velocity_mps, 0.020);
+    EXPECT_LE(std::abs(result.velocity_mps - previous_velocity), 0.080 * 0.01 + 1e-9);
+    previous_velocity = result.velocity_mps;
+  }
+  EXPECT_GT(result.velocity_mps, 0.0195);
 }
 
 }  // namespace fr_traction

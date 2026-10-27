@@ -111,7 +111,8 @@ public:
     auto_direction_min_force_n_ = declare_parameter("auto_direction_min_force_n", 3.0);
     auto_direction_update_s_ = declare_parameter("auto_direction_update_s", 2.0);
     direction_search_distance_m_ = declare_parameter("direction_search_distance_m", 0.30);
-    direction_search_duration_s_ = declare_parameter("direction_search_duration_s", 2.0);
+    direction_search_duration_s_ = declare_parameter("direction_search_duration_s", 5.0);
+    direction_search_max_speed_mps_ = declare_parameter("direction_search_max_speed_mps", 0.12);
     unload_stop_force_n_ = declare_parameter("unload_stop_force_n", 5.0);
     unload_speed_mps_ = declare_parameter("unload_speed_mps", 0.020);
     const auto initial_mode = declare_parameter("operation_mode", 2);
@@ -125,7 +126,7 @@ public:
     // a force-unloading timeout because RELEASING no longer runs force control.
     release_timeout_s_ = declare_parameter("release_timeout_s", 300.0);
     position_reached_tolerance_n_ = declare_parameter("position_reached_tolerance_n", 2.5);
-    position_reached_confirm_s_ = declare_parameter("position_reached_confirm_s", 1.0);
+    position_reached_confirm_s_ = declare_parameter("position_reached_confirm_s", 2.0);
     wrench_timeout_s_ = declare_parameter("wrench_timeout_s", 0.10);
     ee_state_timeout_s_ = declare_parameter("ee_state_timeout_s", 0.20);
     motion_pause_timeout_s_ = declare_parameter("motion_pause_timeout_s", 0.10);
@@ -361,8 +362,9 @@ private:
       std::isfinite(direction_search_distance_m_) && direction_search_distance_m_ > 0.0 &&
       direction_search_distance_m_ <= 0.30 &&
       std::isfinite(direction_search_duration_s_) && direction_search_duration_s_ > 0.0 &&
-      direction_search_duration_s_ <= 2.0 &&
-      1.875 * direction_search_distance_m_ / direction_search_duration_s_ <= 0.30 &&
+      direction_search_duration_s_ <= 5.0 &&
+      std::isfinite(direction_search_max_speed_mps_) && direction_search_max_speed_mps_ > 0.0 &&
+      direction_search_max_speed_mps_ <= 0.12 &&
       unload_stop_force_n_ == 5.0 &&
       std::isfinite(unload_speed_mps_) && unload_speed_mps_ > 0.0 && unload_speed_mps_ <= 0.020 &&
       std::isfinite(target_ramp_fast_nps_) && target_ramp_fast_nps_ > 0.0 &&
@@ -684,6 +686,8 @@ private:
     direction_locked_ = false;
     search_active_ = false;
     search_requested_ = false;
+    search_contact_pending_ = false;
+    search_contact_samples_.clear();
     transition(TractionState::READY);
   }
 
@@ -812,6 +816,8 @@ private:
         }
         search_requested_ = true;
         search_active_ = false;
+        search_contact_pending_ = false;
+        search_contact_samples_.clear();
         transition(TractionState::PRETENSION);
       }
     }
@@ -823,7 +829,7 @@ private:
     }
     response->success = true;
     response->message = search_requested_ ?
-      "正在沿工具Z负方向寻找受力，最多30cm/2秒，达到3N即停止搜索" :
+      "正在沿工具Z负方向平滑寻找受力，最多30厘米/5秒，达到3N后停止确认方向" :
       "启动已请求；本次目标牵引方向保持锁定直至结束";
   }
 
@@ -922,6 +928,8 @@ private:
     direction_locked_ = false;
     search_active_ = false;
     search_requested_ = false;
+    search_contact_pending_ = false;
+    search_contact_samples_.clear();
     response->success = true;
     response->message = emergency_recovery ?
       "急停已恢复；原校准继续有效，请主动开始新任务" :
@@ -1043,6 +1051,10 @@ private:
 
   void reset_session_state()
   {
+    search_active_ = false;
+    search_requested_ = false;
+    search_contact_pending_ = false;
+    search_contact_samples_.clear();
     calibration_requested_ = false;
     direction_locked_ = false;
     temporary_direction_valid_ = false;
@@ -1438,7 +1450,7 @@ private:
     (void)current_time;
   }
 
-  void handle_pretension(const rclcpp::Time &)
+  void handle_pretension(double dt_s)
   {
     if (!search_active_ || controller_start_pending_ || controller_activation_confirming_) {
       publish_disabled(); return;
@@ -1451,22 +1463,79 @@ private:
     if (!tool_search_direction_valid_) {
       complete_motion("DIRECTION_SEARCH_ORIENTATION_UNAVAILABLE"); return;
     }
-    Vec3 sensed;
-    if (norm(latest_wrench_) >= auto_direction_min_force_n_ && normalize(latest_wrench_, sensed)) {
+    if (search_contact_pending_) {
       publish_disabled();
-      latest_direction_ = sensed;
-      latest_direction_valid_ = true;
-      locked_direction_ = sensed;
-      recorded_direction_ = sensed;
-      recorded_direction_valid_ = true;
-      direction_locked_ = true;
-      search_active_ = false;
-      search_requested_ = false;
-      transition(TractionState::DIRECTION_LOCKED);
-      // Keep the Cartesian session but insert a zero-command tick between
-      // search and predictive target traction; no second operator action.
-      controller_activation_confirming_ = true;
-      controller_activation_started_at_ = now();
+      // A force spike during motion can be inertial, not rope tension.
+      // Wait for fresh stationary samples before retaining a direction.
+      const double contact_age = age_seconds(search_contact_started_steady_);
+      const bool stationary = live_joint() && latest_joint_speed_norm_ <= 0.02 &&
+        norm(latest_ee_linear_velocity_) <= 0.002 &&
+        norm(latest_ee_angular_velocity_) <= 0.02;
+      if (contact_age >= 0.15 && stationary &&
+        norm(latest_wrench_) >= auto_direction_min_force_n_)
+      {
+        if (search_contact_stable_started_.time_since_epoch().count() == 0) {
+          search_contact_stable_started_ = std::chrono::steady_clock::now();
+        }
+        if (wrench_sequence_ != last_search_contact_wrench_sequence_) {
+          search_contact_samples_.push_back(latest_wrench_);
+          last_search_contact_wrench_sequence_ = wrench_sequence_;
+        }
+        if (age_seconds(search_contact_stable_started_) >= 0.20) {
+          const auto result = robust_calibrate_direction(search_contact_samples_, 5, 15.0);
+          if (result.success) {
+            latest_direction_ = result.direction;
+            latest_direction_valid_ = true;
+            locked_direction_ = result.direction;
+            recorded_direction_ = result.direction;
+            recorded_direction_valid_ = true;
+            direction_locked_ = true;
+            search_active_ = false;
+            search_requested_ = false;
+            search_contact_pending_ = false;
+            search_contact_samples_.clear();
+            transition(TractionState::DIRECTION_LOCKED);
+            // Use exactly the normal target-start path after a zero-command
+            // settling interval; never carry search velocity into traction.
+            controller_activation_confirming_ = true;
+            controller_activation_started_at_ = now();
+            return;
+          }
+        }
+      } else {
+        search_contact_stable_started_ = {};
+        search_contact_samples_.clear();
+      }
+      if (contact_age >= 0.35 && stationary &&
+        norm(latest_wrench_) < auto_direction_min_force_n_)
+      {
+        // A transient spike stopped motion without establishing tension.
+        // Continue the same search; never reset its deadline/travel origin.
+        search_contact_pending_ = false;
+        search_contact_samples_.clear();
+        search_command_speed_mps_ = 0.0;
+        search_command_acceleration_mps2_ = 0.0;
+        if (age_seconds(search_started_steady_) >= direction_search_duration_s_ ||
+          norm(latest_ee_position_ - search_start_position_) >= direction_search_distance_m_)
+        {
+          complete_motion("DIRECTION_SEARCH_NO_FORCE");
+        }
+        return;
+      }
+      if (contact_age >= 1.0) {
+        complete_motion("DIRECTION_SEARCH_CONTACT_UNSTABLE");
+      }
+      return;
+    }
+    if (norm(latest_wrench_) >= auto_direction_min_force_n_) {
+      publish_disabled();
+      search_contact_pending_ = true;
+      search_contact_started_steady_ = std::chrono::steady_clock::now();
+      search_contact_stable_started_ = {};
+      last_search_contact_wrench_sequence_ = wrench_sequence_;
+      search_contact_samples_.clear();
+      search_command_speed_mps_ = 0.0;
+      search_command_acceleration_mps2_ = 0.0;
       return;
     }
     const double elapsed = age_seconds(search_started_steady_);
@@ -1476,11 +1545,34 @@ private:
       return;
     }
     const double u = std::clamp(elapsed / direction_search_duration_s_, 0.0, 1.0);
-    const double speed = direction_search_distance_m_ / direction_search_duration_s_ *
+    // The uninterrupted 5 s quintic trajectory integrates to 30 cm. A
+    // contact pause never resets the original time/distance allowance.
+    const double planned_distance = std::min(direction_search_distance_m_,
+      direction_search_max_speed_mps_ * direction_search_duration_s_ / 1.875);
+    const double desired_speed = planned_distance / direction_search_duration_s_ *
       30.0 * u * u * (1.0 - u) * (1.0 - u);
+    const double trajectory_dt = std::clamp(dt_s, 0.0, 0.02);
+    if (trajectory_dt > 0.0) {
+      // Inactive for the normal curve; limits acceleration when a transient
+      // contact pause resumes midway through it from zero velocity.
+      const double wanted_acceleration = std::clamp(
+        (desired_speed - search_command_speed_mps_) / trajectory_dt, -0.08, 0.08);
+      search_command_acceleration_mps2_ += std::clamp(
+        wanted_acceleration - search_command_acceleration_mps2_,
+        -0.25 * trajectory_dt, 0.25 * trajectory_dt);
+      const double previous_speed = search_command_speed_mps_;
+      search_command_speed_mps_ = std::clamp(
+        previous_speed + search_command_acceleration_mps2_ * trajectory_dt,
+        0.0, direction_search_max_speed_mps_);
+      if ((desired_speed - previous_speed) *
+        (desired_speed - search_command_speed_mps_) <= 0.0)
+      {
+        search_command_speed_mps_ = desired_speed;
+      }
+    }
     publish_command(
       msg::TractionCommand::DIRECTION_SEARCH, search_direction_, 0.0,
-      msg::TractionCommand::DIRECTION_CORRECTION_OFF, {}, speed);
+      msg::TractionCommand::DIRECTION_CORRECTION_OFF, {}, search_command_speed_mps_);
   }
 
 
@@ -1598,6 +1690,8 @@ private:
           search_start_position_ = latest_ee_position_;
           search_direction_ = tool_search_direction_;
           search_started_steady_ = std::chrono::steady_clock::now();
+          search_command_speed_mps_ = 0.0;
+          search_command_acceleration_mps2_ = 0.0;
           search_active_ = true;
         } else if (state_machine_.state() == TractionState::RELEASING) {
           release_started_at_ = current_time;
@@ -1612,10 +1706,11 @@ private:
     }
     switch (state_machine_.state()) {
       case TractionState::MANUAL_SETUP: handle_manual_setup(current_time); break;
-      case TractionState::PRETENSION: handle_pretension(current_time); break;
+      case TractionState::PRETENSION: handle_pretension(dt_s); break;
       case TractionState::CALIBRATING: handle_calibration(current_time); break;
       case TractionState::TRACTION:
         if (!motion_feedback_fresh()) {
+          position_reached_started_at_.reset();
           publish_disabled();
           break;
         }
@@ -1629,13 +1724,12 @@ private:
             msg::TractionCommand::POSITIONING, locked_direction_, current_command_target_n_,
             msg::TractionCommand::DIRECTION_CORRECTION_OFF);
           const double force_error = std::abs(current_metrics().actual_force_n - target_force_n_);
-          const bool diagnostics_fresh = fresh(
-            last_position_diagnostics_steady_at_, motion_pause_timeout_s_);
-          const bool controller_settled = diagnostics_fresh &&
-            position_diagnostics_.phase == msg::PositionControlDiagnostics::SETTLING;
-          if (force_error <= position_reached_tolerance_n_ && controller_settled) {
-            if (!position_reached_started_at_) {position_reached_started_at_ = current_time;}
-            if ((current_time - *position_reached_started_at_).seconds() >=
+          // Keep aiming for the requested center while independently timing
+          // continuous occupancy of the user-facing arrival band.
+          if (force_error <= position_reached_tolerance_n_) {
+            const auto reached_now = std::chrono::steady_clock::now();
+            if (!position_reached_started_at_) {position_reached_started_at_ = reached_now;}
+            if (std::chrono::duration<double>(reached_now - *position_reached_started_at_).count() >=
               position_reached_confirm_s_)
             {
               publish_disabled();
@@ -1916,10 +2010,11 @@ private:
       case TractionState::INITIALIZING: status.message = "正在连接 FR5、力传感器和牵引控制器"; break;
       case TractionState::READY:
         status.message = !calibrated_ ? "正在自动初始校准，请保持机械臂静止" :
-          (stop_reason_ == "DIRECTION_SEARCH_NO_FORCE" ? "搜索已结束但未达到3 N，请检查绳带后重试" :
+          (stop_reason_ == "DIRECTION_SEARCH_NO_FORCE" ? "低速搜索已结束但未达到3 N，请检查绳带后重试" :
+          (stop_reason_ == "DIRECTION_SEARCH_CONTACT_UNSTABLE" ? "搜索受力未保持稳定，已停止；请张紧绳带后重新开始" :
           (operation_mode_ == OperationMode::POSITION_TRACTION ?
           (latest_direction_valid_ ? "方向每2秒更新；点击开始后锁定" : "等待3 N以上施力；也可直接开始自动寻找方向") :
-          "已校准，可以开始；无需重复校准"));
+          "已校准，可以开始；无需重复校准")));
         break;
       case TractionState::MANUAL_SETUP: status.message = "已校准，可以开始"; break;
       case TractionState::CALIBRATING: status.message = "正在采集张紧方向，请保持法兰静止"; break;
@@ -1932,7 +2027,11 @@ private:
       case TractionState::COMPLETED: status.message = "牵引完成"; break;
       case TractionState::FAULT: status.message = "设备故障，请检查原因并恢复；无需重复校准"; break;
       case TractionState::EMERGENCY_STOP: status.message = "已急停并下使能；确认后点击急停恢复"; break;
-      case TractionState::PRETENSION: status.message = "正在沿工具Z负方向搜索，达到3 N或30cm/2秒后停止"; break;
+      case TractionState::PRETENSION:
+        status.message = search_contact_pending_ ?
+          "搜索已停止，正在静止确认受力方向" :
+          "正在沿工具Z负方向平滑搜索，达到3 N或30厘米/5秒后停止";
+        break;
       case TractionState::DRAGGING:
         status.message = native_drag_stop_pending_ ?
           "正在结束省力拖拽" : "省力拖拽中；施力即动，松手即停";
@@ -1978,14 +2077,17 @@ private:
   double auto_direction_min_force_n_ = 3.0;
   double auto_direction_update_s_ = 2.0;
   double direction_search_distance_m_ = 0.30;
-  double direction_search_duration_s_ = 2.0;
+  double direction_search_duration_s_ = 5.0;
+  double direction_search_max_speed_mps_ = 0.12;
+  double search_command_speed_mps_ = 0.0;
+  double search_command_acceleration_mps2_ = 0.0;
   double unload_stop_force_n_ = 5.0;
   double unload_speed_mps_ = 0.020;
   double force_tolerance_n_ = 1.0;
   double force_deadband_n_ = 0.15;
   double release_timeout_s_ = 300.0;
   double position_reached_tolerance_n_ = 2.5;
-  double position_reached_confirm_s_ = 1.0;
+  double position_reached_confirm_s_ = 2.0;
   double wrench_timeout_s_ = 0.10;
   double ee_state_timeout_s_ = 0.20;
   double motion_pause_timeout_s_ = 0.10;
@@ -2023,9 +2125,11 @@ private:
   bool tool_search_direction_valid_ = false;
   bool search_requested_ = false;
   bool search_active_ = false;
+  bool search_contact_pending_ = false;
   uint64_t motion_request_epoch_ = 0;
   uint64_t last_startup_wrench_sequence_ = 0;
   uint64_t last_auto_direction_wrench_sequence_ = 0;
+  uint64_t last_search_contact_wrench_sequence_ = 0;
   Vec3 latest_direction_;
   Vec3 recorded_direction_;
   Vec3 tool_search_direction_;
@@ -2033,9 +2137,12 @@ private:
   Vec3 search_start_position_;
   std::vector<Vec3> startup_baseline_samples_;
   std::vector<Vec3> auto_direction_samples_;
+  std::vector<Vec3> search_contact_samples_;
   std::chrono::steady_clock::time_point startup_baseline_started_{};
   std::chrono::steady_clock::time_point auto_direction_started_{};
   std::chrono::steady_clock::time_point search_started_steady_{};
+  std::chrono::steady_clock::time_point search_contact_started_steady_{};
+  std::chrono::steady_clock::time_point search_contact_stable_started_{};
   StateMachine state_machine_;
   FirstOrderLowPass force_filter_;
   SafetyMonitor safety_monitor_;
@@ -2079,7 +2186,7 @@ private:
   std::optional<rclcpp::Time> pretension_started_at_;
   std::optional<rclcpp::Time> calibration_started_at_;
   std::optional<rclcpp::Time> release_started_at_;
-  std::optional<rclcpp::Time> position_reached_started_at_;
+  std::optional<std::chrono::steady_clock::time_point> position_reached_started_at_;
   std::vector<Vec3> pretension_detection_samples_;
   std::vector<Vec3> calibration_samples_;
   double target_force_n_ = 10.0;
