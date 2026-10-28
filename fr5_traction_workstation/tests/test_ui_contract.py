@@ -8,9 +8,9 @@ ROOT = Path(__file__).resolve().parents[1]
 class UiContractTest(unittest.TestCase):
     def test_page_exposes_current_modes_and_compact_calibration(self):
         page = (ROOT / "static" / "090105.html").read_text(encoding="utf-8")
-        mode_ids = re.findall(r'class="mode-btn[^\"]*" data-mode="([0-9]+)"', page)
+        mode_ids = re.findall(r'class="mode-state[^\"]*" data-mode="([0-9]+)"', page)
         self.assertEqual(["2", "1", "3"], mode_ids)
-        for label in ("省力拖拽", "目标牵引", "卸力", "重新校准"):
+        for label in ("拖拽", "牵引", "卸力", "重新校准"):
             self.assertIn(label, page)
         for removed in ("恒力牵引", "位置牵引", "方向确定", "回零", "设置当前位置为零位"):
             self.assertNotIn(removed, page)
@@ -18,7 +18,10 @@ class UiContractTest(unittest.TestCase):
         self.assertEqual(page.count('id="prepareBtn"'), 1)
         self.assertEqual(page.count('class="action-slot"'), 3)
         action_ids = re.findall(r'class="action-btn[^\"]*" id="([^\"]+)"', page)
-        self.assertEqual(["startBtn", "stopBtn", "unloadBtn", "emergencyBtn"], action_ids)
+        self.assertEqual(["enterDragBtn", "startBtn", "stopBtn", "enterModeBtn", "unloadBtn"], action_ids)
+        self.assertNotIn('id="emergencyBtn"', page)
+        self.assertNotRegex(page, r'<button[^>]+data-mode=')
+        self.assertIn('id="recoverBtn"', page)
         self.assertIn('id="settingForceLimit" type="number" min="1" step="1"', page)
         self.assertIn('id="targetForceVal" type="range"', page)
         self.assertIn("robotViewer", page)
@@ -28,10 +31,12 @@ class UiContractTest(unittest.TestCase):
     def test_real_services_history_and_shutdown_remain(self):
         script = (ROOT / "static" / "090105.js").read_text(encoding="utf-8")
         page = (ROOT / "static" / "090105.html").read_text(encoding="utf-8")
-        for endpoint in ("unload", "prepare", "start", "stop", "emergency-recover", "mode"):
+        for endpoint in ("unload", "prepare", "start", "stop", "emergency-recover", "enter-mode"):
             self.assertIn(f"/api/traction/{endpoint}", script)
         for removed in ("/api/traction/return-zero", "/api/traction/set-zero", "calibrateBtn"):
             self.assertNotIn(removed, script)
+        self.assertNotIn("/api/traction/emergency-stop", script)
+        self.assertNotIn("emergencyBtn", script)
         self.assertIn("/api/traction/export/session/", script)
         self.assertIn("/api/system/shutdown", script)
         self.assertIn("FORCE_HISTORY_WINDOW_MS = 60000", script)

@@ -81,6 +81,8 @@ class WorkflowHarness:
         self.native_calls = []
         self.native_stop_delay_s = 0.0
         self.native_stop_entered = threading.Event()
+        self.wrench_paused = False
+        self.allow_fault = False
         self.offset = (12.0, -3.0, 6.0)
         self.force = (0.0, 0.0, 0.0)
         self.position = (0.4, 0.2, 0.3)
@@ -125,7 +127,7 @@ class WorkflowHarness:
         self.node.create_timer(0.01, self.publish_feedback)
         self.clients = {
             name: self.node.create_client(Trigger, f"/traction/{name}")
-            for name in ("start", "stop", "unload", "prepare")
+            for name in ("start", "stop", "unload", "prepare", "reset_transient_fault", "emergency_stop")
         }
         self.mode_client = self.node.create_client(
             SetOperationMode, "/traction/set_operation_mode"
@@ -203,7 +205,8 @@ class WorkflowHarness:
         wrench.wrench.force.x, wrench.wrench.force.y, wrench.wrench.force.z = (
             offset + force for offset, force in zip(self.offset, self.force)
         )
-        self.wrench_pub.publish(wrench)
+        if not self.wrench_paused:
+            self.wrench_pub.publish(wrench)
         pose = PoseTwist()
         pose.header.stamp = stamp
         pose.header.frame_id = "base_link"
@@ -236,7 +239,7 @@ class WorkflowHarness:
         while time.monotonic() < end:
             assert all(process.poll() is None for process in self.processes), self.diagnostics()
             self.executor.spin_once(timeout_sec=0.005)
-            assert self.status is None or self.status.state not in (
+            assert self.allow_fault or self.status is None or self.status.state not in (
                 TractionStatus.FAULT, TractionStatus.EMERGENCY_STOP
             ), self.diagnostics()
 
@@ -670,3 +673,62 @@ def test_physical_button_interlocks_armed_drag_and_tares_before_reenabling(works
     assert robot.status.state == TractionStatus.DRAGGING
     robot.force = (15.0, 0.0, 0.0)  # 6 N above the new loaded baseline
     robot.wait(lambda: robot.native_calls == ["start"])
+
+
+def test_mode_change_waits_for_native_stop_confirmation(workstation):
+    robot = workstation
+    robot.force = (6.0, 0.0, 0.0)
+    robot.call("start")
+    robot.wait(lambda: robot.native_calls == ["start"])
+    robot.native_stop_delay_s = 0.7
+    robot.call("stop")
+    robot.wait(robot.native_stop_entered.is_set)
+    robot.wait(lambda: robot.status.state == TractionStatus.DRAGGING and not robot.status.ready)
+    response = robot.request(robot.mode_client, SetOperationMode.Request(mode=1))
+    assert not response.success
+    assert not robot.status.fault_code
+    robot.wait(lambda: robot.status.ready)
+    robot.mode(SetOperationMode.Request.POSITION_TRACTION)
+    robot.pump(0.2)
+    assert robot.status.state == TractionStatus.READY
+    assert robot.status.operation_mode == 1
+    assert not robot.switch_calls
+    assert robot.calibration_events == 1
+
+
+def test_software_timeout_reset_preserves_baseline_and_never_resumes(workstation):
+    robot = workstation
+    robot.mode(SetOperationMode.Request.POSITION_TRACTION)
+    robot.force = (8.0, 0.0, 0.0)
+    robot.wait(lambda: robot.status.direction_available)
+    robot.call("start")
+    robot.wait(lambda: robot.status.state == TractionStatus.TRACTION)
+    robot.allow_fault = True
+    robot.wrench_paused = True
+    robot.wait(lambda: robot.status.state == TractionStatus.FAULT)
+    assert robot.status.fault_code == "WRENCH_TIMEOUT"
+    response = robot.request(robot.clients["reset_transient_fault"], Trigger.Request())
+    assert not response.success
+    robot.wrench_paused = False
+    robot.pump(0.3)
+    robot.call("reset_transient_fault")
+    robot.wait(lambda: robot.status.state == TractionStatus.READY)
+    switch_count = len(robot.switch_calls)
+    robot.pump(0.3)
+    assert len(robot.switch_calls) == switch_count
+    assert robot.status.calibrated
+    assert not robot.status.direction_locked
+    assert robot.calibration_events == 1
+    assert robot.status.operation_mode == SetOperationMode.Request.POSITION_TRACTION
+
+
+def test_automatic_reset_cannot_acknowledge_an_emergency(workstation):
+    robot = workstation
+    robot.allow_fault = True
+    robot.call("emergency_stop")
+    robot.wait(lambda: robot.status.state == TractionStatus.EMERGENCY_STOP)
+    robot.pump(0.15)
+    response = robot.request(robot.clients["reset_transient_fault"], Trigger.Request())
+    assert not response.success
+    assert robot.status.state == TractionStatus.EMERGENCY_STOP
+    assert robot.calibration_events == 1

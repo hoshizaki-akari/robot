@@ -29,9 +29,10 @@ let directionLocked = false;
 let tractionState = 0;
 let pendingStart = false;
 let finishRequested = false;
-let emergencyPending = false;
+let recoveryPending = false;
+let modeSwitchPending = false;
 let unloadPending = false;
-const MODE_LABELS = { 0: '恒力牵引（历史）', 1: '目标牵引', 2: '省力拖拽', 3: '卸力' };
+const MODE_LABELS = { 0: '恒力牵引（历史）', 1: '牵引', 2: '拖拽', 3: '卸力' };
 const ACTIVE_STATES = [3, 6, 7, 11, 12];
 const IDLE_STATES = [1, 2, 5, 8];
 
@@ -55,7 +56,6 @@ const ACTION_SUCCESS_MESSAGES = {
   '/api/traction/start': '开始牵引',
   '/api/traction/stop': '正在结束任务',
   '/api/traction/unload': '开始卸力',
-  '/api/traction/emergency-stop': '已急停',
   '/api/traction/emergency-recover': '急停已恢复'
 };
 const REASON_LABELS = {
@@ -107,7 +107,7 @@ function simpleErrorMessage(error) {
   const text = String(error?.message || '');
   if (/target|目标牵引力|1 N and 100|1～100/i.test(text)) return `目标牵引力需在1～${tractionForceLimit}N`;
   if (/mode|模式/i.test(text)) return '当前状态不能切换模式';
-  if (/direction/i.test(text)) return '暂无有效方向，请选择目标牵引开始获取方向';
+  if (/direction/i.test(text)) return '暂无有效方向，请进入牵引后点击开始获取方向';
   if (/calibrat/i.test(text)) return '自动校准尚未完成，请检查设备状态';
   if (/unload|release/i.test(text)) return '卸力需已有有效方向且当前受力至少5N';
   if (/state|rejected|not available|unavailable|不可用/i.test(text)) return '当前状态不能执行';
@@ -116,13 +116,13 @@ function simpleErrorMessage(error) {
 
 function recoveryErrorMessage(error) {
   const text = String(error?.message || '');
-  if (/牵引服务超时|timeout/i.test(text)) return '急停恢复等待设备超时，请检查连接后重试';
-  if (/emergency stop input/i.test(text)) return '请先释放实体急停，再点击急停恢复';
+  if (/牵引服务超时|timeout/i.test(text)) return '恢复设备等待超时，请检查连接后重试';
+  if (/emergency stop input/i.test(text)) return '请先释放实体急停，再点击恢复设备';
   if (/Cartesian servo session|ServoMoveEnd/i.test(text)) return '机械臂运动状态尚未清理，请检查设备';
   if (/force sensor/i.test(text)) return '力传感器未恢复，请检查设备';
   if (/did not enter manual|Mode\(1\)/i.test(text)) return '机械臂未切换到手动模式，请检查示教器';
   if (/robot enable|manual mode could not be enabled/i.test(text)) return '机械臂未成功上使能，请检查设备';
-  return /[一-鿿]/.test(text) ? text : '急停恢复失败，请检查设备状态';
+  return /[一-鿿]/.test(text) ? text : '恢复设备失败，请检查设备状态';
 }
 
 async function postJson(path, body = {}) {
@@ -148,7 +148,7 @@ function motionStateActive() {
 
 function canUnload() {
   return calibrated && directionAvailable && actualForce >= 5 &&
-    [1, 2, 5, 6, 8, 11, 12].includes(tractionState) && !pendingStart && !unloadPending;
+    [1, 2, 5, 6, 8, 11, 12].includes(tractionState) && !pendingStart && !unloadPending && !modeSwitchPending;
 }
 
 function applyPermissions() {
@@ -156,34 +156,36 @@ function applyPermissions() {
   const permission = permissions[sessionUser.role];
   $('currentUser').textContent = sessionUser.name;
   $('currentRole').textContent = sessionUser.role;
-  const motionActive = motionStateActive() || pendingStart || unloadPending;
+  const motionActive = motionStateActive() || pendingStart || unloadPending || modeSwitchPending;
   const liveTractionAdjustment = operationMode === 1 && [6, 12].includes(tractionState);
   $('settingsBtn').disabled = !permission.settings || !dataOnline || motionActive;
   $('targetForceVal').disabled = !permission.adjust || operationMode !== 1 ||
     (motionActive && !liveTractionAdjustment);
   const startStateReady = calibrated && !directionLocked && IDLE_STATES.includes(tractionState) &&
     (operationMode !== 3 || canUnload());
-  $('startBtn').disabled = !permission.operate || !startStateReady || !dataOnline || pendingStart;
-  $('stopBtn').disabled = !permission.operate || !motionStateActive() || !dataOnline;
+  $('startBtn').disabled = !permission.operate || !startStateReady || !dataOnline || pendingStart || modeSwitchPending;
+  $('stopBtn').disabled = !permission.operate || !motionStateActive() || !dataOnline || modeSwitchPending;
   $('prepareBtn').disabled = !permission.operate || !dataOnline || motionActive ||
     !IDLE_STATES.includes(tractionState);
-  $('unloadBtn').disabled = !permission.operate || !dataOnline || !canUnload();
+  $('unloadBtn').disabled = !permission.operate || !dataOnline || !canUnload() || modeSwitchPending;
   const showStopAction = motionStateActive() || pendingStart || unloadPending;
-  $('startBtn').classList.toggle('slot-hidden', showStopAction);
-  $('stopBtn').classList.toggle('slot-hidden', !showStopAction);
+  $('startBtn').classList.toggle('slot-hidden', operationMode === 3 || showStopAction);
+  $('stopBtn').classList.toggle('slot-hidden', operationMode === 3 || !showStopAction);
+  $('enterDragBtn').classList.toggle('slot-hidden', operationMode !== 3);
+  const canEnter = permission.operate && dataOnline && calibrated &&
+    [1, 2, 3, 5, 6, 7, 8, 11, 12].includes(tractionState) &&
+    !pendingStart && !unloadPending && !modeSwitchPending && !recoveryPending;
+  $('enterModeBtn').disabled = !canEnter;
+  $('enterDragBtn').disabled = !canEnter;
+  $('enterModeLabel').textContent = operationMode === 1 ? '进入拖拽' : '进入牵引';
   const recovering = tractionState === 10 || tractionState === 9;
-  $('emergencyBtn').disabled = !permission.operate || !dataOnline || emergencyPending;
-  $('emergencyLabel').textContent = tractionState === 9 ? '故障恢复' : (recovering ? '急停恢复' : '急停');
-  $('emergencyBtn').classList.toggle('recover', recovering);
-  document.querySelectorAll('.mode-btn').forEach(button => {
-    button.disabled = !permission.operate || !dataOnline || motionActive ||
-      !IDLE_STATES.includes(tractionState);
-    button.classList.toggle('active', Number(button.dataset.mode) === operationMode);
+  $('recoverBtn').classList.toggle('slot-hidden', !recovering);
+  $('recoverBtn').disabled = !permission.operate || !dataOnline || recoveryPending;
+  document.querySelectorAll('.mode-state').forEach(indicator => {
+    indicator.classList.toggle('active', Number(indicator.dataset.mode) === operationMode);
   });
-  $('startLabel').textContent = operationMode === 2 ? '开始拖拽' :
-    (operationMode === 3 ? '开始卸力' : '开始牵引');
-  $('stopLabel').textContent = tractionState === 7 ? '停止卸力' :
-    (operationMode === 2 ? '结束拖拽' : '结束牵引');
+  $('startLabel').textContent = operationMode === 2 ? '开始拖拽' : '开始牵引';
+  $('stopLabel').textContent = operationMode === 2 ? '结束拖拽' : '结束牵引';
   $('recordsBtn').disabled = !permission.records;
 }
 
@@ -297,7 +299,7 @@ async function loadSettings() {
 
 async function startTraction() {
   if (!sessionUser || !permissions[sessionUser.role].operate) return;
-  if (pendingStart) return toast('正在等待控制器接管');
+  if (modeSwitchPending || pendingStart) return toast('正在等待控制器接管');
   if (!dataOnline) return toast('设备未连接');
   if (!calibrated || !IDLE_STATES.includes(tractionState)) {
     return toast('设备尚未就绪，请等待自动校准或检查设备状态');
@@ -393,33 +395,36 @@ async function finishTraction(status = '已完成') {
   toast(status === '已完成' ? (operationMode === 2 ? '结束拖拽' : '正在结束牵引') : '正在停止');
 }
 
-async function emergencyStop() {
-  const recovering = tractionState === 10 || tractionState === 9;
-  emergencyPending = true;
+async function recoverDevice() {
+  if (recoveryPending || !dataOnline || ![9, 10].includes(tractionState)) return;
+  recoveryPending = true;
   applyPermissions();
   try {
-    await postJson(recovering
-      ? '/api/traction/emergency-recover'
-      : '/api/traction/emergency-stop');
+    await postJson('/api/traction/emergency-recover');
+    toast('设备已尝试恢复，请确认状态后手动开始');
   } catch (error) {
-    emergencyPending = false;
+    toast(recoveryErrorMessage(error));
+  } finally {
+    recoveryPending = false;
     applyPermissions();
-    return toast(recovering
-      ? recoveryErrorMessage(error)
-      : `${simpleErrorMessage(error)}；请使用实体急停`);
   }
-  emergencyPending = false;
-  if (recovering) {
-    finishRequested = false;
-    $('workStatus').textContent = '设备恢复中';
-    applyPermissions();
-    return toast('急停已恢复');
-  }
-  if (activeRecord) saveFinishedRecord('紧急终止');
-  finishRequested = false;
-  $('workStatus').textContent = '已急停';
+}
+
+async function enterMode(requestedMode) {
+  if (modeSwitchPending || pendingStart || unloadPending || !dataOnline ||
+      !calibrated || ![1, 2].includes(requestedMode) || [9, 10].includes(tractionState)) return;
+  modeSwitchPending = true;
   applyPermissions();
-  toast('已急停');
+  try {
+    const result = await postJson('/api/traction/enter-mode', {mode: requestedMode});
+    if (result.snapshot) handleState(result.snapshot);
+    toast('已进入对应状态，请点击开始');
+  } catch (error) {
+    toast(simpleErrorMessage(error));
+  } finally {
+    modeSwitchPending = false;
+    applyPermissions();
+  }
 }
 
 function renderRecords() {
@@ -716,7 +721,7 @@ $('cancelShutdownBtn').addEventListener('click', () => {
 $('confirmShutdownBtn').addEventListener('click', shutdownProgram);
 $('startBtn').addEventListener('click', startTraction);
 $('stopBtn').addEventListener('click', () => finishTraction('已完成'));
-$('emergencyBtn').addEventListener('click', emergencyStop);
+$('recoverBtn').addEventListener('click', recoverDevice);
 $('unloadBtn').addEventListener('click', unloadTraction);
 $('recordsBtn').addEventListener('click', () => {
   renderRecords();
@@ -786,20 +791,7 @@ const callTraction = async path => {
   }
 };
 if ($('prepareBtn')) $('prepareBtn').addEventListener('click', () => callTraction('/api/traction/prepare'));
-document.querySelectorAll('.mode-btn').forEach(button => {
-  button.addEventListener('click', async () => {
-    const requestedMode = Number(button.dataset.mode);
-    try {
-      await postJson('/api/traction/mode', { mode: requestedMode });
-      operationMode = requestedMode;
-      pendingStart = false;
-      finishRequested = false;
-      applyPermissions();
-      toast(`已切换为${MODE_LABELS[operationMode]}`);
-    } catch (error) {
-      toast(simpleErrorMessage(error));
-    }
-  });
-});
+$('enterModeBtn').addEventListener('click', () => enterMode(operationMode === 1 ? 2 : 1));
+$('enterDragBtn').addEventListener('click', () => enterMode(2));
 setInterval(() => { fetch('/api/traction/heartbeat', {method: 'POST', body: '{}'}).catch(() => {}); }, 500);
 applyPermissions();

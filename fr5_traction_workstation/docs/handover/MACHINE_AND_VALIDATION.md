@@ -252,3 +252,20 @@ manager/controller/math源码内容与a7880f7一致，本轮没有修改C++算�
 验证：`bash -n scripts/tablet_start.sh`与diff检查通过；`bash scripts/run_checks.sh`编译/ruff及43项检查通过（17.896s），包含5项真实监督脚本+假进程行为检查，以及网页离线→后上线→断线按钮约束。初次受限运行因Windows Node互操作被沙箱阻止且测试套件受影响，已停止仅该次离线测试进程，在权限恢复后完成全部检查。启动回归完全在/tmp复制脚本配合假web/Firefox/端口/ROS进程，不访问机器人端口、不运行正式launch或GUI。一体机实际同时冷启动效果仍待现场确认。
 
 发布前只读确认GitHub feat/multi-mode-traction为c88ce93；以正常快进方式推送当前提交到该分支，不强推、不改变另一工作树的分支或文件。不在本机安装自启动配置，不停止/重启真机，不在目标一体机执行部署。
+
+## 17. 只读状态、三个动作位与有限自动恢复（2026-10-28）
+
+工作目录仍为 `/home/zhj/.codex/worktrees/836c/robot/fr5_traction_workstation`，分离HEAD基线 `4d2942b3ccbb92d8f2abeecde9649683866c58af`，本轮开始工作树干净。用户确认“进入”先结束当前动作再切模式、随后手动开始；自动恢复仅限明确暂时性通信问题，恢复后不续动；后续明确废弃网页急停按钮。
+
+页面上方改为只读“拖拽／牵引／卸力”状态；底部按当前状态提供三个动作位，切换走新 `/api/traction/enter-mode`，等待manager停止确认、ready和关节静止后选择模式，保持基线、不自动开始。manager的ready补充原生OFF待确认、Cartesian接管和实体示教/退出置零约束。卸力中可先停止再进入其他状态。网页急停按钮及绑定已删除，故障时顶栏独立显示“恢复设备”；原HTTP/ROS兼容停止服务、实体急停和硬件保护仍保留。
+
+新增web后台恢复轮询，只对白名单WRENCH_TIMEOUT、EE_STATE_TIMEOUT、UI_HEARTBEAT_TIMEOUT尝试复位。连接静止连续1秒后先执行driver被动检查，再调用manager专用 `/traction/reset_transient_fault`，回调内重查当前故障及实时数据；即使检查后变成急停或其他故障也不误清除。最多3次、间隔至少2秒，失败保留人工处理。无SDK复位/清错误/使能/切模式/置零/启动；driver已锁故障、停止失败和控制柜保护不会自动解除。
+
+验证结果：
+
+- `bash scripts/run_checks.sh` 的Python编译、ruff及55项检查全部通过（18.230s），使用原checkout虚拟环境和Windows Node；包含真实JS在DOM替身中的三个动作位、进入不启动/不校准、独立故障恢复及不存在网页急停入口，bridge等待停止确认、停止失败/保护中断，以及自动恢复白名单、静止等待和三次上限。
+- 当前C++ manager独立colcon构建成功（24.1s），输出 `/tmp/fr5-context-actions-20261028/install`，复用原overlay的fairino_msgs等依赖，未替换正式install。
+- `ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1` 隔离合成反馈工作流5项通过（14.48s）：原生停止确认前禁止切换、延迟拖拽卸力交接取消、合力门控、通信恢复不续动/基线保留、急停拒绝自动复位。仅启动该测试install的manager/controller和假反馈节点，未启动driver或正式launch。
+- 假SDK驱动71项通过（0.35s），覆盖原生拖拽、绝对Servo轨迹、成功慢回包恢复及实体示教退出；新增被动恢复检查不发送SDK命令、拒绝保护/锁存/未清理状态。
+
+没有访问机器人端口、操作真机、重启现有工作站或做真实浏览器布局验收。后续用户明确授权本地提交并推送GitHub，发布目标为feat/multi-mode-traction，采用正常快进推送。本机主目录 `/home/zhj/projects/robot` 存在未提交修改，保留原文件，仅在本工作树提交发布。修改尚未加载到运行中的网页与ROS；正式生效须在允许停机时构建本项目ros2_overlay，并重启ROS和网页，不要另起第二个SDK所有者。

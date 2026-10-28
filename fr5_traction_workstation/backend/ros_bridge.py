@@ -48,6 +48,7 @@ class RosBridge:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._mode_transition_lock = threading.Lock()
         self._node: Any = None
         self._executor: Any = None
         self._thread: threading.Thread | None = None
@@ -139,6 +140,8 @@ class RosBridge:
                 Trigger, "/traction/hardware_emergency_recover"
             ),
             "reset_fault": self._node.create_client(Trigger, "/traction/reset_fault"),
+            "reset_transient_fault": self._node.create_client(Trigger, "/traction/reset_transient_fault"),
+            "auto_recovery_check": self._node.create_client(Trigger, "/traction/auto_recovery_check"),
             "set_target_force": self._node.create_client(
                 SetTargetForce, "/traction/set_target_force"
             ),
@@ -419,6 +422,37 @@ class RosBridge:
         if not response.success:
             raise RosBridgeError(response.message)
         return {"success": True, "message": response.message, "snapshot": self.snapshot()}
+
+    def enter_operation_mode(self, mode: int) -> dict[str, Any]:
+        """Stop, wait for real stop acknowledgement, select; never start motion."""
+        if mode not in (1, 2):
+            raise RosBridgeError("只允许进入拖拽或牵引状态")
+        with self._mode_transition_lock:
+            snapshot = self.snapshot()
+            traction = snapshot.get("traction", {})
+            if not snapshot.get("connected") or traction.get("state") in (0, 4, 9, 10):
+                raise RosBridgeError("设备未就绪，不能切换工作状态")
+            if (traction.get("state") in (3, 6, 7, 11, 12)
+                    or (traction.get("state") == 5 and traction.get("direction_locked"))):
+                self.call("stop")
+            deadline = time.monotonic() + 15.0
+            selected = False
+            while time.monotonic() < deadline:
+                snapshot = self.snapshot()
+                traction = snapshot.get("traction", {})
+                if not snapshot.get("connected") or traction.get("state") in (9, 10):
+                    raise RosBridgeError("连接中断或设备保护已触发，工作状态未继续切换")
+                if selected and traction.get("operation_mode") == mode:
+                    return {"success": True, "message": "工作状态已切换，请点击开始", "snapshot": snapshot}
+                if traction.get("state") in (1, 2, 5, 8) and traction.get("ready"):
+                    speeds = snapshot.get("fr5", {}).get("joint_velocity_rad_s", [])
+                    if (not selected and len(speeds) == 6 and all(_finite(v) for v in speeds)
+                            and sum(float(v) ** 2 for v in speeds) <= 0.02 ** 2):
+                        self.set_operation_mode(mode)
+                        selected = True
+                        continue
+                time.sleep(0.05)
+            raise RosBridgeError("等待停止或工作状态确认超时，请检查设备；没有自动开始动作")
 
     @staticmethod
     def _wait_for_future(future: Any, timeout_s: float, operation: str) -> Any:

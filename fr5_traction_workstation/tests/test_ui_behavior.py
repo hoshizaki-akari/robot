@@ -31,7 +31,7 @@ const calls = [];
 const arrows = [];
 const sandbox = {
   console, requestLog: calls, arrowLog: arrows, document: {getElementById: element, activeElement: null,
-    querySelectorAll: selector => selector === '.mode-btn' ? modes : []},
+    querySelectorAll: selector => selector === '.mode-state' ? modes : []},
   window: {addEventListener() {}, updateTractionDirection: (...args) => arrows.push(args)},
   location: {protocol: 'http:', host: 'localhost'},
   sessionStorage: {getItem: () => null, setItem() {}, removeItem() {}},
@@ -94,6 +94,56 @@ class UiBehaviorTest(unittest.TestCase):
             throw Error('A runtime disconnect was confused with first startup');
         """)
 
+    def test_state_indicators_and_three_contextual_action_slots(self):
+        self.run_page(r"""
+          dataOnline = true; calibrated = true; tractionState = 1;
+          operationMode = 2; applyPermissions();
+          if ($('startLabel').textContent !== '开始拖拽' || $('enterModeLabel').textContent !== '进入牵引')
+            throw Error('Drag actions are wrong');
+          if (!$('enterDragBtn').classList.values.has('slot-hidden'))
+            throw Error('Unload-only enter-drag action is visible during drag');
+          operationMode = 1; tractionState = 6; directionLocked = true; applyPermissions();
+          if ($('stopLabel').textContent !== '结束牵引' || $('enterModeLabel').textContent !== '进入拖拽' ||
+              $('enterModeBtn').disabled) throw Error('Traction cannot switch through its stop transition');
+          operationMode = 3; tractionState = 7; applyPermissions();
+          if ($('enterDragBtn').classList.values.has('slot-hidden') ||
+              !$('startBtn').classList.values.has('slot-hidden') ||
+              !$('stopBtn').classList.values.has('slot-hidden') ||
+              $('enterModeLabel').textContent !== '进入牵引')
+            throw Error('Unload actions are wrong');
+          if (!document.querySelectorAll('.mode-state').find(mode => mode.dataset.mode === '3')
+              .classList.values.has('active')) throw Error('Unload state is not indicated');
+        """)
+
+    def test_entering_another_state_never_starts_or_recalibrates(self):
+        self.run_page(r"""
+          (async () => {
+            dataOnline = true; calibrated = true; operationMode = 2; tractionState = 11;
+            await enterMode(1);
+            const commands = requestLog.filter(call => call.options?.method === 'POST');
+            if (commands.map(call => call.url).join(',') !== '/api/traction/enter-mode')
+              throw Error('Entering another state started motion or reset calibration');
+            if (modeSwitchPending) throw Error('State switching lock was not released');
+          })()
+        """)
+
+    def test_fault_recovery_is_separate_and_never_starts_or_recalibrates(self):
+        self.run_page(r"""
+          (async () => {
+            dataOnline = true; calibrated = true; tractionState = 1; applyPermissions();
+            if (!$('recoverBtn').classList.values.has('slot-hidden'))
+              throw Error('Manual recovery is exposed outside a fault');
+            tractionState = 9; applyPermissions();
+            if ($('recoverBtn').classList.values.has('slot-hidden') || $('recoverBtn').disabled)
+              throw Error('Manual recovery is missing for a hardware fault');
+            await recoverDevice();
+            const commands = requestLog.filter(call => call.options?.method === 'POST');
+            if (commands.map(call => call.url).join(',') !== '/api/traction/emergency-recover')
+              throw Error('Recovery also stopped, started or recalibrated the robot');
+            if (recoveryPending) throw Error('Recovery lock was not released');
+          })()
+        """)
+
     def run_page(self, assertions):
         source = (ROOT / "static" / "090105.js").read_text(encoding="utf-8")
         script = (
@@ -141,9 +191,10 @@ class UiBehaviorTest(unittest.TestCase):
           if (!$('unloadBtn').disabled) throw Error('Below-five-newton unload accepted');
           actualForce = 5; directionAvailable = false; applyPermissions();
           if (!$('unloadBtn').disabled) throw Error('Missing-direction unload accepted');
-          directionAvailable = true; tractionState = 7; applyPermissions();
-          if (!$('unloadBtn').disabled || $('stopBtn').disabled)
-            throw Error('Active unload must allow stop and block duplicate unload');
+          directionAvailable = true; tractionState = 7; operationMode = 3; applyPermissions();
+          if (!$('unloadBtn').disabled || $('enterDragBtn').disabled || $('enterModeBtn').disabled ||
+              !$('stopBtn').classList.values.has('slot-hidden'))
+            throw Error('Active unload must allow entering another state and block duplicate unload');
         """)
 
     def test_end_keeps_calibration_and_allows_the_next_run_immediately(self):

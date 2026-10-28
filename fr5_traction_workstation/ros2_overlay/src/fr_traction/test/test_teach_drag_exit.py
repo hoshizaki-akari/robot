@@ -92,3 +92,24 @@ def test_force_gate_cycles_keep_reference_until_final_operator_stop():
     assert response.success
     assert not driver._force_reference_custom_active
     assert len(driver._robot.references) == 2
+
+
+def test_passive_automatic_recovery_check_never_resets_enables_or_moves():
+    driver = setup()
+    response = SimpleNamespace(success=False, message="")
+    Fr5DirectDriver._on_auto_recovery_check(driver, None, response)
+    assert response.success
+    assert not driver._robot.calls
+    assert not driver._robot.references
+    assert driver._robot.servo_start_calls == 0
+    driver._robot.robot_state_pkg.EmergencyStop = 1
+    Fr5DirectDriver._on_auto_recovery_check(driver, None, response)
+    assert not response.success
+    driver._robot.robot_state_pkg.EmergencyStop = 0
+    driver._hardware_fault_latched = True
+    Fr5DirectDriver._on_auto_recovery_check(driver, None, response)
+    assert not response.success
+    driver._hardware_fault_latched = False
+    driver._servo_cleanup_pending = True
+    Fr5DirectDriver._on_auto_recovery_check(driver, None, response)
+    assert not response.success

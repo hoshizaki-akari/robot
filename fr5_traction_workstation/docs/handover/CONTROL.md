@@ -110,6 +110,8 @@ ROS 位置/角度/力使用 m、rad、N；SDK 使用 mm、deg，转换只在 dri
 | `/traction/set_operation_mode` | 接受 1/2/3，拒绝历史模式 0 |
 | `/traction/set_target_force` | 目标牵引目标，含运行中更新与到位后重新牵引 |
 | `/traction/emergency_stop`、`/traction/reset_fault` | manager 软件锁存 / 复位，原基线保持有效 |
+| `/traction/reset_transient_fault` | 仅FAULT中的三种软件通信超时可自动复位，回调内重查白名单和反馈，不处理急停 |
+| `/traction/auto_recovery_check` | driver只读检查实时健康、静止、无保护/锁存及控制权清理完成，不写SDK |
 | `/traction/hardware_emergency_stop`、`/traction/hardware_emergency_recover` | driver 硬件停止、清理和恢复；恢复不自动继续旧任务 |
 | `/controller_manager/switch_controller` | driver 兼容 Cartesian 接管/释放 |
 | `/traction/native_drag_start`、`/traction/native_drag_stop` | driver 原生拖拽 |
@@ -120,6 +122,8 @@ ROS 位置/角度/力使用 m、rad、N；SDK 使用 mm、deg，转换只在 dri
 `/traction/calibrate_direction`、`set_zero_pose`、`return_zero_pose`、`return_pretraction_pose` 不再是公开操作接口。排查只查询 topic/service 类型和现状，不调用动作服务探测连通性。
 
 ## 7. 安全、暂停和恢复
+
+2026-10-28页面“进入”流程先结束当前动作；bridge等待真实ready和关节静止后选择模式，不自动开始。manager的ready及模式切换限制涵盖原生拖拽OFF待确认、Cartesian停止/接管、实体示教及退出置零，避免异步停止回复前更换控制权。网页急停按钮废弃，FAULT/ESTOP的顶栏“恢复设备”仍需人工点击。后台只对WRENCH_TIMEOUT、EE_STATE_TIMEOUT、UI_HEARTBEAT_TIMEOUT做有限自动复位：连接静止连续1秒、driver被动检查通过后调用专用reset_transient_fault，再由manager当前状态/白名单/新鲜数据原子复核；最多3次、间隔2秒。不清硬件锁存、不使能、不置零、不自动续动。真实控制故障和停止失败继续人工处理。
 
 工作站不再因实际受力超过 100 N、150 N 或其他软件力阈值报故障。`SafetyMonitor` 仍检查有限值、负的异常 force metrics、数据新鲜度、controller/driver 健康和可选 UI 心跳。历史 `SafetyLimits` 字段和 OVERFORCE/HARD_OVERFORCE 枚举可用于读取旧记录，当前 monitor 不生成这些受力幅值故障。机械臂控制器自身的保护保持原样。
 

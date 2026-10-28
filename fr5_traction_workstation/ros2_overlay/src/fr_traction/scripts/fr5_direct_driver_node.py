@@ -334,6 +334,9 @@ class Fr5DirectDriver(Node):
             self._on_switch,
         )
         self.create_service(
+            Trigger, "/traction/auto_recovery_check", self._on_auto_recovery_check
+        )
+        self.create_service(
             Trigger,
             "/traction/hardware_emergency_stop",
             self._on_hardware_emergency_stop,
@@ -1101,6 +1104,32 @@ class Fr5DirectDriver(Node):
             f"{name}={code if code is not None else detail}"
             for name, code, detail in results
         )
+        return response
+
+    def _on_auto_recovery_check(self, _request, response):
+        """Read cached status only. Never reset, enable, change mode or move."""
+        response.success = False
+        response.message = "自动恢复条件未满足，请人工检查设备"
+        if (self._hardware_fault_latched or self._hardware_emergency_latched
+                or self._servo_enabled or self._servo_cleanup_pending
+                or self._native_drag_active or self._force_reference_custom_active
+                or self._return_active or self._auto_tension_active
+                or time.monotonic() - self._last_realtime_state_at > self._realtime_state_timeout_s):
+            return response
+        if self._robot_motion_readiness_error(require_enabled=False) is not None:
+            return response
+        state = self._robot.robot_state_pkg
+        if any(int(getattr(state, field, 0)) != 0 for field in (
+            "sub_code", "safety_stop0_state", "safety_stop1_state", "collisionState"
+        )) or int(getattr(state, "robot_state", 1)) != 1:
+            return response
+        speeds = self._latest_joint_speeds
+        if (speeds is None or len(speeds) != 6
+                or not all(math.isfinite(float(value)) for value in speeds)
+                or sum(math.radians(float(value)) ** 2 for value in speeds) > 0.02 ** 2):
+            return response
+        response.success = True
+        response.message = "实时反馈健康、机械臂停止且无硬件保护；可仅复位软件通信故障"
         return response
 
     def _on_hardware_emergency_recover(self, _request, response):

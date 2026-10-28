@@ -26,8 +26,10 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 try:
+    from .backend.auto_recovery import TransientFaultRecovery
     from .backend.ros_bridge import RosBridge, RosBridgeError
 except ImportError:
+    from backend.auto_recovery import TransientFaultRecovery
     from backend.ros_bridge import RosBridge, RosBridgeError
 
 
@@ -51,6 +53,7 @@ OPERATION_NAMES = {
     "/api/traction/prepare": "重新校准",
     "/api/traction/target": "设置目标力",
     "/api/traction/mode": "切换工作模式",
+    "/api/traction/enter-mode": "进入工作状态",
     "/api/traction/start": "开始牵引",
     "/api/traction/stop": "结束任务",
     "/api/traction/unload": "卸力",
@@ -187,16 +190,27 @@ async def _sync_startup_settings() -> None:
         await asyncio.sleep(2.0)
 
 
+async def _recover_transient_faults() -> None:
+    recovery = TransientFaultRecovery()
+    while True:
+        await asyncio.to_thread(recovery.poll, bridge)
+        await asyncio.sleep(0.5)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     bridge.start()
     settings_sync = asyncio.create_task(_sync_startup_settings())
+    auto_recovery = asyncio.create_task(_recover_transient_faults())
     try:
         yield
     finally:
         settings_sync.cancel()
+        auto_recovery.cancel()
         with suppress(asyncio.CancelledError):
             await settings_sync
+        with suppress(asyncio.CancelledError):
+            await auto_recovery
         bridge.stop()
 
 
@@ -335,6 +349,14 @@ def set_target(request: TargetRequest) -> dict:
 def set_operation_mode(request: OperationModeRequest) -> dict:
     try:
         return bridge.set_operation_mode(request.mode)
+    except RosBridgeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post("/api/traction/enter-mode")
+def enter_operation_mode(request: OperationModeRequest) -> dict:
+    try:
+        return bridge.enter_operation_mode(request.mode)
     except RosBridgeError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 

@@ -1,4 +1,4 @@
-# 网页、接口与记录（2026-10-27 当前流程）
+# 网页、接口与记录（2026-10-28 当前流程）
 
 正式链路：浏览器 → `app.py` → `backend/ros_bridge.py` → ROS manager/controller → 唯一 Python direct driver。网页不拥有SDK；本轮没有重启现场运行栈。旧版恒力、回零和手动确认方向界面已取消，历史文件仍保留原始模式编号。
 
@@ -6,11 +6,12 @@
 
 | 文件 | 修改入口 |
 | --- | --- |
-| `static/090105.html` | 页面布局、顶栏小型重新校准、模式选择、目标/实际力、开始/结束/一键卸力、设置/历史弹窗 |
+| `static/090105.html` | 页面布局、顶栏重新校准/故障恢复、只读工作状态、目标/实际力、三个动作位、设置/历史弹窗 |
 | `static/090105.js` | 角色、按钮状态、API调用、曲线、WS重连与方向箭头；无前端打包步骤 |
 | `static/robot_viewer.js` | Three.js/STL模型和基坐标箭头到显示模型的转换；不修改实际运动符号 |
 | `app.py` | FastAPI / WS、目标上限持久化和ROS同步、操作日志、历史导出、关闭程序 |
 | `backend/ros_bridge.py` | 唯一网页rclpy节点、订阅和带锁快照、ROS服务等待、单位/状态消息适配 |
+| `backend/auto_recovery.py` | 软件通信超时的有限自动复位；不操作SDK、不恢复旧动作 |
 
 页面直接进入本地操作模式，已删除登录/退出登录窗口、演示账号与登录session恢复；默认操作人为“本机操作员”，角色“本地操作”，现有功能均可用但仍受设备状态约束。`X-Operator`/`X-Role`用于操作记录，不代表人员身份认证。既有 `static/config.json` 和 `config/workstation.json` 不是当前牵引主链路的调参入口。
 
@@ -23,6 +24,16 @@
 5. “结束”停止并保留当前位置、保留校准；切模式、恢复、网页刷新或WS重连不重新置零。顶栏“重新校准”只有正常停止、反馈健康且无接管/收尾时可用，由操作者确认绳带松弛后主动点击。
 6. 回零、设置零点、手动方向确认的大按钮和相应网页/API入口已移除。
 
+上方三个状态改名为“拖拽／牵引／卸力”，使用只读元素，仅随真实 `operation_mode` 高亮，不可点击。下方固定三个动作位：
+
+| 当前状态 | 第一个动作 | 第二个动作 | 第三个动作 |
+| --- | --- | --- | --- |
+| 拖拽 | 开始／结束拖拽 | 进入牵引 | 卸力 |
+| 牵引 | 开始／结束牵引 | 进入拖拽 | 卸力 |
+| 卸力 | 进入拖拽 | 进入牵引 | 卸力 |
+
+“进入”调用 `/api/traction/enter-mode`，先结束当前动作，等待manager停止确认、ready及关节静止后选模式；最长等待15秒。切换成功以真实模式反馈为准，不自动开始、不校准。卸力进行中禁止重复卸力，但可通过“进入”结束卸力并切换。网页急停按钮及其事件已废弃，顶栏仅在FAULT/ESTOP显示独立的“恢复设备”按钮，需操作者主动点击；实体急停与控制柜保护继续生效。
+
 状态沿用原编号：0 INITIALIZING、1 READY、2 MANUAL_SETUP、3 PRETENSION（本版表示方向搜索）、4 CALIBRATING（遗留）、5 DIRECTION_LOCKED（可能是搜索到目标的短暂交接）、6 TRACTION、7 RELEASING（本版表示卸力）、8 COMPLETED、9 FAULT、10 EMERGENCY_STOP、11 DRAGGING、12 POSITION_HOLD。状态5且 `direction_locked=true` 属于活动任务，不能允许重新校准或重复开始。
 
 ## 3. HTTP / ROS 映射
@@ -33,18 +44,21 @@
 | `/ws`（WebSocket） | 周期推送状态、关节、历史 |
 | `POST /api/traction/prepare` | `/traction/prepare`，主动重新校准，不移动机械臂 |
 | `POST /api/traction/mode` | `/traction/set_operation_mode`，只接受1/2/3 |
+| `POST /api/traction/enter-mode` | 只接受进入1/2；结束当前动作、确认停止、选模式，不自动开始 |
 | `POST /api/traction/target` | `/traction/set_target_force`，按设置上限检查，manager再次校验 |
 | `POST /api/traction/start` | `/traction/start`，无方向也能请求目标牵引，后台搜索 |
 | `POST /api/traction/stop` | `/traction/stop`，结束当前运动或取消待接管动作 |
 | `POST /api/traction/unload` | `/traction/unload`，运行中可用的一键卸力 |
-| `POST /api/traction/emergency-stop` | 先driver硬件停止，再manager软件锁存 |
-| `POST /api/traction/emergency-recover` | 先driver清理/恢复，再manager复位；不重校准、不自动续动 |
+| `POST /api/traction/emergency-stop` | 兼容接口保留：先driver硬件停止，再manager软件锁存；页面已无调用入口 |
+| `POST /api/traction/emergency-recover` | 顶栏“恢复设备”：先driver清理/恢复，再manager复位；不重校准、不自动续动 |
 | `POST /api/traction/reset-fault` | manager复位，须健康静止、原停止已确认 |
 | `POST /api/traction/heartbeat` | 可选UI心跳；不等于硬件健康 |
 | `GET/POST /api/settings` | 持久目标上限及manager原子参数同步 |
 | 历史/导出/关闭接口 | 见 `app.py` 路由，保留原数据目录和退出语义 |
 
 已删除 `/api/traction/return-zero`、`set-zero`、`calibrate-direction` 及bridge映射。driver也不再注册 `return_zero_pose/set_zero_pose/return_pretraction_pose`，不能只通过隐藏页面实现移除。
+
+后台每0.5秒检查故障，仅对白名单 `WRENCH_TIMEOUT/EE_STATE_TIMEOUT/UI_HEARTBEAT_TIMEOUT` 尝试自动恢复。连接和关节静止连续1秒后，先调用driver `/traction/auto_recovery_check`，只读检查新鲜实时包、无保护/锁存、无活动或未清理控制权以及静止；再调用manager `/traction/reset_transient_fault`，在回调内重新核对当前故障白名单及实时反馈，防止检查后新出现的急停被误复位。每个故障最多3次、间隔至少2秒；失败后保留故障供人工处理。该路径不调用硬件恢复、清控制柜错误、使能、校准、切模式或开始动作，恢复后等待医生手动开始。通用ROS2_CONTROL_ERROR、停止失败、非有限输入和急停不自动复位。
 
 ## 4. 目标上限与实际力
 

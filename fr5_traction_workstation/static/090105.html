@@ -109,18 +109,18 @@
       display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
       padding: 5px 20px 8px;
     }
-    .mode-btn {
+    .mode-state {
       min-height: 84px; border: 2px solid #aebdce; border-radius: 12px; padding: 8px 14px;
       background: #fff; color: #334155; font-size: clamp(23px, 1.5vw, 29px); font-weight: 900;
       display: inline-flex; align-items: center; justify-content: center; gap: 14px;
-      line-height: 1; letter-spacing: .16em; text-indent: .16em; cursor: pointer;
+      line-height: 1; letter-spacing: .16em; text-indent: .16em; cursor: default;
       box-shadow: 0 3px 8px rgba(15,23,42,.06); transition: .15s;
     }
     .mode-icon { width: 34px; height: 34px; flex: 0 0 34px; }
     .mode-icon svg { display: block; width: 100%; height: 100%; }
-    .mode-btn[data-mode="2"] { background: #eef6ff; border-color: #c4dafa; color: #173a68; }
-    .mode-btn[data-mode="1"] { background: #f2f6fc; border-color: #c4d0e0; color: #173a68; }
-    .mode-btn.active {
+    .mode-state[data-mode="2"] { background: #eef6ff; border-color: #c4dafa; color: #173a68; }
+    .mode-state[data-mode="1"] { background: #f2f6fc; border-color: #c4d0e0; color: #173a68; }
+    .mode-state.active {
       border-color: var(--blue); background: var(--blue); color: #fff;
       box-shadow: 0 5px 14px rgba(59,130,246,.28);
     }
@@ -199,8 +199,8 @@
     .action-btn.start { background: var(--green); }
     .action-btn.stop { background: #d7e0ec; color: #435a78; }
     .action-btn.unload { background: #ffd15a; color: #925c0b; }
-    .action-btn.emergency { background: var(--red); }
-    .action-btn.emergency.recover { background: var(--green); }
+    .nav-btn.recovery { background: #b45309; border-color: #fcd34d; }
+    .nav-btn.slot-hidden { display: none; }
 
     .modal-mask {
       position: fixed; inset: 0; z-index: 20; background: rgba(15,23,42,.55);
@@ -253,7 +253,7 @@
     @media (max-height: 820px) and (min-width: 1051px) {
       .mode-section-title { padding-top: 6px; }
       .mode-grid { padding-top: 3px; padding-bottom: 6px; }
-      .mode-btn { min-height: 84px; font-size: 25px; }
+      .mode-state { min-height: 84px; font-size: 25px; }
       .force-adjustment { margin: 0 16px 2px; }
       .force-section-title { padding-top: 4px; padding-bottom: 4px; }
       .force-control-body { grid-template-rows: minmax(96px, 1fr) 70px minmax(92px, .9fr); padding-bottom: 0; }
@@ -278,7 +278,7 @@
       .compact-status-label { display: none; }
       .state-value { font-size: 12px; }
       .mode-grid { gap: 8px; padding: 4px 10px 6px; }
-      .mode-btn { min-height: 48px; font-size: 20px; gap: 7px; letter-spacing: .08em; text-indent: .08em; }
+      .mode-state { min-height: 48px; font-size: 20px; gap: 7px; letter-spacing: .08em; text-indent: .08em; }
       .mode-icon { width: 24px; height: 24px; flex-basis: 24px; }
       .force-adjustment { margin: 0 10px 8px; }
       .force-control-body { padding-left: 14px; padding-right: 14px; }
@@ -303,6 +303,7 @@
     </div>
     <div class="top-right">
       <div class="user-chip"><span id="currentUser">本机操作员</span><span class="role-tag" id="currentRole">本地操作</span></div>
+      <button class="nav-btn recovery slot-hidden" id="recoverBtn" disabled title="确认实体保护已解除后恢复设备；恢复后不会自动开始"><span>恢复设备</span></button>
       <button class="nav-btn" id="prepareBtn" disabled title="仅在牵引带松弛且机械臂静止时重新校准"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="7"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5M9 12h6M12 9v6"/></svg></span><span>重新校准</span></button>
       <button class="nav-btn" id="settingsBtn">
         <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.2 1.9 2.2.4 1.6-1.1 1.8 1.8-1.1 1.6.4 2.2L21 11v2l-2.9 1.2-.4 2.2 1.1 1.6-1.8 1.8-1.6-1.1-2.2.4L12 21l-1.2-1.9-2.2-.4L7 19.8l-1.8-1.8 1.1-1.6-.4-2.2L3 13v-2l2.9-1.2.4-2.2-1.1-1.6L7 4.2l1.6 1.1 2.2-.4L12 3z"/><circle cx="12" cy="12" r="3"/></svg></span><span>参数设置</span>
@@ -344,11 +345,11 @@
             <span class="compact-status-item"><span class="compact-status-label">方向</span><strong class="state-value" id="directionState">等待施力</strong></span>
           </div>
         </div>
-        <div class="mode-section-title">牵引模式</div>
-        <div class="mode-grid" aria-label="工作模式">
-          <button class="mode-btn active" data-mode="2"><span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11V6a1.5 1.5 0 0 1 3 0v4M10 10V4.8a1.5 1.5 0 0 1 3 0V10M13 10V6a1.5 1.5 0 0 1 3 0v5M16 11V8.5a1.5 1.5 0 0 1 3 0v5.2c0 4-2.8 6.3-6.4 6.3H10c-2.2 0-3.5-1-4.5-2.7L3.4 13a1.5 1.5 0 0 1 2.6-1.5L7 13.2"/></svg></span><span>省力拖拽</span></button>
-          <button class="mode-btn" data-mode="1"><span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M8 7l4-4 4 4M8 17l4 4 4-4"/></svg></span><span>目标牵引</span></button>
-          <button class="mode-btn" data-mode="3"><span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h5l2-6 4 12 2-6h7"/></svg></span><span>卸力</span></button>
+        <div class="mode-section-title">当前状态</div>
+        <div class="mode-grid" aria-label="当前工作状态">
+          <div class="mode-state active" data-mode="2"><span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11V6a1.5 1.5 0 0 1 3 0v4M10 10V4.8a1.5 1.5 0 0 1 3 0V10M13 10V6a1.5 1.5 0 0 1 3 0v5M16 11V8.5a1.5 1.5 0 0 1 3 0v5.2c0 4-2.8 6.3-6.4 6.3H10c-2.2 0-3.5-1-4.5-2.7L3.4 13a1.5 1.5 0 0 1 2.6-1.5L7 13.2"/></svg></span><span>拖拽</span></div>
+          <div class="mode-state" data-mode="1"><span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M8 7l4-4 4 4M8 17l4 4 4-4"/></svg></span><span>牵引</span></div>
+          <div class="mode-state" data-mode="3"><span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h5l2-6 4 12 2-6h7"/></svg></span><span>卸力</span></div>
         </div>
         <div class="force-adjustment">
           <div class="force-section-title">牵引力调节</div>
@@ -370,14 +371,15 @@
         </div>
         <div class="control-grid" aria-label="牵引控制">
           <div class="action-slot">
-            <button class="action-btn start" id="startBtn" disabled><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.8a1 1 0 0 1 1.5-.86l10.4 7.2a1 1 0 0 1 0 1.72l-10.4 7.2A1 1 0 0 1 7 19.2z"/></svg></span><span class="btn-label" id="startLabel">开始牵引</span></button>
-            <button class="action-btn stop slot-hidden" id="stopBtn" disabled><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="1.5"/></svg></span><span class="btn-label" id="stopLabel">结束牵引</span></button>
+            <button class="action-btn start slot-hidden" id="enterDragBtn" disabled><span class="btn-label">进入拖拽</span></button>
+            <button class="action-btn start" id="startBtn" disabled><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.8a1 1 0 0 1 1.5-.86l10.4 7.2a1 1 0 0 1 0 1.72l-10.4 7.2A1 1 0 0 1 7 19.2z"/></svg></span><span class="btn-label" id="startLabel">开始拖拽</span></button>
+            <button class="action-btn stop slot-hidden" id="stopBtn" disabled><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="1.5"/></svg></span><span class="btn-label" id="stopLabel">结束拖拽</span></button>
           </div>
           <div class="action-slot">
-            <button class="action-btn unload" id="unloadBtn" disabled title="沿已记录方向减力，低于5N停止"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M7 16l5 5 5-5M5 8h14"/></svg></span><span class="btn-label">一键卸力</span></button>
+            <button class="action-btn start" id="enterModeBtn" disabled><span class="btn-label" id="enterModeLabel">进入牵引</span></button>
           </div>
           <div class="action-slot">
-            <button class="action-btn emergency" id="emergencyBtn" disabled><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 22 20H2L12 3z"/><path d="M12 8v6M12 17v.1"/></svg></span><span class="btn-label" id="emergencyLabel">急停</span></button>
+            <button class="action-btn unload" id="unloadBtn" disabled title="沿已记录方向减力，低于5N停止"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M7 16l5 5 5-5M5 8h14"/></svg></span><span class="btn-label">卸力</span></button>
           </div>
         </div>
       </div>
@@ -440,6 +442,6 @@
     uses /api/traction/* and the ROS2 traction manager; it does not simulate force,
     persist traction records in the browser, or issue robot SDK commands.
   </script>
-  <script src="/assets/090105.js?v=web-first-20261028-target-unload"></script>
+  <script src="/assets/090105.js?v=state-actions-20261028"></script>
 </body>
 </html>

@@ -332,6 +332,24 @@ public:
       const std_srvs::srv::Trigger::Response::SharedPtr response) {
         handle_reset_fault(response);
       });
+    reset_transient_fault_service_ = create_service<std_srvs::srv::Trigger>(
+      "/traction/reset_transient_fault",
+      [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+      const std_srvs::srv::Trigger::Response::SharedPtr response) {
+        // Recheck the whitelist in the manager callback: a hardware fault or
+        // emergency may have replaced the timeout after the web-side check.
+        if (state_machine_.state() != TractionState::FAULT ||
+          (fault_code_ != "WRENCH_TIMEOUT" && fault_code_ != "EE_STATE_TIMEOUT" &&
+          fault_code_ != "UI_HEARTBEAT_TIMEOUT") || !live_ee() ||
+          (require_ui_heartbeat_ &&
+          !fresh(last_ui_heartbeat_steady_at_, ui_heartbeat_timeout_s_)))
+        {
+          response->success = false;
+          response->message = "仅允许在实时反馈恢复后自动复位软件通信超时";
+          return;
+        }
+        handle_reset_fault(response);
+      });
     target_force_service_ = create_service<srv::SetTargetForce>(
       "/traction/set_target_force",
       [this](const srv::SetTargetForce::Request::SharedPtr request,
@@ -1081,7 +1099,7 @@ private:
     }
     if (is_motion_state(state) || state == TractionState::CALIBRATING ||
       state == TractionState::POSITION_HOLD || controller_start_pending_ ||
-      controller_activation_confirming_ || controller_stop_count_ > 0)
+      controller_activation_confirming_ || native_drag_stop_pending_ || controller_stop_count_ > 0)
     {
       response->success = false;
       response->message = "Mode can only be changed while the robot is stopped.";
@@ -2056,7 +2074,9 @@ private:
     status.ready = state_machine_.state() != TractionState::INITIALIZING &&
       state_machine_.state() != TractionState::FAULT &&
       state_machine_.state() != TractionState::EMERGENCY_STOP &&
-      live_controller() && live_hardware() && controller_stop_count_ == 0;
+      live_controller() && live_hardware() && controller_stop_count_ == 0 &&
+      !controller_start_pending_ && !controller_activation_confirming_ &&
+      !native_drag_stop_pending_ && !physical_teach_active_ && !teach_exit_tare_pending_;
     // The message exposes the operator-selected target, not the instantaneous
     // release/disabled command. This keeps READY/DIRECTION_LOCKED observable
     // without turning the target into zero between motion phases.
@@ -2344,6 +2364,7 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr emergency_service_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_fault_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_transient_fault_service_;
   rclcpp::Service<srv::SetTargetForce>::SharedPtr target_force_service_;
   rclcpp::Service<srv::SetOperationMode>::SharedPtr operation_mode_service_;
   rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedPtr switch_client_;

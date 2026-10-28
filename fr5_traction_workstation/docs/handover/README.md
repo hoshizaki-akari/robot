@@ -12,6 +12,8 @@
 
 2026-10-28启动更新：桌面/开机入口先显示网页并等待机器人，首次连接前初始化失败自动重试，首次成功连接后的运行故障不自动重启；见RUNBOOK第6节及本机与验证第16节。
 
+2026-10-28操作更新：上方“拖拽／牵引／卸力”只显示真实状态，底部三个动作位负责开始/结束、停止后进入另一状态及卸力；进入后仍需手动开始。网页急停按钮已废弃，故障时顶栏独立显示“恢复设备”。只对明确的软件通信超时做有限自动复位，不自动续动；硬件保护、急停和停止失败仍由人确认。见WEB_AND_DATA及本机与验证第17节。
+
 ## 从这里开始
 
 | 任务 | 阅读入口 | 负责的内容 |
@@ -39,7 +41,7 @@ flowchart TD
     RSP[robot_state_publisher\nURDF/TF]
     UI -->|POST API| API --> BRIDGE
     BRIDGE -->|ROS services| MANAGER
-    BRIDGE -->|回零/硬件急停等服务| DRIVER
+    BRIDGE -->|硬件恢复/只读恢复条件检查| DRIVER
     MANAGER -->|command / corrected_wrench| CTRL
     CTRL -->|command_cart_vel_stamped| DRIVER
     MANAGER -->|native drag / switch 等服务| DRIVER
