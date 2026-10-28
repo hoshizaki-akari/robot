@@ -98,6 +98,7 @@ if(BUILD_TESTING)
   target_link_libraries(test_direction_correction fr_traction_core)
 
   ament_add_pytest_test(test_native_drag_driver test/test_native_drag_driver.py)
+  ament_add_pytest_test(test_servo_timing_recovery test/test_servo_timing_recovery.py)
 
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)

@@ -87,21 +87,25 @@ bash scripts/tablet_setup_env.sh
 
 ## 6. 更新软件
 
-收到新版本后，先退出工作站，再执行：
+此前已经安装完成且能正常运行的一体机，先结束牵引并退出工作站，再拉取和本地编译：
 
 ```bash
 cd ~/projects/fr5_platform_ws
 git switch feat/multi-mode-traction
 git pull --ff-only origin feat/multi-mode-traction
-cd fr5_traction_workstation
-bash scripts/tablet_setup_env.sh
+cd fr5_traction_workstation/ros2_overlay
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --parallel-workers 2 \
+  --packages-select fairino_description fairino_msgs \
+    fairino5_v6_moveit2_config fr_traction \
+  --cmake-args -DBUILD_TESTING=OFF
+cd ..
 git log -1 --oneline
 ```
 
-确认安装成功后，双击桌面图标，或执行 `bash scripts/tablet_start.sh`。本次更新包含C++、ROS消息、driver和网页，必须在一体机本地重新编译；不能只更新网页或复制开发机WSL产物。脚本编译更新可执行程序并刷新桌面入口，不会自动启动机器人。
+编译成功后，双击原桌面图标，或在当前目录执行 `bash scripts/tablet_start.sh`。该更新命令使用本机已有依赖，不重复执行apt/pip/rosdep联网更新。C++或ROS接口改动必须编译；仅Python driver改动也需要重启进程才会加载，不能只刷新网页。更新前先检查并保留本机未提交修改，不使用reset/clean覆盖。
 
-安装脚本可以重复执行：已存在的官方依赖和 Python 环境不会重复克隆，只会重新确认
-依赖、编译当前代码并刷新桌面图标。
+首次安装或确实缺少依赖时，才执行完整的 `bash scripts/tablet_setup_env.sh`。完整脚本会重新联网确认系统/Python/ROS依赖，并在SDK版本不符时重建SDK目录；普通更新不必每次重跑它。
 
 ## 7. 常见问题
 

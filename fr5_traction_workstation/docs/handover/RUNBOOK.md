@@ -294,17 +294,37 @@ source ros2_overlay/install/setup.bash
 
 阅读历史报告用于理解改动原因，运行时只依据当前分支、实际加载 install、现时参数、机器人反馈与当场验收。
 
-## 现有一体机更新（2026-10-27）
+## 现有一体机更新（2026-10-28）
 
-按ASUS部署指南的一体机路径操作。先结束牵引，再以Alt+F4退出桌面工作站（终端启动则分别Ctrl+C关闭网页和ROS）；更新期间不运行SDK/控制进程。
+按ASUS部署指南的一体机路径操作。先结束牵引，再以Alt+F4退出桌面工作站（终端启动则分别Ctrl+C关闭网页和ROS）；更新期间不运行SDK/控制进程。已有完整可运行环境使用以下增量更新，不重复apt/pip/rosdep联网安装：
 
 ```bash
 cd ~/projects/fr5_platform_ws
 git switch feat/multi-mode-traction
 git pull --ff-only origin feat/multi-mode-traction
-cd fr5_traction_workstation
-bash scripts/tablet_setup_env.sh
+cd fr5_traction_workstation/ros2_overlay
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --parallel-workers 2 \
+  --packages-select fairino_description fairino_msgs \
+    fairino5_v6_moveit2_config fr_traction \
+  --cmake-args -DBUILD_TESTING=OFF
+cd ..
 git log -1 --oneline
 ```
 
-安装成功后执行 `bash scripts/tablet_start.sh` 或双击原桌面图标。setup会编译本机ROS可执行程序并更新入口；不是下载Windows exe，也不会自动启动机械臂。若一体机使用其他克隆位置，将首行换为实际Git根目录。pull若因本机修改失败，先保留并处理差异，不使用reset强制覆盖。启动时保持绳带松弛供本次自动基线采集。
+编译成功后执行 `bash scripts/tablet_start.sh` 或双击原桌面图标。首次安装或缺依赖时才用完整 `scripts/tablet_setup_env.sh`。仅Python driver改动仍需重启ROS加载；不要在正在牵引时热替换。若一体机使用其他克隆位置，将首行换为实际Git根目录。pull若因本机修改失败，先保留并处理差异，不使用reset强制覆盖。启动时保持绳带松弛供本次自动基线采集。
+
+### 偶发成功慢回包的继续策略（2026-10-28）
+
+本版成功ServoCart慢回包仅warning，不结束牵引、不退出servo、不需要故障恢复。目标力、锁定方向及原记录会话继续；新鲜命令到达后从最新TCP平滑恢复，不补发延迟位移。RPC返回非0、传输异常或反馈中断仍按原故障处理，不可仅凭页面通用“运动控制异常”判断为本类延迟；先查看同次driver日志。
+
+本轮只改Python driver及回归测试，已部署机器仍须在本次任务正常结束后重启ROS进程才加载新代码。不要在正在牵引时重启更新。源码/安装driver有symlink也不能让现有Python进程热加载。离线针对性驱动检查（不连接SDK）包含：
+
+```bash
+source /opt/ros/humble/setup.bash
+source ros2_overlay/install/setup.bash
+../.venv/bin/python3 -m pytest -q \
+  ros2_overlay/src/fr_traction/test/test_native_drag_driver.py \
+  ros2_overlay/src/fr_traction/test/test_absolute_servo_trajectory.py \
+  ros2_overlay/src/fr_traction/test/test_servo_timing_recovery.py
+```

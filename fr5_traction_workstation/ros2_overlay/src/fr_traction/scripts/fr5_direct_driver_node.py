@@ -389,6 +389,9 @@ class Fr5DirectDriver(Node):
         self._motion_statistics_max_rpc_s = 0.0
         self._servo_enabled = False
         self._servo_cleanup_pending = False
+        self._motion_recovery_generation = 0
+        self._motion_recovery_active = False
+        self._motion_recovery_velocity = [0.0, 0.0, 0.0]
         self._native_drag_active = False
         self._last_native_drag_status = None
         self._force_reference_custom_active = False
@@ -581,11 +584,15 @@ class Fr5DirectDriver(Node):
                 # interpret a queued search velocity as a target command.
                 self._twist = Twist()
                 self._last_command_at = 0.0
+                if getattr(self, "_motion_recovery_active", False):
+                    self._motion_recovery_velocity = [0.0, 0.0, 0.0]
                 self._velocity_epoch_ns = self.get_clock().now().nanoseconds
             self._traction_mode = message.mode
             if message.mode == TractionCommand.DISABLED:
                 self._twist = Twist()
                 self._last_command_at = 0.0
+                if getattr(self, "_motion_recovery_active", False):
+                    self._motion_recovery_velocity = [0.0, 0.0, 0.0]
 
     @staticmethod
     def _switch_lists(request):
@@ -637,6 +644,8 @@ class Fr5DirectDriver(Node):
                 return response
             self._servo_enabled = True
             self._servo_cleanup_pending = True
+            self._motion_recovery_active = False
+            self._motion_recovery_velocity = [0.0, 0.0, 0.0]
             # This is the exact pose before the Cartesian force loop takes
             # control. It is intentionally separate from the slack zero.
             self._pretraction_pose = list(self._latest_pose)
@@ -1497,14 +1506,56 @@ class Fr5DirectDriver(Node):
             )
         if elapsed > self._command_timeout:
             # Feedback can remain healthy while the command channel is
-            # blocked. That is not a valid servo loop: require deliberate
-            # recovery rather than resuming a delayed sequence of moves.
-            raise RuntimeError(
-                "FR5 Cartesian command timing lost: "
-                f"ServoCart took {elapsed:.3f} s "
-                f"(limit {self._command_timeout:.3f} s); motion will not resume automatically"
-            )
+            # blocked. A successful call keeps the current task active, but
+            # drops every stale velocity/target and resumes from live TCP.
+            if code == 0:
+                self._restart_motion_cadence_after_delay(elapsed)
+            else:
+                raise RuntimeError(
+                    "FR5 Cartesian command timing lost with failed RPC: "
+                    f"ServoCart returned {code} after {elapsed:.3f} s "
+                    f"(limit {self._command_timeout:.3f} s)"
+                )
         return code
+
+    def _restart_motion_cadence_after_delay(self, elapsed_s):
+        """Discard delayed work while keeping the current traction task active."""
+        pose = self._latest_pose
+        if pose is None or len(pose) != 6 or not all(math.isfinite(v) for v in pose):
+            raise RuntimeError("FR5 TCP pose unavailable after delayed Cartesian command")
+        self._motion_recovery_generation += 1
+        self._motion_recovery_active = True
+        self._motion_recovery_velocity = [0.0, 0.0, 0.0]
+        self._twist = Twist()
+        self._last_command_at = 0.0
+        self._cartesian_target_pose = list(pose)
+        self._tracking_limit_since = None
+        self._tracking_limit_anchor_pose = None
+        self._velocity_epoch_ns = self.get_clock().now().nanoseconds
+        recovered_at = time.monotonic()
+        self._last_motion_at = recovered_at
+        self._next_motion_at = recovered_at + self._motion_period_s
+        self.get_logger().warning(
+            f"ServoCart succeeded after {elapsed_s:.3f} s; "
+            "traction remains active. Discarded delayed target lead and velocities; "
+            "waiting for fresh commands to resume from live TCP at bounded acceleration."
+        )
+
+    def _limit_motion_recovery_velocity(self, linear, motion_dt):
+        # Contact, command expiry and the operator's stop remain immediate.
+        # Keep this guard for the rest of the servo session so dropping the
+        # recovery flag cannot itself introduce a speed discontinuity.
+        if not any(linear):
+            self._motion_recovery_velocity = [0.0, 0.0, 0.0]
+            return linear
+        previous = self._motion_recovery_velocity
+        delta = [linear[i] - previous[i] for i in range(3)]
+        magnitude = math.sqrt(sum(value * value for value in delta))
+        maximum_change = 0.08 * motion_dt
+        scale = min(1.0, maximum_change / magnitude) if magnitude > 0.0 else 1.0
+        result = [previous[i] + delta[i] * scale for i in range(3)]
+        self._motion_recovery_velocity = result
+        return result
 
     def _limit_direction_search(self, linear, now):
         if self._direction_search_stopped:
@@ -1664,6 +1715,8 @@ class Fr5DirectDriver(Node):
             linear = [value * speed_limit / magnitude for value in linear]
         if self._traction_mode == TractionCommand.DIRECTION_SEARCH:
             linear = self._limit_direction_search(linear, now)
+        if getattr(self, "_motion_recovery_active", False):
+            linear = self._limit_motion_recovery_velocity(linear, motion_dt)
         if self._traction_mode == TractionCommand.DRAG:
             # Retained private host drag uses tool-frame increments. Native
             # EndForceDragControl never reaches this branch.
@@ -1721,8 +1774,13 @@ class Fr5DirectDriver(Node):
             else:
                 self._tracking_limit_since = None
                 self._tracking_limit_anchor_pose = None
+            recovery_generation = getattr(self, "_motion_recovery_generation", 0)
             code = self._servo_cart(0, target)
-            if code == 0:
+            # A successful delayed RPC may have reanchored to current TCP;
+            # never overwrite that recovery with the pre-delay target.
+            if code == 0 and recovery_generation == getattr(
+                self, "_motion_recovery_generation", 0
+            ):
                 self._cartesian_target_pose = target
         if code != 0:
             raise RuntimeError(f"ServoCart traction failed: {code}")
