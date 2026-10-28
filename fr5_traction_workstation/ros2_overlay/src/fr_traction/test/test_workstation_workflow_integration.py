@@ -579,29 +579,19 @@ def test_transient_search_contact_resumes_without_restarting_five_second_budget(
     assert len(robot.switch_calls) == 2  # One activation and one final stop.
 
 
-def test_native_drag_requires_display_resultant_above_five_and_stops_at_five(workstation):
+def test_native_drag_stays_enabled_across_five_newtons_until_operator_stop(workstation):
     robot = workstation
     robot.call("start")
-    robot.wait(lambda: robot.status.state == TractionStatus.DRAGGING)
-    robot.force = (2.0, 3.0, 0.0)
-    robot.pump(0.35)
-    assert robot.native_calls == []
-    robot.force = (5.0, 0.0, 0.0)
-    robot.pump(0.35)
-    assert robot.native_calls == []
-    robot.force = (3.6, 4.8, 0.0)  # total 6 N, each component below 5 N
     robot.wait(lambda: robot.native_calls == ["start"])
-    robot.force = (5.0, 0.0, 0.0)
-    robot.wait(lambda: robot.native_calls == ["start", "stop"])
-    assert robot.status.state == TractionStatus.DRAGGING
-    assert not robot.status.fault_code
-    robot.pump(0.25)
-    assert robot.native_calls == ["start", "stop"]
-    robot.force = (0.0, 6.0, 0.0)
-    robot.wait(lambda: robot.native_calls == ["start", "stop", "start"])
+    robot.wait(lambda: robot.status.state == TractionStatus.DRAGGING)
+    for force in ((2.0, 3.0, 0.0), (5.0, 0.0, 0.0), (3.6, 4.8, 0.0), (0.0, 0.0, 0.0)):
+        robot.force = force
+        robot.pump(0.2)
+        assert robot.native_calls == ["start"]
+        assert not robot.status.fault_code
     robot.call("stop")
     robot.ready()
-    assert robot.native_calls[-1] == "stop"
+    assert robot.native_calls == ["start", "stop"]
     assert robot.calibration_events == 1
 
 
@@ -645,14 +635,15 @@ def test_teach_exit_event_cannot_tare_active_traction(workstation):
     assert robot.status.state == TractionStatus.TRACTION
 
 
-def test_physical_button_interlocks_armed_drag_and_tares_before_reenabling(workstation):
+def test_physical_button_interlocks_drag_and_tares_before_reenabling(workstation):
     robot = workstation
     robot.call("start")
     robot.wait(lambda: robot.status.state == TractionStatus.DRAGGING)
+    robot.wait(lambda: robot.native_calls == ["start"])
     robot.physical_teach_pub.publish(Bool(data=True))
     robot.force = (9.0, 0.0, 0.0)
     robot.pump(0.4)
-    assert robot.native_calls == []
+    assert robot.native_calls == ["start", "stop"]
     event = WrenchStamped()
     event.header.frame_id = "base_link"
     event.header.stamp = robot.node.get_clock().now().to_msg()
@@ -663,16 +654,14 @@ def test_physical_button_interlocks_armed_drag_and_tares_before_reenabling(works
     # must not permit software drag to re-enable before the tare is applied.
     robot.physical_teach_pub.publish(Bool(data=False))
     robot.pump(0.25)
-    assert robot.native_calls == []
+    assert robot.native_calls == ["start", "stop"]
     assert robot.calibration_events == 1
     event.header.stamp = robot.node.get_clock().now().to_msg()
     robot.teach_exit_pub.publish(event)
     robot.wait(lambda: robot.calibration_events == 2 and robot.status.actual_force_n < 0.05)
     robot.pump(0.2)
-    assert robot.native_calls == []
     assert robot.status.state == TractionStatus.DRAGGING
-    robot.force = (15.0, 0.0, 0.0)  # 6 N above the new loaded baseline
-    robot.wait(lambda: robot.native_calls == ["start"])
+    robot.wait(lambda: robot.native_calls == ["start", "stop", "start"])
 
 
 def test_mode_change_waits_for_native_stop_confirmation(workstation):

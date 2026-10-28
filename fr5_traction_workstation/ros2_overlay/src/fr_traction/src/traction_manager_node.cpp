@@ -663,7 +663,7 @@ private:
   bool teach_recalibration_allowed() const
   {
     return normal_stopped() || (state_machine_.state() == TractionState::DRAGGING &&
-      !native_drag_gate_active_ && !controller_start_pending_ && !native_drag_stop_pending_);
+      !native_drag_running_ && !controller_start_pending_ && !native_drag_stop_pending_);
   }
 
   void update_teach_drag_calibration()
@@ -1369,8 +1369,7 @@ private:
   void request_controller_stop()
   {
     ++motion_request_epoch_;
-    native_drag_gate_active_ = false;
-    native_drag_above_started_ = {};
+    native_drag_running_ = false;
     controller_activation_confirming_ = false;
     controller_start_pending_ = false;
     if (operation_mode_ == OperationMode::ASSISTED_DRAG) {
@@ -1435,8 +1434,7 @@ private:
       if (!native_drag_start_client_->service_is_ready() ||
         !native_drag_stop_client_->service_is_ready() ||
         !native_drag_gate_stop_client_->service_is_ready()) {return false;}
-      native_drag_gate_active_ = false;
-      native_drag_above_started_ = {};
+      native_drag_running_ = false;
       transition(TractionState::DRAGGING);
       return true;
     }
@@ -1468,21 +1466,14 @@ private:
   }
 
 
-  void update_native_drag_gate()
+  void update_native_drag_control()
   {
     if (controller_start_pending_ || native_drag_stop_pending_) {return;}
-    const bool above = !physical_teach_active_ && !teach_exit_tare_pending_ &&
-      !pending_teach_baseline_ &&
-      motion_feedback_fresh() &&
-      std::round(current_metrics().actual_force_n * 10.0) / 10.0 > 5.0;
-    if (!above) {native_drag_above_started_ = {};}
-    if (above && !native_drag_gate_active_) {
-      if (native_drag_above_started_ == std::chrono::steady_clock::time_point{}) {
-        native_drag_above_started_ = std::chrono::steady_clock::now();
-      }
-      // A short rising-edge confirmation avoids ON/OFF chatter at 5 N;
-      // the falling edge has no debounce and immediately requests OFF.
-      if (age_seconds(native_drag_above_started_) < 0.10) {return;}
+    // Keep native drag enabled for the session. Only physical-teach and
+    // feedback interlocks may pause it; force magnitude never toggles ON/OFF.
+    const bool allowed = !physical_teach_active_ && !teach_exit_tare_pending_ &&
+      !pending_teach_baseline_ && motion_feedback_fresh();
+    if (allowed && !native_drag_running_) {
       controller_start_pending_ = true;
       controller_start_requested_steady_ = std::chrono::steady_clock::now();
       const auto epoch = motion_request_epoch_;
@@ -1495,17 +1486,16 @@ private:
             const auto response = future.get();
             if (!response->success) {
               if (response->message.rfind("PHYSICAL_TEACH_ACTIVE:", 0) == 0) {
-                native_drag_above_started_ = {};
                 return;
               }
               enter_fault("NATIVE_DRAG_START_FAILED", response->message); return;
             }
-            native_drag_gate_active_ = true;
+            native_drag_running_ = true;
           } catch (const std::exception & error) {
             enter_fault("NATIVE_DRAG_START_EXCEPTION", error.what());
           }
         });
-    } else if (!above && native_drag_gate_active_) {
+    } else if (!allowed && native_drag_running_) {
       native_drag_stop_pending_ = true;
       const auto epoch = motion_request_epoch_;
       native_drag_gate_stop_client_->async_send_request(
@@ -1516,7 +1506,7 @@ private:
           try {
             const auto response = future.get();
             if (!response->success) {enter_fault("NATIVE_DRAG_STOP_FAILED", response->message); return;}
-            native_drag_gate_active_ = false;
+            native_drag_running_ = false;
           } catch (const std::exception & error) {
             enter_fault("NATIVE_DRAG_STOP_EXCEPTION", error.what());
           }
@@ -1873,7 +1863,7 @@ private:
         break;
       case TractionState::DRAGGING:
         publish_disabled();
-        update_native_drag_gate();
+        update_native_drag_control();
         break;
       case TractionState::RELEASING: handle_releasing(current_time); break;
       case TractionState::INITIALIZING:
@@ -2157,7 +2147,7 @@ private:
       case TractionState::DRAGGING:
         status.message = native_drag_stop_pending_ ?
           "正在停止省力拖拽" :
-          (native_drag_gate_active_ ? "省力拖拽中；合力降至5N及以下停住" : "省力拖拽待施力；合力超过5N后拖动");
+          (native_drag_running_ ? "省力拖拽中" : "正在等待原生拖拽接管");
         break;
       case TractionState::POSITION_HOLD: status.message = "已到位，机械臂保持当前位置"; break;
     }
@@ -2317,8 +2307,7 @@ private:
   bool target_force_configured_ = false;
   bool physical_teach_active_ = false;
   bool teach_exit_tare_pending_ = false;
-  bool native_drag_gate_active_ = false;
-  std::chrono::steady_clock::time_point native_drag_above_started_{};
+  bool native_drag_running_ = false;
   std::optional<Vec3> pending_teach_baseline_;
   int64_t last_teach_drag_exit_stamp_ns_ = 0;
   bool position_reached_ = false;
