@@ -22,6 +22,7 @@ let stateSocket = null;
 let reconnectHandle = null;
 let lastStateAt = 0;
 let dataOnline = false;
+let robotWasConnected = false;
 let calibrated = false;
 let directionAvailable = false;
 let directionLocked = false;
@@ -617,7 +618,9 @@ function handleState(state) {
     toast(simpleReason(traction.fault_code || traction.stop_reason) || '开始失败');
   }
   dataOnline = state.connected === true;
-  $('armStatus').textContent = dataOnline ? '通信正常' : '通信中断';
+  if (dataOnline) robotWasConnected = true;
+  const robotOfflineLabel = robotWasConnected ? '机械臂连接中断' : '等待机械臂连接';
+  $('armStatus').textContent = dataOnline ? '通信正常' : robotOfflineLabel;
   $('armStatus').classList.toggle('offline', !dataOnline);
   const joints = state.fr5 && state.fr5.joint_position_deg;
   if (Array.isArray(joints) && joints.length === 6) {
@@ -657,7 +660,7 @@ function handleState(state) {
         : (simpleReason(traction.fault_code || traction.stop_reason) || '牵引中'));
     $('workStatus').classList.add('running');
   } else if (!dataOnline) {
-    $('workStatus').textContent = '设备未连接';
+    $('workStatus').textContent = robotOfflineLabel;
     $('workStatus').classList.remove('running');
   } else {
     $('workStatus').textContent = TRACTION_STATE_LABELS[tractionState] || '设备状态';

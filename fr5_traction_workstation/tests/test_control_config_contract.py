@@ -154,7 +154,7 @@ class ControlConfigurationContractTest(unittest.TestCase):
         self.assertIn("PositionControlDiagnostics::SETTLING", manager)
         self.assertIn("position_tolerance_n: 2.5", parameters)
         self.assertIn("position_reached_tolerance_n: 2.5", parameters)
-        self.assertIn("position_reached_confirm_s: 2.0", parameters)
+        self.assertIn("position_reached_confirm_s: 1.5", parameters)
         self.assertIn("traction_max_speed_mps: 0.020", parameters)
         self.assertIn("position_far_gain_mps_per_n: 0.0060", parameters)
         self.assertIn("position_near_gain_mps_per_n: 0.0045", parameters)

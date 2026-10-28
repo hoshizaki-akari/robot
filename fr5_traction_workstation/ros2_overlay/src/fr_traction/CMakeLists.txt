@@ -99,6 +99,7 @@ if(BUILD_TESTING)
 
   ament_add_pytest_test(test_native_drag_driver test/test_native_drag_driver.py)
   ament_add_pytest_test(test_servo_timing_recovery test/test_servo_timing_recovery.py)
+  ament_add_pytest_test(test_teach_drag_exit test/test_teach_drag_exit.py)
 
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)

@@ -74,6 +74,26 @@ class UiBehaviorTest(unittest.TestCase):
           })()
         """)
 
+    def test_page_waits_for_late_robot_then_tracks_live_connection(self):
+        self.run_page(r"""
+          handleState({connected: false, traction: {state: 0, calibrated: false}});
+          if ($('workStatus').textContent !== '等待机械臂连接' ||
+              $('armStatus').textContent !== '等待机械臂连接')
+            throw Error('Robot cold boot is still presented as an immediate failure');
+          if (!$('startBtn').disabled || !$('unloadBtn').disabled)
+            throw Error('Offline page can command motion');
+          handleState({connected: true, traction: {
+            state: 1, operation_mode: 1, calibrated: true,
+            direction_available: true, direction_locked: false,
+            actual_force_n: 6, target_force_n: 10
+          }});
+          if ($('startBtn').disabled || $('armStatus').textContent !== '通信正常')
+            throw Error('Page did not accept later robot feedback');
+          handleState({connected: false, traction: {state: 1, calibrated: true}});
+          if ($('armStatus').textContent !== '机械臂连接中断' || !$('startBtn').disabled)
+            throw Error('A runtime disconnect was confused with first startup');
+        """)
+
     def run_page(self, assertions):
         source = (ROOT / "static" / "090105.js").read_text(encoding="utf-8")
         script = (

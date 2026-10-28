@@ -136,10 +136,10 @@ traction_manager:
     # communication margin. Force control remains disabled throughout it.
     release_timeout_s: 300.0
     # Target traction stops once total rope tension stays within ±2.5 N for
-    # 2 s. During confirmation control still aims for the requested center.
+    # 1.5 s. During confirmation control still aims for the requested center.
     # Later force changes do not restart control in this mode.
     position_reached_tolerance_n: 2.5
-    position_reached_confirm_s: 2.0
+    position_reached_confirm_s: 1.5
     # Actual force has no workstation fault threshold. The 100 N value above
     # is only the default configurable maximum target force.
     # Two-stage stale-data handling: motion is disabled after 0.25 s, while

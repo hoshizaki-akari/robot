@@ -58,7 +58,7 @@
 
 `/traction/status`新增 `calibrated/direction_available/direction_locked/target_force_max_n`。bridge透传这些值，状态未到、消息旧版本或断线时不假定就绪。ROS使用m、rad、N；网页关节显示deg，模型转换和真实运动符号保持独立。快照中joint和traction分别计算age，现有页面在线判据为各≤500ms；`connected`不能证明控制箱所有内部就绪字段。
 
-模式记录：1目标牵引、2省力拖拽、3卸力；历史0仍显示历史恒力，不能把旧记录0重解释为新模式。目标控制向设定值中心收敛；实际力在目标±2.5N内连续2秒即到达并停止保持，不要求controller已SETTLING；出带或反馈过期重新计时，停止后不持续追赶。正常结束与达到目标是不同事件。
+模式记录：1目标牵引、2省力拖拽、3卸力；历史0仍显示历史恒力，不能把旧记录0重解释为新模式。目标控制向设定值中心收敛；实际力在目标±2.5N内连续1.5秒即到达并停止保持，不要求controller已SETTLING；出带或反馈过期重新计时，停止后不持续追赶。正常结束与达到目标是不同事件。
 
 manager在开始任务时创建session，切入卸力结束旧记录并创建卸力记录；校准不必创建运动记录。默认位置 `debug/traction_sessions/session_*/` 包含 traction.csv、summary.json、operations.csv（网页动作）。这些运行数据和settings不随Git提交。普通结束、故障或急停写终态并finalize，历史导出保持原时间/模式/原因。重要现场记录要备份。
 
@@ -69,3 +69,7 @@ manager的 `data_directory` 与app固定 `SESSION_ROOT` 应指向同一 `debug/t
 运行 `NODE_BINARY=/mnt/c/Users/zhouhaojie/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe bash scripts/run_checks.sh`，当前包括Python/API契约、设置同步与Node执行真实页面脚本的DOM行为测试；没有Node时相关测试会skip，应显式检查统计。修改浏览器脚本另做 `node --check static/090105.js`。这些不覆盖真实浏览器布局与硬件手感。
 
 本次改了ROS消息，必须重新构建正确的 `ros2_overlay` 并在现场条件允许时同时重启ROS与网页，随后刷新页面；只刷新网页不能让旧rclpy进程加载新消息。不要混用根目录另一套install，更不能并行启动第二个SDK所有者。详细离线/现场记录见 MACHINE_AND_VALIDATION。
+
+2026-10-28补充：实体拖动退出后允许带载软件置零，空闲静止且健康时自动执行，已有候选/记录方向清除。省力拖拽“开始”后的DRAGGING也包含等待合力超过5N，界面力值按0.1N显示，显示≤5N时原生OFF请求立即发出；再次超过5N自动启用，不需要重新点击开始。目标到位为±2.5N连续1.5s。
+
+2026-10-28网页先启动：RosBridge可先于ROS节点创建订阅和客户端，收到后续真实反馈即更新页面；启动前未连接显示“等待机械臂连接”，曾连接后断开显示“机械臂连接中断”，操作按钮继续以真实连接/校准状态限制，不为启动方便伪造在线。

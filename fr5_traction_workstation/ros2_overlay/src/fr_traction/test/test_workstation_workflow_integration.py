@@ -73,6 +73,7 @@ class WorkflowHarness:
         self.logs = []
         self.status = None
         self.statuses = deque(maxlen=3000)
+        self.status_times = deque(maxlen=3000)
         self.commands = deque(maxlen=3000)
         self.twists = deque(maxlen=3000)
         self.calibration_events = 0
@@ -85,6 +86,7 @@ class WorkflowHarness:
         self.position = (0.4, 0.2, 0.3)
         self.orientation = (0.0, 0.0, 0.0, 1.0)
         self.wrench_pub = self.node.create_publisher(WrenchStamped, "/test/raw_wrench", 10)
+        self.teach_exit_pub = self.node.create_publisher(WrenchStamped, "/controller_manager/teach_drag_exit_wrench", 10)
         self.pose_pub = self.node.create_publisher(PoseTwist, "/test/ee_state", 10)
         self.joint_pub = self.node.create_publisher(JointState, "/test/joint_states", 10)
         health_qos = QoSProfile(
@@ -92,6 +94,8 @@ class WorkflowHarness:
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
         self.health_pub = self.node.create_publisher(Bool, "/test/hardware_healthy", health_qos)
+        self.physical_teach_pub = self.node.create_publisher(
+            Bool, "/controller_manager/physical_teach_drag_active", health_qos)
         self.node.create_subscription(TractionStatus, "/traction/status", self.on_status, 10)
         self.node.create_subscription(
             TractionCommand, "/traction/command",
@@ -114,6 +118,10 @@ class WorkflowHarness:
             lambda request, response: self.on_native("stop", request, response),
             callback_group=ReentrantCallbackGroup(),
         )
+        self.node.create_service(
+            Trigger, "/test/native_drag_gate_stop",
+            lambda request, response: self.on_native("stop", request, response),
+        )
         self.node.create_timer(0.01, self.publish_feedback)
         self.clients = {
             name: self.node.create_client(Trigger, f"/traction/{name}")
@@ -134,6 +142,7 @@ class WorkflowHarness:
             "controller_manager_switch_service": "/test/switch_controller",
             "native_drag_start_service": "/test/native_drag_start",
             "native_drag_stop_service": "/test/native_drag_stop",
+            "native_drag_gate_stop_service": "/test/native_drag_gate_stop",
             "data_directory": str(directory / "sessions"),
             "require_ui_heartbeat": "false",
             # Match formal hardware-launch budgets rather than the class's
@@ -167,6 +176,7 @@ class WorkflowHarness:
     def on_status(self, message):
         self.status = message
         self.statuses.append(message)
+        self.status_times.append((time.monotonic(), message))
 
     def on_calibration(self, message):
         self.calibration_events += int(message.data)
@@ -383,6 +393,7 @@ def test_stop_cancels_delayed_native_drag_to_unload_handoff(workstation):
     robot.mode(SetOperationMode.Request.ASSISTED_DRAG)
     robot.call("start")
     robot.wait(lambda: robot.status.state == TractionStatus.DRAGGING)
+    robot.wait(lambda: robot.native_calls == ["start"])
     robot.native_stop_delay_s = 0.7
     robot.call("unload")
     robot.wait(robot.native_stop_entered.is_set)
@@ -429,7 +440,7 @@ def test_target_limit_can_be_raised_and_removed_constant_force_mode_is_rejected(
 
 
 @pytest.mark.parametrize("settled_force_n", [7.6, 12.4])
-def test_target_arrival_requires_two_seconds_inside_outer_window(workstation, settled_force_n):
+def test_target_arrival_requires_one_and_half_seconds_inside_outer_window(workstation, settled_force_n):
     robot = workstation
     robot.mode(SetOperationMode.Request.POSITION_TRACTION)
     robot.force = (7.4, 0.0, 0.0)
@@ -440,9 +451,15 @@ def test_target_arrival_requires_two_seconds_inside_outer_window(workstation, se
     assert robot.status.state == TractionStatus.TRACTION
     robot.force = (settled_force_n, 0.0, 0.0)
     robot.wait(lambda: abs(robot.status.actual_force_n - settled_force_n) < 0.05)
-    robot.pump(1.3)
+    robot.pump(1.0)
     assert robot.status.state == TractionStatus.TRACTION
     robot.wait(lambda: robot.status.state == TractionStatus.POSITION_HOLD, timeout=1.5)
+    entered_at = next(t for t, status in robot.status_times
+                      if status.state == TractionStatus.TRACTION
+                      and abs(status.actual_force_n - 10.0) <= 2.5)
+    reached_at = next(t for t, status in robot.status_times
+                      if status.state == TractionStatus.POSITION_HOLD)
+    assert 1.3 <= reached_at - entered_at <= 1.8
     assert robot.status.position_reached
     assert robot.status.direction_locked
     assert abs(robot.status.actual_force_n - 10.0) <= 2.5
@@ -557,3 +574,99 @@ def test_transient_search_contact_resumes_without_restarting_five_second_budget(
     assert robot.status.stop_reason == "DIRECTION_SEARCH_NO_FORCE"
     assert 4.8 < time.monotonic() - started_at < 5.6
     assert len(robot.switch_calls) == 2  # One activation and one final stop.
+
+
+def test_native_drag_requires_display_resultant_above_five_and_stops_at_five(workstation):
+    robot = workstation
+    robot.call("start")
+    robot.wait(lambda: robot.status.state == TractionStatus.DRAGGING)
+    robot.force = (2.0, 3.0, 0.0)
+    robot.pump(0.35)
+    assert robot.native_calls == []
+    robot.force = (5.0, 0.0, 0.0)
+    robot.pump(0.35)
+    assert robot.native_calls == []
+    robot.force = (3.6, 4.8, 0.0)  # total 6 N, each component below 5 N
+    robot.wait(lambda: robot.native_calls == ["start"])
+    robot.force = (5.0, 0.0, 0.0)
+    robot.wait(lambda: robot.native_calls == ["start", "stop"])
+    assert robot.status.state == TractionStatus.DRAGGING
+    assert not robot.status.fault_code
+    robot.pump(0.25)
+    assert robot.native_calls == ["start", "stop"]
+    robot.force = (0.0, 6.0, 0.0)
+    robot.wait(lambda: robot.native_calls == ["start", "stop", "start"])
+    robot.call("stop")
+    robot.ready()
+    assert robot.native_calls[-1] == "stop"
+    assert robot.calibration_events == 1
+
+
+def test_physical_teach_exit_recalibrates_loaded_force_once(workstation):
+    robot = workstation
+    robot.mode(SetOperationMode.Request.POSITION_TRACTION)
+    robot.force = (9.0, 0.0, 0.0)
+    robot.wait(lambda: robot.status.direction_available)
+    event = WrenchStamped()
+    event.header.frame_id = "base_link"
+    event.header.stamp = robot.node.get_clock().now().to_msg()
+    event.wrench.force.x, event.wrench.force.y, event.wrench.force.z = (
+        offset + force for offset, force in zip(robot.offset, robot.force)
+    )
+    robot.teach_exit_pub.publish(event)
+    robot.wait(lambda: robot.calibration_events == 2 and robot.status.actual_force_n < 0.05)
+    assert not robot.status.direction_available
+    robot.teach_exit_pub.publish(event)
+    robot.pump(0.2)
+    assert robot.calibration_events == 2
+    assert robot.status.state == TractionStatus.READY
+
+
+def test_teach_exit_event_cannot_tare_active_traction(workstation):
+    robot = workstation
+    robot.mode(SetOperationMode.Request.POSITION_TRACTION)
+    robot.force = (6.0, 0.0, 0.0)
+    robot.wait(lambda: robot.status.actual_force_n > 5.9)
+    robot.call("start")
+    robot.wait(lambda: robot.status.state == TractionStatus.TRACTION)
+    event = WrenchStamped()
+    event.header.frame_id = "base_link"
+    event.header.stamp = robot.node.get_clock().now().to_msg()
+    event.wrench.force.x, event.wrench.force.y, event.wrench.force.z = (
+        offset + force for offset, force in zip(robot.offset, robot.force)
+    )
+    robot.teach_exit_pub.publish(event)
+    robot.pump(0.3)
+    assert robot.status.actual_force_n > 5.9
+    assert robot.calibration_events == 1
+    assert robot.status.state == TractionStatus.TRACTION
+
+
+def test_physical_button_interlocks_armed_drag_and_tares_before_reenabling(workstation):
+    robot = workstation
+    robot.call("start")
+    robot.wait(lambda: robot.status.state == TractionStatus.DRAGGING)
+    robot.physical_teach_pub.publish(Bool(data=True))
+    robot.force = (9.0, 0.0, 0.0)
+    robot.pump(0.4)
+    assert robot.native_calls == []
+    event = WrenchStamped()
+    event.header.frame_id = "base_link"
+    event.header.stamp = robot.node.get_clock().now().to_msg()
+    event.wrench.force.x, event.wrench.force.y, event.wrench.force.z = (
+        offset + force for offset, force in zip(robot.offset, robot.force)
+    )
+    # The two DDS topics may arrive out of order. A delayed exit wrench
+    # must not permit software drag to re-enable before the tare is applied.
+    robot.physical_teach_pub.publish(Bool(data=False))
+    robot.pump(0.25)
+    assert robot.native_calls == []
+    assert robot.calibration_events == 1
+    event.header.stamp = robot.node.get_clock().now().to_msg()
+    robot.teach_exit_pub.publish(event)
+    robot.wait(lambda: robot.calibration_events == 2 and robot.status.actual_force_n < 0.05)
+    robot.pump(0.2)
+    assert robot.native_calls == []
+    assert robot.status.state == TractionStatus.DRAGGING
+    robot.force = (15.0, 0.0, 0.0)  # 6 N above the new loaded baseline
+    robot.wait(lambda: robot.native_calls == ["start"])

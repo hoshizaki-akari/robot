@@ -299,6 +299,11 @@ class Fr5DirectDriver(Node):
         self._wrench_pub = self.create_publisher(
             WrenchStamped, "/controller_manager/wrench", 10
         )
+        self._teach_drag_exit_pub = self.create_publisher(
+            WrenchStamped, "/controller_manager/teach_drag_exit_wrench", 10
+        )
+        self._teach_drag_seen = False
+        self._teach_drag_ignore_until_clear = False
         self._ee_pub = self.create_publisher(
             PoseTwist, "/controller_manager/ee_state", 10
         )
@@ -310,6 +315,10 @@ class Fr5DirectDriver(Node):
         self._health_pub = self.create_publisher(
             Bool, "/controller_manager/healthy", health_qos
         )
+        self._physical_teach_pub = self.create_publisher(
+            Bool, "/controller_manager/physical_teach_drag_active", health_qos
+        )
+        self._physical_teach_reported = None
         self.create_subscription(
             TwistStamped,
             "/controller_manager/command_cart_vel_stamped",
@@ -343,6 +352,9 @@ class Fr5DirectDriver(Node):
             Trigger,
             "/traction/native_drag_stop",
             self._on_native_drag_stop,
+        )
+        self.create_service(
+            Trigger, "/traction/native_drag_gate_stop", self._on_native_drag_gate_stop
         )
         calibration_qos = QoSProfile(
             depth=1,
@@ -762,9 +774,9 @@ class Fr5DirectDriver(Node):
                 return False
             time.sleep(min(0.1, remaining))
 
-    def _stop_native_drag_best_effort(self, context):
+    def _stop_native_drag_best_effort(self, context, restore_force_reference=True):
         if not self._native_drag_active:
-            if self._force_reference_custom_active:
+            if self._force_reference_custom_active and restore_force_reference:
                 try:
                     self._set_drag_force_reference(False)
                 except Exception as error:  # noqa: BLE001 - vendor exceptions vary.
@@ -796,7 +808,7 @@ class Fr5DirectDriver(Node):
                 self._reset_command_proxy()
                 return -4
             self._native_drag_active = False
-            if self._force_reference_custom_active:
+            if self._force_reference_custom_active and restore_force_reference:
                 try:
                     self._set_drag_force_reference(False)
                 except Exception as error:  # noqa: BLE001 - vendor exceptions vary.
@@ -826,6 +838,11 @@ class Fr5DirectDriver(Node):
         )
 
     def _on_native_drag_start(self, _request, response):
+        if (not self._native_drag_active and
+                int(getattr(self._robot.robot_state_pkg, "robot_state", 1)) == 4):
+            response.success = False
+            response.message = "PHYSICAL_TEACH_ACTIVE: exit the physical drag button before software drag."
+            return response
         if self._native_drag_active:
             response.success = True
             response.message = "FR5 native force drag is already active."
@@ -884,7 +901,7 @@ class Fr5DirectDriver(Node):
                     "SetForceSensorDragAutoFlag failed: " + str(auto_code)
                 )
                 return response
-            if self._native_drag_tool_xy_flip:
+            if self._native_drag_tool_xy_flip and not self._force_reference_custom_active:
                 self._set_drag_force_reference(True)
             # A lost ON reply does not mean the controller stayed OFF. Reserve
             # ownership before the RPC so every failure must send/confirm OFF
@@ -939,6 +956,20 @@ class Fr5DirectDriver(Node):
             f"rbtEnableState={int(self._robot.robot_state_pkg.rbtEnableState)}, "
             f"translational thresholds (N): {self._native_drag_threshold[:3]}."
         )
+        return response
+
+    def _on_native_drag_gate_stop(self, _request, response):
+        # A 5 N gate crossing stops the native loop but keeps its verified
+        # reference frame. A final stop/unload still restores base_link.
+        code = Fr5DirectDriver._stop_native_drag_best_effort(
+            self, "resultant force gate", restore_force_reference=False
+        )
+        self._twist = Twist()
+        self._last_command_at = 0.0
+        if code != 0:
+            self._disable_after_failed_native_stop("resultant force gate")
+        response.success = code == 0
+        response.message = "Native drag force gate is off." if code == 0 else f"Drag gate stop failed: {code}"
         return response
 
     def _on_native_drag_stop(self, _request, response):
@@ -1448,7 +1479,53 @@ class Fr5DirectDriver(Node):
         wrench = [state.ft_sensor_data[index] for index in range(6)]
         if self._force_reference_custom_active:
             wrench = _custom_drag_wrench_to_base(wrench, pose)
+        self._observe_teach_drag_state(state, wrench)
         return joints, pose, speeds, wrench
+
+    def _report_physical_teach(self, active):
+        if getattr(self, "_physical_teach_reported", None) == active:
+            return
+        self._physical_teach_reported = active
+        publisher = getattr(self, "_physical_teach_pub", None)
+        if publisher is not None:
+            publisher.publish(Bool(data=active))
+
+    def _observe_teach_drag_state(self, state, wrench):
+        # State 4 is SDK drag-teach, not the manual/automatic mode bit.
+        # Native force-drag and its trailing state packets must not tare.
+        motion_state = getattr(state, "robot_state", None)
+        if motion_state is None:
+            return
+        if self._native_drag_active or self._servo_enabled:
+            self._teach_drag_seen = False
+            self._teach_drag_ignore_until_clear = True
+            Fr5DirectDriver._report_physical_teach(self, False)
+            return
+        if self._teach_drag_ignore_until_clear:
+            if int(motion_state) != 4:
+                self._teach_drag_ignore_until_clear = False
+            return
+        healthy = (int(state.EmergencyStop) == 0 and int(state.main_code) == 0
+                   and int(state.ft_sensor_active) == 1
+                   and not self._hardware_fault_latched and not self._hardware_emergency_latched)
+        if not healthy:
+            self._teach_drag_seen = False
+            Fr5DirectDriver._report_physical_teach(self, False)
+            return
+        if int(motion_state) == 4 and int(state.robot_mode) == 1:
+            self._teach_drag_seen = True
+            Fr5DirectDriver._report_physical_teach(self, True)
+        elif int(motion_state) == 1 and self._teach_drag_seen:
+            self._teach_drag_seen = False
+            event = WrenchStamped()
+            event.header.stamp = self.get_clock().now().to_msg()
+            event.header.frame_id = "base_link"
+            event.wrench.force.x, event.wrench.force.y, event.wrench.force.z = wrench[:3]
+            Fr5DirectDriver._report_physical_teach(self, False)
+            self._teach_drag_exit_pub.publish(event)
+            self.get_logger().info("Physical drag-teach exited; requested a fresh force baseline.")
+        elif int(motion_state) == 1:
+            Fr5DirectDriver._report_physical_teach(self, False)
 
     def _servo_cart(self, mode, desc_pos):
         # The FR5 XML-RPC parser does not accept denormal floating-point

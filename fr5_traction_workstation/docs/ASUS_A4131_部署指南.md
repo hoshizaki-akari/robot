@@ -65,21 +65,25 @@ bash scripts/tablet_setup_env.sh
 
 ## 4. 启动和关闭
 
-启动前确认机械臂已开机、有线网口已连接。双击桌面的“骨伤牵引机器人工作站”，
-系统会依次检查机械臂连接、启动 ROS 2、启动网页服务，并以 Firefox 全屏打开操作页。
+一体机和机械臂可以同时开机。双击桌面的“骨伤牵引机器人工作站”，系统先启动
+网页服务并以Firefox全屏显示操作页；机械臂未就绪时显示“等待机械臂连接”，运动按钮不可用。
+后台约每3秒检查一次机器人20003端口，上线后自动启动ROS 2控制服务；控制器冷启动尚未
+完成时保留网页并重试初始化，不必退出再打开。机器人真正连接时仍会按既定流程建立初始基线，
+在校准完成前保持绳带松弛。
 
 关闭方法：
 
 - 键盘按 `Alt+F4` 关闭工作站专用 Firefox；
 - 浏览器关闭后，本次启动的网页服务和 ROS 2 控制服务会自动一并停止；
-- 软件不会随 Ubuntu 开机自动启动，下一次仍由操作人员双击图标启动。
+- 默认不随Ubuntu开机启动；按第8节配置自动登录/自启动后，可开机自动进入界面。
 
-如果机械臂未连接、环境缺失或服务启动失败，页面不会盲目打开，而会显示中文错误
-提示及对应日志位置。
+机械臂未开机/网线尚未连接不会让网页退出。缺少依赖、Firefox或网页服务自身启动失败时，
+才弹出环境/网页错误。首次成功连接后的运行故障不会自动重启控制栈或重新校准，网页保留
+以便查看状态、由操作人员处理；关闭窗口会取消后台等待并清理本次启动的全部服务。
 
 ## 5. 日志和牵引记录
 
-- 启动日志：`~/.local/state/fr5-traction/logs/`
+- 启动日志：`~/.local/state/fr5-traction/logs/`；`startup_*.log`记录等待/重试，`ros_*_attemptN.log`保留每次连接日志。
 - 牵引记录：`~/projects/fr5_platform_ws/fr5_traction_workstation/debug/traction_sessions/`
 - 页面中的“牵引记录”仍可导出单次完整日志压缩包。
 
@@ -117,10 +121,11 @@ git log -1 --oneline
 ls -lt ~/.local/state/fr5-traction/logs/ | head
 ```
 
-### 显示无法连接 `192.168.58.2:20003`
+### 页面一直显示“等待机械臂连接”
 
-这是机械臂控制器通信未建立，不是网页故障。检查有线网口是否为
-`192.168.58.10/24`、网线是否连通以及机械臂控制箱是否已启动。
+界面已成功启动，后台正在等待机器人。检查机械臂控制箱是否完成开机、有线网卡是否为
+`192.168.58.10/24`、网线是否连通；恢复网络后不需要重新打开界面。若端口已通但仍未就绪，
+查看 `startup_*.log` 与最新 `ros_*_attemptN.log` 中的初始化失败原因。
 
 ### 桌面图标提示“不受信任”
 
@@ -131,3 +136,21 @@ ls -lt ~/.local/state/fr5-traction/logs/ | head
 
 按 `Alt+F4`。不要只切换到其他窗口；关闭工作站专用 Firefox 才会触发控制服务的
 正常退出。
+
+## 8. 开机自动进入全屏工作站
+
+在Ubuntu设置→用户中解锁并开启user000的“自动登录”。然后在目标一体机的user000终端执行一次：
+
+```bash
+mkdir -p ~/.config/autostart
+cat > ~/.config/autostart/fr5-traction.desktop <<EOF
+[Desktop Entry]
+Type=Application
+Name=骨伤牵引机器人工作站
+Exec=/bin/bash "$HOME/projects/fr5_platform_ws/fr5_traction_workstation/scripts/tablet_start.sh"
+Terminal=false
+X-GNOME-Autostart-enabled=true
+EOF
+```
+
+本版先显示网页再等待机器人，不需要旧自启动项里的sleep 20。已有自启动项也可继续使用，只是页面会延后打开。自动启动只连接/初始化设备，不自动点击“开始牵引”；本节设置应在目标一体机执行，不在开发机WSL中执行。

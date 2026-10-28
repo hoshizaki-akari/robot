@@ -41,7 +41,7 @@ Python direct driver 是唯一 SDK 所有者。`/controller_manager/*` 是兼容
 
 | 操作模式 | 数值 | 行为 |
 | --- | --- | --- |
-| 目标牵引 `POSITION_TRACTION` | 1 | 原位置牵引算法，开始时锁方向，控制向设定值中心收敛，实际力在目标±2.5N连续2s后停止保持 |
+| 目标牵引 `POSITION_TRACTION` | 1 | 原位置牵引算法，开始时锁方向，控制向设定值中心收敛，实际力在目标±2.5N连续1.5s后停止保持 |
 | 省力拖拽 `ASSISTED_DRAG` | 2，默认 | FR5 控制柜原生辅助拖拽，无需目标力或锁定方向 |
 | 卸力 `UNLOADING` | 3 | 优先沿上次牵引方向的减力方向运动，否则用最新有效方向；真实合力 <5 N 停止并保位 |
 
@@ -76,7 +76,7 @@ Python direct driver 是唯一 SDK 所有者。`/controller_manager/*` 是兼容
 
 目标牵引用 `PositionTractionController` 预测速度环：估计力率和刚度，接近目标时提前制动。默认容差 `position_tolerance_n=2.5 N`，近场窗口 `position_near_window_n=5 N` 必须大于容差。当前正式目标速度恢复最大0.020m/s，加速0.080/减速0.160m/s²；jerk上限 `position_max_jerk_mps3=1.0`。内部中心容差 `position_center_tolerance_n=0.5`，近场连续向设定值逼近（静区仅为中心容差0.4倍即0.2N），不能将外层±2.5N当成低侧停止设点；误差处于±0.5N且残余速度/加速度安静才进入 `SETTLING`。进入力带静止后须持续出带0.20 s才重调；反向纠偏必须先静止并持续确认0.20 s，禁止滤波残余绕过换向确认。
 
-manager的到位条件独立于controller内部中心控制：实测总张力处于目标±`position_reached_tolerance_n=2.5 N`，连续 `position_reached_confirm_s=2 s` 即到位，不要求controller已进入 `SETTLING`。确认期间controller继续向设定值中心逼近；出带或运动反馈过期重新计时，计时使用monotonic时钟。随后停止 Cartesian 会话并进入 `POSITION_HOLD`；外力变化不会自动重启。修改目标可重新申请控制器；应先确认上次停止已完成。到位保持仍属本次牵引，方向不解锁。
+manager的到位条件独立于controller内部中心控制：实测总张力处于目标±`position_reached_tolerance_n=2.5 N`，连续 `position_reached_confirm_s=1.5 s` 即到位，不要求controller已进入 `SETTLING`。确认期间controller继续向设定值中心逼近；出带或运动反馈过期重新计时，计时使用monotonic时钟。随后停止 Cartesian 会话并进入 `POSITION_HOLD`；外力变化不会自动重启。修改目标可重新申请控制器；应先确认上次停止已完成。到位保持仍属本次牵引，方向不解锁。
 
 最大可调目标力默认 `target_force_max_n=100 N`，管理员可以在设置中提高到 100 N 以上。后端将设置与 manager ROS 动态参数原子同步；开始及运行中调目标均使用同一配置范围。已移除 `validated_target_max_n` 的额外 100 N 硬门槛。该上限只约束用户可选目标，不触发实际受力超限故障，也不代表该范围已实机验收。
 
@@ -161,3 +161,13 @@ g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic \
 `continuous_force_controller_`、`OneDimensionalAdmittance`、`DirectionEstimator`、`AdaptiveDirectionFollower` 和旧 host drag 等仍有纯算法代码及回归测试，供历史分析与以后研究。正式三模式工作流不再开放恒力和运行中方向跟随；`direction_correction_mode=active` 等遗留参数不代表新目标牵引会转向。旧私有回位、auto-tension helper 也不是当前方向搜索入口。
 
 改算法从 math/core 开始；改流程从 manager 和状态边开始；改实际坐标从 controller、driver 和 launch 的三层符号契约开始。更新消息后重建整个依赖链并重启 ROS 与网页，使生成接口一致。普通 `use_sim_time=true` 不能隔离机器人；所有离线集成必须显式使用假反馈和假硬件服务，不能启动正式硬件 launch。
+
+## 实体拖拽退出与合力门控（2026-10-28）
+
+独占SDK的driver从新实时帧识别 `robot_state=4`（拖动示教）到 `1`（停止），以WrenchStamped发布 `/controller_manager/teach_drag_exit_wrench`，保存退出时刻的base系受力。不把普通auto/manual模式位变化当实体按钮；本机原生拖拽/servo期间及其尾帧被排除，启动时首次停止也不生成退出事件。manager仅在工作站空闲或软件拖拽等待施力、反馈健康、关节静止且无接管中应用一次基线，清旧候选/记录方向；按用户确认允许当时有张力，界面将现有受力计入零点。目标牵引或卸力中不改变基线，先保留退出事件、待任务正常结束后处理；故障期间丢弃事件。此操作不调用FT_SetZero、不改持久回零位姿。
+
+省力拖拽的“开始”先建立DRAGGING会话，在界面同一合力（保留0.1N显示精度）>5N连续0.1s后才请求原生ON；显示≤5N或反馈短时不新鲜即请求OFF，没有下降沿延迟。ON/OFF沿用driver确认和失败清理，期间不发送host ServoCart。OFF后仍在DRAGGING等待再次>5N，不结束会话、不丢校准；点击结束/卸力交接通过请求代次取消晚到的启用回复。启用确认、通信与原生保护会影响实际执行延迟，软件请求OFF不能代替控制柜OFF确认。厂商各轴5N阈值仍存在，因此合力门控是附加准入条件，不是对原生速度律的替换。
+
+实体拖拽活动状态另通过可靠锁存Bool话题 `/controller_manager/physical_teach_drag_active` 通知manager：蓝色拖动期间拒绝软件接管，绿色退出后仍等待带载力快照应用完成才允许软件拖拽重新激活，避免两个ROS话题到达乱序造成提前启用。driver也以同一实时状态拒绝实体拖动期间的原生启动请求，作为回调延迟的后备互锁。
+
+5N门控停用使用专用 `/traction/native_drag_gate_stop`，确认原生OFF但保留已验证的力参考系；下一次超过门槛启用不重复FT_SetRCS。正常结束/卸力仍通过原 `/traction/native_drag_stop` 恢复base参考系，避免门槛附近频繁重配坐标引入延迟或受力跳变。
